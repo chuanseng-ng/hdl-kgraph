@@ -18,9 +18,41 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
-from hdl_kgraph.schema import Edge, Node
+from hdl_kgraph.schema import Edge, EdgeKind, Node
+
+
+@dataclass
+class UnresolvedRef:
+    """A cross-file reference recorded in pass 1 and resolved in pass 2.
+
+    ``attrs`` carries the per-kind payload the linker needs:
+
+    ========================= ============================== =========================================
+    ``edge_kind``             ``src_id`` / ``target_name``   ``attrs``
+    ========================= ============================== =========================================
+    ``INSTANTIATES``          INSTANCE node / target module  --
+    ``CONNECTS``              INSTANCE node / target module  ``port_name: str | None``,
+        (one per connection)                                 ``position: int | None``,
+                                                             ``wildcard: bool``, ``expr_text: str``
+    ``PARAMETERIZES``         INSTANCE node / target module  ``param_name: str | None``,
+        (one per override)                                   ``position: int | None``,
+                                                             ``value_text: str``
+    ``IMPORTS``               importing scope / package      ``symbol``: ``"*"`` or explicit name
+    ``EXTENDS``               CLASS node / base class        ``package: str | None``,
+                                                             ``param_args_text: str | None``
+    ========================= ============================== =========================================
+
+    Positional ``CONNECTS``/``PARAMETERIZES`` resolve against the target's
+    PORT/PARAMETER children via their declaration-order ``attrs["index"]``.
+    """
+
+    edge_kind: EdgeKind
+    src_id: str  # id of the referring node (present in FileIR.nodes)
+    target_name: str  # bare name to resolve (module/package/class name)
+    line_span: tuple[int, int] = (0, 0)
+    attrs: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -31,9 +63,8 @@ class FileIR:
     nodes: list[Node] = field(default_factory=list)
     # Edges whose endpoints are both local to this file (e.g. DECLARES).
     local_edges: list[Edge] = field(default_factory=list)
-    # References to be resolved in pass 2 (instance targets, imports, includes),
-    # keyed by the referring node id. Shape is finalized in M1.
-    unresolved_refs: dict[str, list[str]] = field(default_factory=dict)
+    # References to be resolved in pass 2 (instance targets, imports, extends).
+    unresolved_refs: list[UnresolvedRef] = field(default_factory=list)
     parse_error_count: int = 0
 
 

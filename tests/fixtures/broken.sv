@@ -2,7 +2,8 @@
 // be extracted (error tolerance).
 module broken_syntax (
     input logic clk
-  this is not valid systemverilog at all !!!
+);
+  assign garbage = this is not valid systemverilog at all !!!;
 endmodule
 
 module survives (
