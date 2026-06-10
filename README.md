@@ -72,7 +72,7 @@ Details and acceptance criteria: [ROADMAP.md](ROADMAP.md).
 git clone https://github.com/chuanseng-ng/hdl-kgraph
 cd hdl-kgraph
 pip install -e .[dev]
-pytest && ruff check . && mypy
+ruff check . && ruff format --check . && mypy && pytest
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). The single most useful contribution

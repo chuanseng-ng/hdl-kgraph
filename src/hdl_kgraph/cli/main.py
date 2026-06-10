@@ -1,8 +1,9 @@
 """hdl-kgraph CLI.
 
-Command surface grows with the milestones (see ROADMAP.md):
-``build``/``status``/``query``/``tree`` in M1, filelist/define options in M2,
-``update``/``watch``/``impact`` in M4, ``visualize`` in M5, ``serve`` in M6.
+Only ``build`` and ``status`` stubs exist today. The command surface grows
+with the milestones (see ROADMAP.md): ``query``/``tree`` complete M1,
+filelist/define options arrive in M2, ``update``/``watch``/``impact`` in M4,
+``visualize`` in M5, and ``serve`` in M6.
 """
 
 from __future__ import annotations

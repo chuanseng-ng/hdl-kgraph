@@ -2,7 +2,8 @@
 
 Planned analyses:
 
-* design hierarchy tree from a top module (M1 ``tree`` command consumes this)
+* design hierarchy tree from a top module, consumed by the ``tree`` CLI
+  command planned for M1 (not yet stubbed in the CLI)
 * impact radius: transitively affected modules via INSTANTIATES / IMPORTS /
   INCLUDES / EXTENDS, including reverse `include and macro edges (M4)
 * clock-domain report, reset tree, CDC-suspect crossings from
