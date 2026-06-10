@@ -31,13 +31,13 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
   "Topic :: Software Development :: Compilers",
 ]
-# Grammar packages (tree-sitter-systemverilog / tree-sitter-vhdl) are added in
-# M1 once the grammar bake-off settles on a distribution route (PyPI wheel,
-# language pack, or vendored grammar). See ROADMAP.md "Risks".
+# Grammar choice: see docs/grammar-bakeoff.md (ROADMAP.md "Risks" #1).
+# tree-sitter-vhdl is added in M3.
 dependencies = [
   "click>=8.1",
   "networkx>=3.0",
   "tree-sitter>=0.23",
+  "tree-sitter-systemverilog>=0.3.1",
 ]
 
 [project.optional-dependencies]
@@ -79,7 +79,7 @@ warn_unused_ignores = true
 warn_redundant_casts = true
 
 [[tool.mypy.overrides]]
-module = ["tree_sitter.*", "networkx.*"]
+module = ["tree_sitter.*", "tree_sitter_systemverilog.*", "networkx.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
