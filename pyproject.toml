@@ -1,0 +1,84 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hdl-kgraph"
+version = "0.0.1"
+description = "Knowledge graph extractor for SystemVerilog, Verilog, and VHDL"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+readme = "README.md"
+authors = [{ name = "Ng Chuan Seng" }]
+keywords = [
+  "hdl",
+  "systemverilog",
+  "verilog",
+  "vhdl",
+  "knowledge-graph",
+  "eda",
+  "tree-sitter",
+]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
+  "Topic :: Software Development :: Compilers",
+]
+# Grammar packages (tree-sitter-systemverilog / tree-sitter-vhdl) are added in
+# M1 once the grammar bake-off settles on a distribution route (PyPI wheel,
+# language pack, or vendored grammar). See ROADMAP.md "Risks".
+dependencies = [
+  "click>=8.1",
+  "networkx>=3.0",
+  "tree-sitter>=0.23",
+]
+
+[project.optional-dependencies]
+watch = ["watchdog>=4"]
+mcp = ["fastmcp>=2"]
+dev = [
+  "pytest>=8",
+  "pytest-cov",
+  "ruff>=0.6",
+  "mypy>=1.10",
+]
+all = ["hdl-kgraph[watch,mcp]"]
+
+[project.scripts]
+hdl-kgraph = "hdl_kgraph.cli.main:main"
+
+[project.urls]
+Homepage = "https://github.com/chuanseng-ng/hdl-kgraph"
+Issues = "https://github.com/chuanseng-ng/hdl-kgraph/issues"
+Roadmap = "https://github.com/chuanseng-ng/hdl-kgraph/blob/main/ROADMAP.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hdl_kgraph"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+files = ["src"]
+disallow_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+[[tool.mypy.overrides]]
+module = ["tree_sitter.*", "networkx.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
