@@ -1,18 +1,53 @@
 """hdl-kgraph CLI.
 
-Only ``build`` and ``status`` stubs exist today. The command surface grows
-with the milestones (see ROADMAP.md): ``query``/``tree`` complete M1,
-filelist/define options arrive in M2, ``update``/``watch``/``impact`` in M4,
-``visualize`` in M5, and ``serve`` in M6.
+M1 surface: ``build``, ``status``, ``query`` (``instances-of`` / ``modules``
+/ ``unresolved``), and ``tree``. Filelist/define options arrive in M2,
+``update``/``watch``/``impact`` in M4, ``visualize`` in M5, ``serve`` in M6.
+
+The database lives at ``<root>/.hdl-kgraph/graph.db``; read commands locate
+it by walking up from the current directory (git-style) unless ``--db`` is
+given.
 """
 
 from __future__ import annotations
 
 import sys
+from collections import Counter
+from pathlib import Path
 
 import click
+import networkx as nx
 
 from hdl_kgraph import __version__
+from hdl_kgraph.discovery import DEFAULT_MAX_FILE_SIZE_KB
+from hdl_kgraph.graph import analysis
+from hdl_kgraph.pipeline import find_db, run_build
+from hdl_kgraph.schema import NodeKind
+from hdl_kgraph.storage.sqlite_store import SchemaVersionError, SqliteStore
+
+_db_option = click.option(
+    "--db",
+    "db_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Path to the graph database (default: nearest .hdl-kgraph/graph.db).",
+)
+
+
+def _load(db_path: Path | None) -> tuple[nx.MultiDiGraph, list, dict[str, str]]:
+    if db_path is None:
+        db_path = find_db(Path.cwd())
+        if db_path is None:
+            raise click.ClickException(
+                "no .hdl-kgraph/graph.db found here or in any parent directory; "
+                "run `hdl-kgraph build` first or pass --db"
+            )
+    if not db_path.is_file():
+        raise click.ClickException(f"database not found: {db_path}")
+    try:
+        return SqliteStore(db_path).load()
+    except SchemaVersionError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @click.group()
@@ -22,15 +57,164 @@ def main() -> None:
 
 
 @main.command()
-@click.argument("source", type=click.Path(exists=True), required=False)
-def build(source: str | None) -> None:
-    """Build the knowledge graph from HDL sources. [milestone M1]"""
-    click.echo("hdl-kgraph build: not implemented yet (milestone M1)", err=True)
-    sys.exit(1)
+@click.argument("source", type=click.Path(exists=True, path_type=Path), default=".", required=False)
+@_db_option
+@click.option(
+    "--exclude",
+    "excludes",
+    multiple=True,
+    metavar="GLOB",
+    help="Skip files whose root-relative path matches GLOB (repeatable).",
+)
+@click.option(
+    "--max-file-size",
+    type=int,
+    default=DEFAULT_MAX_FILE_SIZE_KB,
+    show_default=True,
+    metavar="KB",
+    help="Skip files larger than this many kilobytes.",
+)
+def build(
+    source: Path, db_path: Path | None, excludes: tuple[str, ...], max_file_size: int
+) -> None:
+    """Build the knowledge graph from HDL sources under SOURCE."""
+    report = run_build(source, db_path=db_path, exclude=excludes, max_file_size_kb=max_file_size)
+    if report.parsed_files == 0:
+        raise click.ClickException(f"no parseable HDL files found under {report.root}")
+    click.echo(f"built {report.db_path}")
+    click.echo(f"  files parsed:   {report.parsed_files}")
+    for reason, count in sorted(report.skipped.items()):
+        click.echo(f"  skipped ({reason}): {count}")
+    if report.error_files:
+        click.echo(f"  parse errors:   {report.parse_error_count} in {report.error_files} file(s)")
+    click.echo(f"  nodes: {report.node_count}  edges: {report.edge_count}")
+    if report.unresolved_count:
+        click.echo(f"  unresolved: {report.unresolved_count}")
 
 
 @main.command()
-def status() -> None:
-    """Show graph statistics for the current build. [milestone M1]"""
-    click.echo("hdl-kgraph status: not implemented yet (milestone M1)", err=True)
-    sys.exit(1)
+@_db_option
+def status(db_path: Path | None) -> None:
+    """Show graph statistics for the current build."""
+    graph, files, meta = _load(db_path)
+    click.echo(f"root:     {meta.get('root', '?')}")
+    click.echo(f"built at: {meta.get('built_at', '?')} (hdl-kgraph {meta.get('tool_version')})")
+
+    parsed = [f for f in files if f.skipped_reason is None]
+    skipped = Counter(f.skipped_reason for f in files if f.skipped_reason is not None)
+    error_files = [f for f in parsed if f.parse_error_count]
+    click.echo(f"files:    {len(parsed)} parsed")
+    for reason, count in sorted(skipped.items()):
+        click.echo(f"          {count} skipped ({reason})")
+    total_errors = sum(f.parse_error_count for f in error_files)
+    if error_files:
+        click.echo(f"          {total_errors} parse error(s) in {len(error_files)} file(s)")
+
+    node_kinds = Counter(data["kind"].value for _, data in graph.nodes(data=True))
+    edge_kinds = Counter(data["kind"].value for _, _, data in graph.edges(data=True))
+    click.echo(f"nodes:    {graph.number_of_nodes()}")
+    for kind, count in node_kinds.most_common():
+        click.echo(f"          {count:6} {kind}")
+    click.echo(f"edges:    {graph.number_of_edges()}")
+    for kind, count in edge_kinds.most_common():
+        click.echo(f"          {count:6} {kind}")
+    stubs = analysis.unresolved_stubs(graph)
+    if stubs:
+        click.echo(f"unresolved: {len(stubs)}")
+
+
+@main.group()
+def query() -> None:
+    """Query the knowledge graph."""
+
+
+@query.command("instances-of")
+@click.argument("name")
+@_db_option
+def instances_of(name: str, db_path: Path | None) -> None:
+    """List all instantiation sites of design units named NAME."""
+    graph, _, _ = _load(db_path)
+    records = analysis.instances_of(graph, name)
+    if not records:
+        click.echo(f"no instances of {name!r} found", err=True)
+        sys.exit(1)
+    for rec in records:
+        marker = " [?]" if rec["target_unresolved"] else ""
+        click.echo(
+            f"{rec['qualified_name']}  {rec['file']}:{rec['line']}"
+            f"  confidence={rec['confidence']:.1f}{marker}"
+        )
+
+
+@query.command("modules")
+@_db_option
+def modules(db_path: Path | None) -> None:
+    """List all modules with their instantiation counts."""
+    graph, _, _ = _load(db_path)
+    rows = []
+    for _node_id, data in sorted(graph.nodes(data=True), key=lambda kv: kv[1]["name"]):
+        if data["kind"] is not NodeKind.MODULE or data["attrs"].get("unresolved"):
+            continue
+        count = len(analysis.instances_of(graph, data["name"]))
+        rows.append((data["name"], data["file"], data["line_span"][0], count))
+    for name, file, line, count in rows:
+        click.echo(f"{name:30} {file}:{line}  instances={count}")
+
+
+@query.command("unresolved")
+@_db_option
+def unresolved(db_path: Path | None) -> None:
+    """List unresolved stub nodes and who references them."""
+    graph, _, _ = _load(db_path)
+    stubs = analysis.unresolved_stubs(graph)
+    if not stubs:
+        click.echo("no unresolved references")
+        return
+    for stub in stubs:
+        click.echo(f"{stub['kind'].value}:{stub['name']}")
+        for referrer in stub["referrers"]:
+            click.echo(f"    <- {referrer}")
+
+
+@main.command()
+@click.argument("top", required=False)
+@click.option("--depth", type=int, default=64, show_default=True, help="Maximum tree depth.")
+@_db_option
+def tree(top: str | None, depth: int, db_path: Path | None) -> None:
+    """Print the design hierarchy from TOP (default: every top module)."""
+    graph, _, _ = _load(db_path)
+    if top is not None:
+        roots = [
+            node_id
+            for node_id, data in graph.nodes(data=True)
+            if data["kind"] is NodeKind.MODULE
+            and data["name"] == top
+            and not data["attrs"].get("unresolved")
+        ]
+        if not roots:
+            raise click.ClickException(f"module {top!r} not found in the graph")
+    else:
+        roots = analysis.find_top_modules(graph)
+        if not roots:
+            raise click.ClickException("no top modules found")
+
+    for root in roots:
+        _print_tree(analysis.hierarchy_tree(graph, root, max_depth=depth), prefix="", is_last=True)
+
+
+def _print_tree(node: analysis.HierarchyNode, prefix: str, is_last: bool) -> None:
+    if node.instance_name is None:
+        label = node.module_name
+    else:
+        connector = "`-- " if is_last else "|-- "
+        label = f"{prefix}{connector}{node.instance_name}: {node.module_name}"
+    if node.unresolved:
+        label += " [?]"
+    elif node.confidence < 0.8:
+        label += f" [~{node.confidence:.1f}]"
+    if node.truncated:
+        label += " (...)"
+    click.echo(label)
+    child_prefix = "" if node.instance_name is None else prefix + ("    " if is_last else "|   ")
+    for i, child in enumerate(node.children):
+        _print_tree(child, child_prefix, i == len(node.children) - 1)

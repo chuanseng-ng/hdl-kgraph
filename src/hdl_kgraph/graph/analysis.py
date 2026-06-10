@@ -19,7 +19,9 @@ def _is_stub(g: nx.MultiDiGraph, node_id: str) -> bool:
     return bool(g.nodes[node_id]["attrs"].get("unresolved"))
 
 
-def _edges_of_kind(g: nx.MultiDiGraph, node_id: str, kind: EdgeKind, reverse: bool = False):
+def _edges_of_kind(
+    g: nx.MultiDiGraph, node_id: str, kind: EdgeKind, reverse: bool = False
+) -> list[tuple[str, str, dict[str, Any]]]:
     edges = g.in_edges(node_id, data=True) if reverse else g.out_edges(node_id, data=True)
     return [(u, v, d) for u, v, d in edges if d["kind"] is kind]
 
@@ -45,7 +47,7 @@ class HierarchyNode:
     instance_name: str | None  # None for the root
     confidence: float = 1.0
     unresolved: bool = False
-    children: list["HierarchyNode"] = field(default_factory=list)
+    children: list[HierarchyNode] = field(default_factory=list)
     truncated: bool = False  # depth limit or instantiation cycle reached
 
 
@@ -53,8 +55,9 @@ def hierarchy_tree(g: nx.MultiDiGraph, top_id: str, max_depth: int = 64) -> Hier
     """Design hierarchy from *top_id* via DECLARES(module->instance) +
     INSTANTIATES(instance->module), with a cycle/repeat guard."""
 
-    def expand(module_id: str, instance_name: str | None, conf: float, seen: frozenset[str],
-               depth: int) -> HierarchyNode:
+    def expand(
+        module_id: str, instance_name: str | None, conf: float, seen: frozenset[str], depth: int
+    ) -> HierarchyNode:
         data = g.nodes[module_id]
         node = HierarchyNode(
             module_id=module_id,
@@ -66,7 +69,7 @@ def hierarchy_tree(g: nx.MultiDiGraph, top_id: str, max_depth: int = 64) -> Hier
         if depth >= max_depth or module_id in seen:
             node.truncated = module_id in seen
             return node
-        for _, inst_id, decl in _edges_of_kind(g, module_id, EdgeKind.DECLARES):
+        for _, inst_id, _decl in _edges_of_kind(g, module_id, EdgeKind.DECLARES):
             if g.nodes[inst_id]["kind"] is not NodeKind.INSTANCE:
                 continue
             for _, child_id, inst_edge in _edges_of_kind(g, inst_id, EdgeKind.INSTANTIATES):
@@ -123,8 +126,9 @@ def unresolved_stubs(g: nx.MultiDiGraph) -> list[dict[str, Any]]:
     for node_id, data in g.nodes(data=True):
         if not data["attrs"].get("unresolved"):
             continue
-        referrers = sorted({u for u, _, d in g.in_edges(node_id, data=True)
-                            if d["kind"] is not EdgeKind.DECLARES})
+        referrers = sorted(
+            {u for u, _, d in g.in_edges(node_id, data=True) if d["kind"] is not EdgeKind.DECLARES}
+        )
         results.append(
             {
                 "id": node_id,

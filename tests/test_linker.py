@@ -52,9 +52,7 @@ def test_same_file_instantiation_is_1_0(graph: nx.MultiDiGraph) -> None:
 def test_ambiguous_instantiation_emits_an_edge_per_candidate(graph: nx.MultiDiGraph) -> None:
     src = "uses_dup.sv::instance:uses_dup.u_leaf"
     edges = [
-        (v, d)
-        for _, v, d in graph.out_edges(src, data=True)
-        if d["kind"] is EdgeKind.INSTANTIATES
+        (v, d) for _, v, d in graph.out_edges(src, data=True) if d["kind"] is EdgeKind.INSTANTIATES
     ]
     assert {v for v, _ in edges} == {
         "dup_leaf_a.sv::module:dup_leaf",
@@ -108,12 +106,8 @@ def test_named_parameter_override_resolves(graph: nx.MultiDiGraph) -> None:
 
 def test_wildcard_connects_every_port(graph: nx.MultiDiGraph) -> None:
     src = "wildcard_conn.sv::instance:wildcard_conn.u_leaf"
-    dsts = {
-        v for _, v, d in graph.out_edges(src, data=True) if d["kind"] is EdgeKind.CONNECTS
-    }
-    assert dsts == {
-        f"wildcard_conn.sv::port:wildcard_leaf.{p}" for p in ("clk", "rst_n", "ready")
-    }
+    dsts = {v for _, v, d in graph.out_edges(src, data=True) if d["kind"] is EdgeKind.CONNECTS}
+    assert dsts == {f"wildcard_conn.sv::port:wildcard_leaf.{p}" for p in ("clk", "rst_n", "ready")}
 
 
 def test_connection_to_unresolved_target_creates_stub_ports(graph: nx.MultiDiGraph) -> None:

@@ -141,8 +141,13 @@ class SqliteStore:
             conn.executemany(
                 "INSERT INTO edges VALUES (?, ?, ?, ?, ?)",
                 [
-                    (src, dst, data["kind"].value, data["confidence"],
-                     json.dumps(data["attrs"], sort_keys=True, default=list))
+                    (
+                        src,
+                        dst,
+                        data["kind"].value,
+                        data["confidence"],
+                        json.dumps(data["attrs"], sort_keys=True, default=list),
+                    )
                     for src, dst, data in graph.edges(data=True)
                 ],
             )
@@ -159,15 +164,14 @@ class SqliteStore:
                 )
             files = [
                 FileMeta(
-                    path=path,
-                    language=Language(language),
-                    content_hash=content_hash,
-                    size_bytes=size_bytes,
-                    parse_error_count=parse_error_count,
-                    skipped_reason=skipped_reason,
+                    path=row[0],
+                    language=Language(row[1]),
+                    content_hash=row[2],
+                    size_bytes=row[3],
+                    parse_error_count=row[4],
+                    skipped_reason=row[5],
                 )
-                for path, language, content_hash, size_bytes, parse_error_count, skipped_reason
-                in conn.execute("SELECT * FROM files")
+                for row in conn.execute("SELECT * FROM files")
             ]
             graph = nx.MultiDiGraph()
             for row in conn.execute("SELECT * FROM nodes"):

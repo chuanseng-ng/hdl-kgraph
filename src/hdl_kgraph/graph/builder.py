@@ -166,9 +166,7 @@ class _Linker:
             for target in targets:
                 self._emit(ref, target, confidence)
         else:  # CONNECTS / PARAMETERIZES
-            child_kind = (
-                NodeKind.PORT if ref.edge_kind is EdgeKind.CONNECTS else NodeKind.PARAMETER
-            )
+            child_kind = NodeKind.PORT if ref.edge_kind is EdgeKind.CONNECTS else NodeKind.PARAMETER
             for target in targets:
                 self._resolve_binding(ref, target, confidence, child_kind)
 

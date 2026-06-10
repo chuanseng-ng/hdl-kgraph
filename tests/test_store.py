@@ -9,7 +9,12 @@ import pytest
 from hdl_kgraph.graph.builder import build_graph
 from hdl_kgraph.parser.systemverilog import SystemVerilogParser
 from hdl_kgraph.schema import EdgeKind, Language, NodeKind
-from hdl_kgraph.storage.sqlite_store import SCHEMA_VERSION, FileMeta, SchemaVersionError, SqliteStore
+from hdl_kgraph.storage.sqlite_store import (
+    SCHEMA_VERSION,
+    FileMeta,
+    SchemaVersionError,
+    SqliteStore,
+)
 
 
 def _normalize(attrs: dict) -> str:
