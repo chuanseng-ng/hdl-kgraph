@@ -38,11 +38,14 @@ class Language(enum.Enum):
     VERILOG = "verilog"
     SYSTEMVERILOG = "systemverilog"
     VHDL = "vhdl"
-    # Future milestones (see ROADMAP.md M8/M9).
+    # Future milestones (see ROADMAP.md M8/M9/M10).
     C = "c"
     CPP = "cpp"
     PYTHON = "python"
     FIRRTL = "firrtl"
+    PERL = "perl"
+    TCL = "tcl"  # also SDC/XDC/UPF files (Tcl subsets); see FILE attrs for the flavor
+    SLN = "sln"  # Cadence Perspec System Level Notation (portable stimulus)
     UNKNOWN = "unknown"
 
 
@@ -103,6 +106,13 @@ class NodeKind(enum.Enum):
     MACRO = "macro"  # `define
     INCLUDE_FILE = "include_file"
 
+    # Constraints / scenarios (M10)
+    CLOCK = "clock"  # SDC create_clock / create_generated_clock (may be virtual)
+    TIMING_CONSTRAINT = "timing_constraint"  # false/multicycle path, delays, clock groups
+    POWER_DOMAIN = "power_domain"  # UPF create_power_domain (strategies in attrs)
+    SCENARIO = "scenario"  # SLN/PSS scenario
+    ACTION = "action"  # SLN/PSS action (resources in attrs)
+
 
 class EdgeKind(enum.Enum):
     """Kinds of relationships between nodes."""
@@ -112,7 +122,7 @@ class EdgeKind(enum.Enum):
     CONNECTS = "connects"  # instance -> port binding (named/positional/wildcard)
     PARAMETERIZES = "parameterizes"  # instance -> parameter override
     IMPORTS = "imports"  # scope -> SV package (wildcard vs explicit in attrs)
-    INCLUDES = "includes"  # file -> file (`include)
+    INCLUDES = "includes"  # file -> file (`include / Tcl source)
     DEFINES_MACRO = "defines_macro"
     USES_MACRO = "uses_macro"
     EXTENDS = "extends"  # SV class inheritance
@@ -125,9 +135,11 @@ class EdgeKind(enum.Enum):
     RESETS = "resets"
     ASSERTS_ON = "asserts_on"
     COVERS = "covers"
-    TEST_COVERS = "test_covers"  # testbench/UVM test -> DUT module
+    TEST_COVERS = "test_covers"  # testbench/UVM test/SLN scenario -> DUT module
     FOREIGN_BINDS = "foreign_binds"  # SV DPI-C <-> C function (M8)
-    GENERATED_FROM = "generated_from"  # generated Verilog -> Chisel/etc. source (M9)
+    GENERATED_FROM = "generated_from"  # generated HDL -> generator (M9 Chisel/etc., M10 Perl)
+    CONSTRAINS = "constrains"  # timing constraint/clock/power domain -> design object (M10)
+    REFERENCES_FILE = "references_file"  # script -> design file (M10; attrs: read/write/compile)
 
 
 @dataclass

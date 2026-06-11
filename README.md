@@ -78,6 +78,7 @@ matching. The full schema is documented in [ROADMAP.md](ROADMAP.md).
 | M7 (v0.7) | Semantic enrichment (pyslang, GHDL) |
 | M8 (v1.0) | C/C++/Python boundary (DPI-C, cocotb), stable API |
 | M9 (v1.x) | Chisel/FIRRTL, Amaranth, SpinalHDL |
+| M10 (v1.x) | Tcl/SDC/UPF constraints, Perl scripting, SLN portable stimulus |
 
 Details and acceptance criteria: [ROADMAP.md](ROADMAP.md).
 

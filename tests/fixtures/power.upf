@@ -1,0 +1,11 @@
+# M10 fixture: UPF power intent for the top.v / simple_counter.sv pair.
+create_supply_net VDD
+create_supply_net VSS
+create_supply_set ss_main -function {power VDD} -function {ground VSS}
+
+create_power_domain PD_TOP -elements {.}
+create_power_domain PD_COUNTER -elements {u_counter} -supply {primary ss_main}
+
+set_isolation iso_counter -domain PD_COUNTER \
+    -applies_to outputs -isolation_signal iso_en -clamp_value 0
+set_retention ret_counter -domain PD_COUNTER -retention_supply_set ss_main
