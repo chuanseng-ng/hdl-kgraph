@@ -1,8 +1,9 @@
 """Analyses over the knowledge graph.
 
 M1 ships the structural queries behind the ``tree`` and ``query`` CLI
-commands. Later milestones add impact radius (M4), clock-domain / CDC and
-lint-flavored reports, graph metrics, and UVM topology (M5).
+commands; M4 adds the impact radius behind ``impact``. Later milestones add
+clock-domain / CDC and lint-flavored reports, graph metrics, and UVM
+topology (M5).
 """
 
 from __future__ import annotations
@@ -165,6 +166,132 @@ def instances_of(g: nx.MultiDiGraph, name: str) -> list[dict[str, Any]]:
                 }
             )
     return sorted(results, key=lambda r: (r["file"], r["line"]))
+
+
+#: Kinds reported as "affected design units" by the impact radius.
+IMPACT_UNIT_KINDS = frozenset(
+    {
+        NodeKind.MODULE,
+        NodeKind.INTERFACE,
+        NodeKind.PROGRAM,
+        NodeKind.PRIMITIVE,
+        NodeKind.PACKAGE,
+        NodeKind.CHECKER,
+        NodeKind.CLASS,
+        NodeKind.ENTITY,
+        NodeKind.ARCHITECTURE,
+        NodeKind.VHDL_PACKAGE,
+        NodeKind.PACKAGE_BODY,
+        NodeKind.CONFIGURATION,
+    }
+)
+
+
+@dataclass
+class ImpactRecord:
+    """One node transitively affected by a change (``impact`` command)."""
+
+    node_id: str
+    kind: NodeKind
+    name: str
+    file: str
+    line: int
+    depth: int  # BFS distance from the seed(s)
+    via: EdgeKind  # the edge kind that pulled this node in
+
+
+def _enclosing_unit(g: nx.MultiDiGraph, node_id: str) -> str | None:
+    """Climb reverse DECLARES from *node_id* to the unit that contains it."""
+    seen: set[str] = set()
+    current: str | None = node_id
+    while current is not None and current not in seen:
+        seen.add(current)
+        if g.nodes[current]["kind"] in IMPACT_UNIT_KINDS:
+            return current
+        parents = [
+            u for u, _, d in g.in_edges(current, data=True) if d["kind"] is EdgeKind.DECLARES
+        ]
+        current = parents[0] if parents else None
+    return None
+
+
+def _impact_dependents(g: nx.MultiDiGraph, node_id: str) -> list[tuple[str | None, EdgeKind]]:
+    """Nodes that depend on *node_id* — one BFS step of the impact radius.
+
+    Design units propagate through reverse ``INSTANTIATES`` (to the
+    instantiating unit), ``IMPORTS``/``USES_PACKAGE`` (to the importing
+    scope's unit), ``EXTENDS`` (to subclasses), ``BINDS`` (to the binding
+    configuration), and ``IMPLEMENTS`` both ways (an entity change affects
+    its architectures; an architecture change affects its entity, and from
+    there the entity's instantiators). FILE nodes propagate through reverse
+    ``INCLUDES``, macro definitions to their users (``DEFINES_MACRO`` →
+    reverse ``USES_MACRO``), and to the units they declare.
+    """
+    dependents: list[tuple[str | None, EdgeKind]] = []
+    kind = g.nodes[node_id]["kind"]
+    if kind is NodeKind.FILE:
+        for src, _, data in g.in_edges(node_id, data=True):
+            if data["kind"] is EdgeKind.INCLUDES:
+                dependents.append((src, EdgeKind.INCLUDES))
+        for _, dst, data in g.out_edges(node_id, data=True):
+            if data["kind"] is EdgeKind.DEFINES_MACRO:
+                for user, _, use in g.in_edges(dst, data=True):
+                    if use["kind"] is EdgeKind.USES_MACRO:
+                        dependents.append((user, EdgeKind.USES_MACRO))
+            elif data["kind"] is EdgeKind.DECLARES and g.nodes[dst]["kind"] in IMPACT_UNIT_KINDS:
+                dependents.append((dst, EdgeKind.DECLARES))
+        return dependents
+
+    for src, _, data in g.in_edges(node_id, data=True):
+        edge_kind = data["kind"]
+        if edge_kind is EdgeKind.INSTANTIATES:
+            dependents.append((_enclosing_unit(g, src), edge_kind))  # src is the INSTANCE
+        elif edge_kind in (EdgeKind.IMPORTS, EdgeKind.USES_PACKAGE, EdgeKind.BINDS):
+            dependents.append((_enclosing_unit(g, src), edge_kind))
+        elif edge_kind in (EdgeKind.EXTENDS, EdgeKind.IMPLEMENTS):
+            dependents.append((src, edge_kind))
+    if kind is NodeKind.ARCHITECTURE:
+        for _, dst, data in g.out_edges(node_id, data=True):
+            if data["kind"] is EdgeKind.IMPLEMENTS:
+                dependents.append((dst, EdgeKind.IMPLEMENTS))
+    return dependents
+
+
+def impact_radius(
+    g: nx.MultiDiGraph, seed_ids: list[str], max_depth: int = 0
+) -> list[ImpactRecord]:
+    """Everything transitively affected by a change to the seed nodes.
+
+    BFS over the reverse-dependency relation of :func:`_impact_dependents`;
+    *max_depth* <= 0 means unlimited. Seeds themselves are not reported.
+    """
+    visited = set(seed_ids)
+    frontier = list(seed_ids)
+    records: list[ImpactRecord] = []
+    depth = 0
+    while frontier and (max_depth <= 0 or depth < max_depth):
+        depth += 1
+        next_frontier: list[str] = []
+        for node_id in frontier:
+            for dep, via in _impact_dependents(g, node_id):
+                if dep is None or dep in visited:
+                    continue
+                visited.add(dep)
+                data = g.nodes[dep]
+                records.append(
+                    ImpactRecord(
+                        node_id=dep,
+                        kind=data["kind"],
+                        name=data["name"],
+                        file=data["file"],
+                        line=data["line_span"][0],
+                        depth=depth,
+                        via=via,
+                    )
+                )
+                next_frontier.append(dep)
+        frontier = next_frontier
+    return sorted(records, key=lambda r: (r.depth, r.kind.value, r.name, r.node_id))
 
 
 def unresolved_stubs(g: nx.MultiDiGraph) -> list[dict[str, Any]]:

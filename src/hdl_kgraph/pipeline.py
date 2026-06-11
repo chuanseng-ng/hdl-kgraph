@@ -1,8 +1,8 @@
 """Build pipeline: discover -> pass 0 (preprocess) -> pass 1 (parse) -> pass 2
 (link) -> persist.
 
-Keeps the CLI thin and gives later milestones (M4 incremental rebuilds, M6
-MCP server) a reusable entry point.
+Keeps the CLI thin and gives later milestones (M6 MCP server) a reusable
+entry point.
 
 Pass 0 (M2) runs *serially in compile order* — filelist order, or sorted
 discovery order — threading one :class:`MacroTable` through all files the
@@ -15,12 +15,26 @@ via ``\\`include`` is skipped (``skipped_reason="included"``) instead of
 being parsed a second time without its including context; a header that
 appears *before* its includer in compile order still parses standalone,
 exactly like a simulator compiling it as its own unit.
+
+M4 — incremental updates: every standalone unit's pass-1 IR (plus its
+macro-event log and spliced-header list) is persisted at build time, and
+:func:`run_update` re-parses only changed/added/removed files and their
+include/macro dependents (:mod:`hdl_kgraph.incremental`). Unchanged units
+are re-linked from their stored IR, replaying their macro events into the
+shared table at their position in compile order. Each unit gets its own
+:class:`PreprocEmitter`, so stored IRs are self-contained — the linker
+dedupes the resulting cross-IR repeats by first occurrence. A change to the
+effective build inputs (defines, incdirs, filelist sets, library map — the
+``options_hash``) falls back to a full rebuild, which also covers "a changed
+``.f`` define or incdir dirties all files in that filelist".
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -33,6 +47,12 @@ from hdl_kgraph.discovery import (
 )
 from hdl_kgraph.graph.builder import build_graph
 from hdl_kgraph.ids import file_node_id, library_node_id
+from hdl_kgraph.incremental import (
+    ChangeSet,
+    diff_hashes,
+    dirty_closure,
+    newly_resolvable_includes,
+)
 from hdl_kgraph.parser.base import FileIR
 from hdl_kgraph.parser.filelist import (
     Filelist,
@@ -47,7 +67,13 @@ from hdl_kgraph.parser.preprocessor import MacroTable, PreprocEmitter, Preproces
 from hdl_kgraph.parser.systemverilog import SystemVerilogParser
 from hdl_kgraph.parser.vhdl import DEFAULT_LIBRARY, VhdlParser
 from hdl_kgraph.schema import Edge, EdgeKind, Language, Node, NodeKind
-from hdl_kgraph.storage.sqlite_store import FileMeta, SqliteStore
+from hdl_kgraph.storage import ir_codec
+from hdl_kgraph.storage.sqlite_store import (
+    FileMeta,
+    SchemaVersionError,
+    SqliteStore,
+    StoredUnit,
+)
 
 DB_DIRNAME = ".hdl-kgraph"
 DB_FILENAME = "graph.db"
@@ -59,7 +85,8 @@ class BuildReport:
 
     root: Path
     db_path: Path
-    parsed_files: int = 0
+    parsed_files: int = 0  # units contributing an IR (freshly parsed + reused)
+    reused_files: int = 0  # units re-linked from their stored IR (update only)
     vhdl_files: int = 0
     error_files: int = 0
     parse_error_count: int = 0
@@ -76,6 +103,20 @@ class BuildReport:
     warnings: list[str] = field(default_factory=list)  # config + filelist warnings
 
 
+@dataclass
+class UpdateReport:
+    """Summary of one ``update`` run."""
+
+    root: Path
+    db_path: Path
+    up_to_date: bool = False
+    full_rebuild_reason: str | None = None  # incremental path not taken
+    reparsed: dict[str, str] = field(default_factory=dict)  # relpath -> why
+    removed: list[str] = field(default_factory=list)
+    build: BuildReport | None = None  # None only when up_to_date
+    elapsed_s: float = 0.0
+
+
 def default_db_path(root: Path) -> Path:
     return root / DB_DIRNAME / DB_FILENAME
 
@@ -89,12 +130,85 @@ def find_db(start: Path) -> Path | None:
     return None
 
 
+@dataclass
+class _Inputs:
+    """Filelist/define/incdir inputs resolved once per run."""
+
+    filelists: list[Filelist] = field(default_factory=list)
+    defines: dict[str, str | None] = field(default_factory=dict)
+    incdirs: list[Path] = field(default_factory=list)
+    list_files: list[Path] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    filelists_read: int = 0
+
+
+def _resolve_inputs(options: BuildOptions) -> _Inputs:
+    inputs = _Inputs(incdirs=list(options.incdirs))
+    inputs.filelists = [parse_filelist(path) for path in options.filelists]
+    for fl in inputs.filelists:
+        inputs.defines.update(flattened_defines(fl))
+        inputs.incdirs.extend(flattened_incdirs(fl))
+        inputs.list_files.extend(flattened_files(fl))
+        inputs.warnings.extend(flattened_warnings(fl))
+    inputs.defines.update(options.defines)  # config/CLI defines override filelist ones
+    seen: set[Path] = set()
+    inputs.filelists_read = sum(len(_walk_filelists(fl, seen)) for fl in inputs.filelists)
+    return inputs
+
+
+def _discover(
+    root: Path, base: Path, options: BuildOptions, inputs: _Inputs, max_kb: int
+) -> list[DiscoveredFile]:
+    if inputs.filelists or options.sources:
+        paths = list(inputs.list_files)
+        for pattern in options.sources:
+            paths.extend(sorted(p for p in base.glob(pattern) if p.is_file()))
+        return discover_from_paths(paths, base, exclude=options.exclude, max_file_size_kb=max_kb)
+    return discover(root, exclude=options.exclude, max_file_size_kb=max_kb)
+
+
+def options_hash(base: Path, options: BuildOptions, inputs: _Inputs) -> str:
+    """Fingerprint of the effective build inputs.
+
+    A mismatch invalidates incremental updates: defines and incdirs feed the
+    preprocessor globally (filelist ``+define+``/``+incdir+`` included), and
+    sources/exclude/size/library settings change the file set or routing.
+    Pure filelist *membership* changes are not part of the hash — they show
+    up as added/removed files in the ordinary hash diff.
+    """
+
+    def rel(path: Path) -> str:
+        return Path(os.path.relpath(Path(path).resolve(), base)).as_posix()
+
+    payload = {
+        "defines": sorted((k, v) for k, v in inputs.defines.items()),
+        "incdirs": [rel(d) for d in inputs.incdirs],
+        "sources": sorted(options.sources),
+        "exclude": sorted(options.exclude),
+        "max_file_size_kb": options.max_file_size_kb,
+        "vhdl_libraries": sorted((name, rel(p)) for name, p in options.vhdl_libraries.items()),
+        "filelists": [rel(p) for p in options.filelists],
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
 def run_build(
     root: Path,
     db_path: Path | None = None,
     options: BuildOptions | None = None,
 ) -> BuildReport:
-    options = options if options is not None else BuildOptions()
+    return _execute(root, db_path, options if options is not None else BuildOptions())
+
+
+def _execute(
+    root: Path,
+    db_path: Path | None,
+    options: BuildOptions,
+    inputs: _Inputs | None = None,
+    reuse: dict[str, StoredUnit] | None = None,
+    discovered: list[DiscoveredFile] | None = None,
+) -> BuildReport:
+    """One pipeline run; units named in *reuse* re-link from their stored IR."""
     root = root.resolve()
     base = root.parent if root.is_file() else root
     db_path = db_path if db_path is not None else default_db_path(base)
@@ -105,44 +219,30 @@ def run_build(
         if options.max_file_size_kb is not None
         else DEFAULT_MAX_FILE_SIZE_KB
     )
+    reuse = reuse or {}
 
     # -- inputs: filelists, defines, include dirs -----------------------------
-    filelists = [parse_filelist(path) for path in options.filelists]
-    defines: dict[str, str | None] = {}
-    incdirs: list[Path] = list(options.incdirs)
-    list_files: list[Path] = []
-    for fl in filelists:
-        defines.update(flattened_defines(fl))
-        incdirs.extend(flattened_incdirs(fl))
-        list_files.extend(flattened_files(fl))
-        report.warnings.extend(flattened_warnings(fl))
-    defines.update(options.defines)  # config/CLI defines override filelist ones
-    seen_filelists: set[Path] = set()
-    report.filelists_read = sum(len(_walk_filelists(fl, seen_filelists)) for fl in filelists)
+    if inputs is None:
+        inputs = _resolve_inputs(options)
+    report.warnings.extend(inputs.warnings)
+    report.filelists_read = inputs.filelists_read
 
     # -- file set --------------------------------------------------------------
-    if filelists or options.sources:
-        paths = list(list_files)
-        for pattern in options.sources:
-            paths.extend(sorted(p for p in base.glob(pattern) if p.is_file()))
-        discovered: list[DiscoveredFile] = discover_from_paths(
-            paths, base, exclude=options.exclude, max_file_size_kb=max_kb
-        )
-    else:
-        discovered = discover(root, exclude=options.exclude, max_file_size_kb=max_kb)
+    if discovered is None:
+        discovered = _discover(root, base, options, inputs, max_kb)
 
     # -- pass 0 + pass 1, in compile order --------------------------------------
-    report.both_branches = not defines
+    report.both_branches = not inputs.defines
     preprocessor = Preprocessor(
         base=base,
-        incdirs=incdirs,
-        macros=MacroTable(defines),
+        incdirs=inputs.incdirs,
+        macros=MacroTable(inputs.defines),
         branch_mode="both" if report.both_branches else "select",
     )
     parser = SystemVerilogParser()
     vhdl_parser = VhdlParser()
-    emitter = PreprocEmitter()
     irs: list[FileIR] = []
+    units: dict[str, StoredUnit] = {}
     files_meta: list[FileMeta] = []
     macro_keys: set[tuple[str, str, int]] = set()
     processed: set[str] = set()  # units preprocessed standalone so far
@@ -165,23 +265,40 @@ def run_build(
                 )
             )
             continue
-        if found.language is Language.VHDL:
+        ir = _reuse_unit(found, reuse, preprocessor, processed, consumed)
+        if ir is not None:
+            report.reused_files += 1
+            if found.language is Language.VHDL:
+                vhdl_file_libs[found.relpath] = _library_for(found.path, options.vhdl_libraries)
+                report.vhdl_files += 1
+            units[found.relpath] = reuse[found.relpath]
+        elif found.language is Language.VHDL:
             # VHDL has no SV preprocessor pass; route by configured library.
             library = _library_for(found.path, options.vhdl_libraries)
             vhdl_file_libs[found.relpath] = library
             text = found.path.read_text(errors="replace")
             ir = vhdl_parser.parse(Path(found.relpath), text, library=library)
             report.vhdl_files += 1
+            units[found.relpath] = StoredUnit(
+                ir=ir_codec.ir_to_json(ir), macro_events="[]", included="[]"
+            )
         else:
             pp = preprocessor.preprocess(found.path)
             processed.add(found.relpath)
             consumed |= pp.included_relpaths - processed
             ir = parser.parse(Path(found.relpath), pp.text, line_map=pp.line_map)
-            emitter.emit(pp, ir)
+            # One emitter per unit keeps each stored IR self-contained; the
+            # linker dedupes repeats across units by first occurrence.
+            PreprocEmitter().emit(pp, ir)
             report.includes_resolved += sum(1 for ev in pp.includes if ev.resolved is not None)
             report.includes_unresolved += sum(1 for ev in pp.includes if ev.resolved is None)
             report.preproc_warning_count += len(pp.warnings)
             macro_keys |= {(d.file, d.name, d.line) for d in pp.macro_defs}
+            units[found.relpath] = StoredUnit(
+                ir=ir_codec.ir_to_json(ir),
+                macro_events=ir_codec.macro_events_to_json(pp.macro_events),
+                included=json.dumps(sorted(pp.included_relpaths)),
+            )
         irs.append(ir)
         report.parsed_files += 1
         if ir.parse_error_count:
@@ -207,7 +324,7 @@ def run_build(
     # FILELIST nodes/edges last, so parser-emitted FILE nodes win the
     # linker's first-occurrence dedupe over the filelist's minimal stubs.
     seen_meta: set[Path] = set()
-    for fl in filelists:
+    for fl in inputs.filelists:
         irs.extend(filelist_irs(fl, base))
         files_meta.extend(_filelist_meta(fl, base, seen_meta))
     if vhdl_file_libs:
@@ -220,8 +337,153 @@ def run_build(
         1 for _, data in graph.nodes(data=True) if data["attrs"].get("unresolved")
     )
 
-    SqliteStore(db_path).save(graph, files_meta, root=base)
+    SqliteStore(db_path).save(
+        graph,
+        files_meta,
+        root=base,
+        units=units,
+        options_hash=options_hash(base, options, inputs),
+    )
     return report
+
+
+def _reuse_unit(
+    found: DiscoveredFile,
+    reuse: dict[str, StoredUnit],
+    preprocessor: Preprocessor,
+    processed: set[str],
+    consumed: set[str],
+) -> FileIR | None:
+    """Decode *found*'s stored IR (replaying its macro events), or None.
+
+    A corrupt stored row falls back to a fresh parse rather than failing the
+    update.
+    """
+    stored = reuse.get(found.relpath)
+    if stored is None:
+        return None
+    try:
+        ir = ir_codec.ir_from_json(stored.ir)
+        events = ir_codec.macro_events_from_json(stored.macro_events)
+        included: set[str] = set(json.loads(stored.included))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if found.language is not Language.VHDL:
+        for event in events:
+            preprocessor.macros.apply(event)
+        processed.add(found.relpath)
+        consumed |= included - processed
+    return ir
+
+
+def run_update(
+    root: Path,
+    db_path: Path | None = None,
+    options: BuildOptions | None = None,
+    full: bool = False,
+) -> UpdateReport:
+    """Incrementally refresh the database after source edits.
+
+    Re-parses changed/added files plus their include/macro dependents
+    (removed files seed the closure too), re-links everything from stored
+    pass-1 IRs, and rewrites the database. Falls back to a full rebuild when
+    the database is missing/incompatible or the effective build inputs
+    changed.
+    """
+    started = time.perf_counter()
+    options = options if options is not None else BuildOptions()
+    root = root.resolve()
+    base = root.parent if root.is_file() else root
+    db_path = db_path if db_path is not None else default_db_path(base)
+    report = UpdateReport(root=root, db_path=db_path)
+    max_kb = (
+        options.max_file_size_kb
+        if options.max_file_size_kb is not None
+        else DEFAULT_MAX_FILE_SIZE_KB
+    )
+
+    def full_rebuild(reason: str) -> UpdateReport:
+        report.full_rebuild_reason = reason
+        report.build = run_build(root, db_path, options)
+        report.elapsed_s = time.perf_counter() - started
+        return report
+
+    if full:
+        return full_rebuild("forced with --full")
+    if not db_path.is_file():
+        return full_rebuild("no existing database")
+    store = SqliteStore(db_path)
+    try:
+        meta = store.load_meta()
+        stored_hashes = store.load_file_hashes()
+    except SchemaVersionError as exc:
+        return full_rebuild(str(exc))
+    if meta.get("root") != str(base):
+        return full_rebuild(f"build root changed (was {meta.get('root')})")
+
+    inputs = _resolve_inputs(options)
+    if meta.get("options_hash") != options_hash(base, options, inputs):
+        return full_rebuild("build options changed (defines/incdirs/sources/libraries)")
+
+    discovered = _discover(root, base, options, inputs, max_kb)
+    current = _current_hashes(base, inputs, discovered)
+    changes = diff_hashes(stored_hashes, current)
+    if not changes:
+        report.up_to_date = True
+        report.elapsed_s = time.perf_counter() - started
+        return report
+    stored_units = store.load_units()
+    if not stored_units:
+        return full_rebuild("no stored parse results")
+
+    dependencies = store.load_dependency_graph()
+    seeds = {path: "changed" for path in changes.changed}
+    seeds.update({path: "removed" for path in changes.removed})
+    dirty = dirty_closure(dependencies, seeds)
+    dirty.update(newly_resolvable_includes(dependencies, changes.added))
+    dirty.update({path: "added" for path in changes.added})
+    discovered_relpaths = {found.relpath for found in discovered}
+    report.reparsed = {path: why for path, why in dirty.items() if path in discovered_relpaths}
+    report.removed = changes.removed
+
+    reuse = {path: unit for path, unit in stored_units.items() if path not in dirty}
+    report.build = _execute(
+        root, db_path, options, inputs=inputs, reuse=reuse, discovered=discovered
+    )
+    report.elapsed_s = time.perf_counter() - started
+    return report
+
+
+def scan_changes(root: Path, db_path: Path, options: BuildOptions | None = None) -> ChangeSet:
+    """Hash-diff the working tree against the stored build (``detect-changes``).
+
+    Raises :class:`SchemaVersionError` for an incompatible database.
+    """
+    options = options if options is not None else BuildOptions()
+    root = root.resolve()
+    base = root.parent if root.is_file() else root
+    max_kb = (
+        options.max_file_size_kb
+        if options.max_file_size_kb is not None
+        else DEFAULT_MAX_FILE_SIZE_KB
+    )
+    _, stored_files, _ = SqliteStore(db_path).load()
+    inputs = _resolve_inputs(options)
+    discovered = _discover(root, base, options, inputs, max_kb)
+    current = _current_hashes(base, inputs, discovered)
+    return diff_hashes({f.path: f.content_hash for f in stored_files}, current)
+
+
+def _current_hashes(
+    base: Path, inputs: _Inputs, discovered: list[DiscoveredFile]
+) -> dict[str, str]:
+    """Content hashes of the present tree: sources plus filelists."""
+    current = {found.relpath: found.content_hash for found in discovered}
+    seen: set[Path] = set()
+    for fl in inputs.filelists:
+        for filelist_meta in _filelist_meta(fl, base, seen):
+            current.setdefault(filelist_meta.path, filelist_meta.content_hash)
+    return current
 
 
 def _library_for(path: Path, libraries: dict[str, Path]) -> str:

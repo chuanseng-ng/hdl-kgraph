@@ -14,6 +14,7 @@ from hdl_kgraph.storage.sqlite_store import (
     FileMeta,
     SchemaVersionError,
     SqliteStore,
+    StoredUnit,
 )
 
 
@@ -100,6 +101,36 @@ def test_schema_version_mismatch_raises(store) -> None:
         conn.execute("UPDATE meta SET value = '999' WHERE key = 'schema_version'")
     with pytest.raises(SchemaVersionError, match="999"):
         sqlite_store.load()
+
+
+def test_units_and_options_hash_round_trip(store) -> None:
+    sqlite_store, graph, files = store
+    units = {
+        "adder.v": StoredUnit(ir='{"path": "adder.v"}', macro_events="[]", included="[]"),
+        "top.v": StoredUnit(
+            ir='{"path": "top.v"}', macro_events='[{"op": "undef"}]', included='["defs.svh"]'
+        ),
+    }
+    sqlite_store.save(graph, files, root=Path("."), units=units, options_hash="abc123")
+    assert sqlite_store.load_units() == units
+    _, _, meta = sqlite_store.load()
+    assert meta["options_hash"] == "abc123"
+
+
+def test_save_without_units_clears_stale_units(store) -> None:
+    sqlite_store, graph, files = store
+    units = {"adder.v": StoredUnit(ir="{}", macro_events="[]", included="[]")}
+    sqlite_store.save(graph, files, root=Path("."), units=units)
+    sqlite_store.save(graph, files, root=Path("."))
+    assert sqlite_store.load_units() == {}
+
+
+def test_load_units_checks_schema_version(store) -> None:
+    sqlite_store, _, _ = store
+    with sqlite3.connect(sqlite_store.db_path) as conn:
+        conn.execute("UPDATE meta SET value = '1' WHERE key = 'schema_version'")
+    with pytest.raises(SchemaVersionError, match="'1'"):
+        sqlite_store.load_units()
 
 
 def test_kinds_rehydrate_as_enums(store) -> None:

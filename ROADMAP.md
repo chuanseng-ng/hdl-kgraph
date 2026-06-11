@@ -177,17 +177,24 @@ binding is honored.
 **Goal:** fast enough to live alongside an editor; answers "what does my change
 affect?"
 
-- [ ] Content-hash incremental rebuild: `update` re-parses changed/added/removed
+- [x] Content-hash incremental rebuild: `update` re-parses changed/added/removed
       files plus their preprocessor-dependent files (reverse `INCLUDES` /
       `USES_MACRO` closure; a changed `.f` define or incdir dirties all files in
-      that filelist), then re-links pass 2
-- [ ] `watch` via watchdog (debounced); `detect-changes` (vs git HEAD or last build)
-- [ ] Impact radius: `impact <file|module>` → transitively affected modules via
+      that filelist — via the build-options fingerprint, which falls back to a
+      full rebuild), then re-links pass 2 — **per-unit pass-1 IRs (plus macro
+      event logs) persist in the `file_irs` table; unchanged units re-link
+      without re-parsing**
+- [x] `watch` via watchdog (debounced); `detect-changes` (vs git HEAD or last build)
+- [x] Impact radius: `impact <file|module>` → transitively affected modules via
       `INSTANTIATES`/`IMPORTS`/`INCLUDES`/`EXTENDS` (reverse `` `include `` and
-      macro edges included — a header change dirties all users)
-- [ ] SQLite schema versioning + migration guard
-- [ ] Documented benchmark target: incremental update of 1 file in a 2k-file
-      design < 1 s
+      macro edges included — a header change dirties all users; VHDL
+      `USES_PACKAGE`/`IMPLEMENTS`/`BINDS` covered too)
+- [x] SQLite schema versioning + migration guard (schema v2; the database is a
+      derived cache, so the migration path is a rebuild — read commands refuse
+      with a clear message, `update`/`watch` fall back to a full rebuild)
+- [x] Documented benchmark target: incremental update of 1 file in a 2k-file
+      design < 1 s — **0.85 s measured; procedure and results in
+      docs/benchmarks.md (`scripts/bench_incremental.py`)**
 
 **Acceptance:** editing one file and running `update` re-parses only that file;
 `impact` correctly flags parents/importers/includers in fixtures; watch mode
