@@ -184,6 +184,14 @@ def test_lint_unknown_check_fails(project: Path) -> None:
     assert "unknown lint check" in result.output
 
 
+def test_query_uvm(project: Path) -> None:
+    result = CliRunner().invoke(main, ["query", "uvm", *db_args(project)])
+    assert result.exit_code == 0, result.output
+    assert "test:" in result.output
+    assert "verif_smoke_test" in result.output
+    assert "covers verif_dut" in result.output
+
+
 def test_metrics_lists_hubs(project: Path) -> None:
     result = CliRunner().invoke(main, ["metrics", "--top", "0", *db_args(project)])
     assert result.exit_code == 0, result.output

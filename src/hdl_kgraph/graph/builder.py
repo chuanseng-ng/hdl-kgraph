@@ -73,6 +73,7 @@ from typing import Any
 
 import networkx as nx
 
+from hdl_kgraph.graph.uvm import derive_test_covers
 from hdl_kgraph.ids import file_node_id, stub_node_id
 from hdl_kgraph.parser.base import FileIR, UnresolvedRef
 from hdl_kgraph.schema import (
@@ -704,4 +705,6 @@ def build_graph(file_irs: list[FileIR]) -> nx.MultiDiGraph:
     """Link per-file IRs into the global knowledge graph (pass 2)."""
     linker = _Linker(file_irs)
     linker.link(file_irs)
+    for edge in derive_test_covers(linker.graph):
+        _add_edge(linker.graph, edge)
     return linker.graph

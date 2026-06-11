@@ -35,7 +35,7 @@ from hdl_kgraph.config import (
     resolve_build_options,
 )
 from hdl_kgraph.discovery import DEFAULT_MAX_FILE_SIZE_KB, SUFFIXES
-from hdl_kgraph.graph import analysis, clocks, lint, metrics
+from hdl_kgraph.graph import analysis, clocks, lint, metrics, uvm
 from hdl_kgraph.incremental import detect_git_changes, dirty_closure
 from hdl_kgraph.pipeline import (
     BuildReport,
@@ -803,6 +803,49 @@ def drivers_cmd(signal: str, db_path: Path | None, as_json: bool, readers: bool)
             f"{rec['signal']:30} <- {rec['site_kind']} {rec['site']}"
             f"  {rec['file']}:{rec['line']}  confidence={rec['confidence']:.1f}"
         )
+
+
+@query.command("uvm")
+@_db_option
+@_json_option
+def uvm_cmd(db_path: Path | None, as_json: bool) -> None:
+    """Report UVM topology: components by role, plus TEST_COVERS links.
+
+    Classes are classified by walking their EXTENDS chain to the first
+    uvm_* base (usually an unresolved stub — UVM itself is rarely parsed).
+    """
+    graph, _, _ = _load(db_path)
+    components = uvm.uvm_topology(graph)
+    covers = [
+        {
+            "test_id": u,
+            "test": graph.nodes[u]["name"],
+            "dut_id": v,
+            "dut": graph.nodes[v]["name"],
+            "confidence": d["confidence"],
+        }
+        for u, v, d in graph.edges(data=True)
+        if d["kind"] is EdgeKind.TEST_COVERS
+    ]
+    covers.sort(key=lambda c: (str(c["test"]), str(c["dut"])))
+    if as_json:
+        _emit_json({"components": components, "test_covers": covers})
+        return
+    if not components and not covers:
+        click.echo("no UVM components or testbench tops found")
+        return
+    for role in uvm.ROLE_ORDER:
+        members = [c for c in components if c.role == role]
+        if not members:
+            continue
+        click.echo(f"{role}:")
+        for c in members:
+            chain = " -> ".join(c.base_chain)
+            click.echo(f"    {c.name:28} {c.file}:{c.line}  ({chain})")
+    if covers:
+        click.echo("test coverage (name-pattern heuristic, 0.4):")
+        for cover in covers:
+            click.echo(f"    {cover['test']} covers {cover['dut']}")
 
 
 @query.command("unresolved")
