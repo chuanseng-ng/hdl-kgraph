@@ -90,28 +90,30 @@ files, then re-run the fast global pass 2.
 **Goal:** `pip install -e . && hdl-kgraph build ./rtl` produces a queryable design
 hierarchy graph for a Verilog/SystemVerilog codebase.
 
-- [ ] Schema module: `NodeKind`/`EdgeKind` enums, `Node`/`Edge` dataclasses,
+- [x] Schema module: `NodeKind`/`EdgeKind` enums, `Node`/`Edge` dataclasses,
       confidence convention documented in docstrings
-- [ ] Grammar bake-off: evaluate `gmlarumbe/tree-sitter-systemverilog` vs
+- [x] Grammar bake-off: evaluate `gmlarumbe/tree-sitter-systemverilog` vs
       `tree-sitter/tree-sitter-verilog` against the fixture corpus; pick one grammar
-      for both `.v` and `.sv` (see Risks)
-- [ ] tree-sitter SV parser extracting: `MODULE`, `INTERFACE`, `PACKAGE`, `PROGRAM`,
+      for both `.v` and `.sv` (see Risks) — **winner: `tree-sitter-systemverilog`;
+      results in docs/grammar-bakeoff.md**
+- [x] tree-sitter SV parser extracting: `MODULE`, `INTERFACE`, `PACKAGE`, `PROGRAM`,
       `FUNCTION`/`TASK`, `PORT`, `PARAMETER`, `INSTANCE`, `TYPEDEF`/`STRUCT`/`ENUM`,
       `CLASS` (declaration + `EXTENDS` only)
-- [ ] Edges: `DECLARES`, `INSTANTIATES`, `CONNECTS` (named + positional),
+- [x] Edges: `DECLARES`, `INSTANTIATES`, `CONNECTS` (named + positional),
       `PARAMETERIZES`, `IMPORTS`, `EXTENDS`
-- [ ] Pass-2 linker with confidence scoring and unresolved stub nodes
-- [ ] NetworkX in-memory graph + SQLite persistence (`nodes`, `edges`, `files`
+- [x] Pass-2 linker with confidence scoring and unresolved stub nodes
+- [x] NetworkX in-memory graph + SQLite persistence (`nodes`, `edges`, `files`
       tables; content-hash column added now for M4)
-- [ ] CLI: `build`, `status`, `query` (e.g. `hdl-kgraph query instances-of fifo`),
+- [x] CLI: `build`, `status`, `query` (e.g. `hdl-kgraph query instances-of fifo`),
       `tree` (print design hierarchy from a top module)
-- [ ] Error tolerance: files with tree-sitter ERROR nodes still yield partial
+- [x] Error tolerance: files with tree-sitter ERROR nodes still yield partial
       results; parse-error count surfaces in `status`
-- [ ] File-size guards and exclude-glob config (huge generated netlists,
+- [x] File-size guards and exclude-glob config (huge generated netlists,
       `` `pragma protect `` encrypted IP)
-- [ ] Test corpus: 10–15 small fixtures (plain Verilog, SV interfaces, a class,
+- [x] Test corpus: 10–15 small fixtures (plain Verilog, SV interfaces, a class,
       an unresolved instance)
-- [ ] Claim the `hdl-kgraph` name on PyPI with a 0.1 release
+- [ ] Claim the `hdl-kgraph` name on PyPI with a 0.1 release (release workflow
+      and docs/releasing.md are in; publishing is a maintainer action)
 
 **Acceptance:** builds a graph from a real OSS design (e.g. ibex-class repo);
 `tree` prints the correct hierarchy; ≥90% of fixture constructs extracted;

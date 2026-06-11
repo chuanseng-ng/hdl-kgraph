@@ -16,5 +16,6 @@ coverage.xml
 htmlcov/
 
 # hdl-kgraph artifacts
+.hdl-kgraph/
 *.db
 *.sqlite3
