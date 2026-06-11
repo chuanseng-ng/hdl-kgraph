@@ -133,3 +133,29 @@ def test_resolve_defaults() -> None:
     options = resolve_build_options(BuildConfig())
     assert options.filelists == []
     assert options.max_file_size_kb is None
+
+
+def test_parse_lib() -> None:
+    from hdl_kgraph.config import parse_lib
+
+    name, path = parse_lib("MyLib=./src/vhdl")
+    assert name == "mylib"  # library names are case-insensitive
+    assert path == (Path.cwd() / "src/vhdl").resolve()
+    for bad in ("noequals", "=path", "name="):
+        with pytest.raises(ConfigError, match="NAME=PATH"):
+            parse_lib(bad)
+
+
+def test_resolve_libs_cli_wins_per_name(tmp_path: Path) -> None:
+    path = write_config(
+        tmp_path,
+        """
+        [vhdl.libraries]
+        work = "src/vhdl"
+        ip = "vendor/ip"
+        """,
+    )
+    config = BuildConfig.load(path)
+    options = resolve_build_options(config, cli_libs=[f"work={tmp_path / 'other'}"])
+    assert options.vhdl_libraries["work"] == (tmp_path / "other").resolve()
+    assert options.vhdl_libraries["ip"] == tmp_path / "vendor/ip"

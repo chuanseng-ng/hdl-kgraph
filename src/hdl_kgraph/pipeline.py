@@ -274,9 +274,7 @@ def _library_ir(file_libs: dict[str, str], libraries: dict[str, Path]) -> FileIR
                 language=Language.VHDL,
             )
         )
-        ir.local_edges.append(
-            Edge(src=lib_id, dst=file_node_id(relpath), kind=EdgeKind.DECLARES)
-        )
+        ir.local_edges.append(Edge(src=lib_id, dst=file_node_id(relpath), kind=EdgeKind.DECLARES))
     return ir
 
 

@@ -130,8 +130,8 @@ class _Linker:
         self.node_obj: dict[str, Node] = {}
         # (entity, architecture | None, component) -> configuration bindings,
         # recorded while resolving BINDS refs (which run first).
-        self.bindings: defaultdict[tuple[str, str | None, str], list[dict[str, Any]]] = (
-            defaultdict(list)
+        self.bindings: defaultdict[tuple[str, str | None, str], list[dict[str, Any]]] = defaultdict(
+            list
         )
         # The same header spliced into several compilation units duplicates
         # its refs across IRs; emitted-edge identity keeps one of each.
