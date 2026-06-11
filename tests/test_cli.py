@@ -42,8 +42,8 @@ def test_help_lists_commands() -> None:
 def test_build_reports_summary(project: Path) -> None:
     result = CliRunner().invoke(main, ["build", str(project)])
     assert result.exit_code == 0
-    assert "files parsed:   25" in result.output
-    assert "vhdl files:     5" in result.output
+    assert "files parsed:   27" in result.output
+    assert "vhdl files:     6" in result.output
     assert "parse errors:" in result.output  # broken.sv
     assert "unresolved:" in result.output  # ghost_mod etc.
 
@@ -65,7 +65,7 @@ def test_failed_build_preserves_existing_db(project: Path, tmp_path: Path) -> No
 def test_status(project: Path) -> None:
     result = CliRunner().invoke(main, ["status", *db_args(project)])
     assert result.exit_code == 0, result.output
-    assert "25 parsed" in result.output
+    assert "27 parsed" in result.output
     assert "parse error(s)" in result.output
     assert "module" in result.output
     assert "instantiates" in result.output

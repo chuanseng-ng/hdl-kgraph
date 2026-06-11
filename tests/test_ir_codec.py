@@ -75,6 +75,20 @@ def test_decoded_irs_link_to_an_identical_graph(fixture_irs) -> None:
     assert got == want
 
 
+def test_dataflow_ir_round_trips_identically(fixtures_dir: Path) -> None:
+    """M5 dataflow attrs (sensitivity lists, roles) must decode *equal*, not
+    just equivalent — cached IRs and fresh parses have to link identically,
+    so the parser stores lists, never tuples."""
+    ir = SystemVerilogParser().parse(
+        Path("dataflow.sv"), (fixtures_dir / "dataflow.sv").read_text()
+    )
+    decoded = ir_from_json(ir_to_json(ir))
+    by_id = {n.id: n for n in decoded.nodes}
+    for node in ir.nodes:
+        assert by_id[node.id].attrs == node.attrs
+    assert decoded.unresolved_refs == ir.unresolved_refs
+
+
 def test_macro_event_round_trip() -> None:
     events = [
         MacroEvent(
