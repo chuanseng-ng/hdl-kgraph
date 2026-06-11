@@ -39,11 +39,17 @@ def test_help_lists_commands() -> None:
         assert command in result.output
 
 
-def test_build_reports_summary(project: Path) -> None:
+def _hdl_fixture_count(fixtures_dir: Path, *suffixes: str) -> int:
+    return sum(1 for p in fixtures_dir.iterdir() if p.is_file() and p.suffix in suffixes)
+
+
+def test_build_reports_summary(project: Path, fixtures_dir: Path) -> None:
     result = CliRunner().invoke(main, ["build", str(project)])
     assert result.exit_code == 0
-    assert "files parsed:   28" in result.output
-    assert "vhdl files:     6" in result.output
+    parsed = _hdl_fixture_count(fixtures_dir, ".sv", ".svh", ".v", ".vh", ".vhd", ".vhdl")
+    vhdl = _hdl_fixture_count(fixtures_dir, ".vhd", ".vhdl")
+    assert f"files parsed:   {parsed}" in result.output
+    assert f"vhdl files:     {vhdl}" in result.output
     assert "parse errors:" in result.output  # broken.sv
     assert "unresolved:" in result.output  # ghost_mod etc.
 
@@ -62,10 +68,11 @@ def test_failed_build_preserves_existing_db(project: Path, tmp_path: Path) -> No
     assert db.read_bytes() == before
 
 
-def test_status(project: Path) -> None:
+def test_status(project: Path, fixtures_dir: Path) -> None:
     result = CliRunner().invoke(main, ["status", *db_args(project)])
     assert result.exit_code == 0, result.output
-    assert "28 parsed" in result.output
+    parsed = _hdl_fixture_count(fixtures_dir, ".sv", ".svh", ".v", ".vh", ".vhd", ".vhdl")
+    assert f"{parsed} parsed" in result.output
     assert "parse error(s)" in result.output
     assert "module" in result.output
     assert "instantiates" in result.output
@@ -150,6 +157,31 @@ def test_query_drivers_readers(project: Path) -> None:
     )
     assert result.exit_code == 0, result.output
     assert "two_clock_top.always@28" in result.output
+
+
+def test_lint_reports_planted_findings(project: Path) -> None:
+    result = CliRunner().invoke(main, ["lint", *db_args(project)])
+    assert result.exit_code == 0, result.output
+    assert "unconnected-port" in result.output
+    assert "undriven-signal" in result.output
+    assert "redundant-override" in result.output
+
+
+def test_lint_check_filter_and_json(project: Path) -> None:
+    import json as json_mod
+
+    result = CliRunner().invoke(
+        main, ["lint", "--check", "open-port", "--json", *db_args(project)]
+    )
+    assert result.exit_code == 0, result.output
+    payload = json_mod.loads(result.output)
+    assert payload and all(item["check"] == "open-port" for item in payload)
+
+
+def test_lint_unknown_check_fails(project: Path) -> None:
+    result = CliRunner().invoke(main, ["lint", "--check", "bogus", *db_args(project)])
+    assert result.exit_code != 0
+    assert "unknown lint check" in result.output
 
 
 def test_tree_from_top(project: Path) -> None:

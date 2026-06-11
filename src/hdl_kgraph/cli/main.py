@@ -35,7 +35,7 @@ from hdl_kgraph.config import (
     resolve_build_options,
 )
 from hdl_kgraph.discovery import DEFAULT_MAX_FILE_SIZE_KB, SUFFIXES
-from hdl_kgraph.graph import analysis, clocks
+from hdl_kgraph.graph import analysis, clocks, lint
 from hdl_kgraph.incremental import detect_git_changes, dirty_closure
 from hdl_kgraph.pipeline import (
     BuildReport,
@@ -526,6 +526,55 @@ def status(db_path: Path | None) -> None:
     stubs = analysis.unresolved_stubs(graph)
     if stubs:
         click.echo(f"unresolved: {len(stubs)}")
+
+
+@main.command("lint")
+@_db_option
+@_json_option
+@click.option(
+    "--check",
+    "checks",
+    multiple=True,
+    metavar="NAME",
+    help="Run only this check (repeatable). "
+    f"Available: {', '.join(sorted(lint.CHECKS))}.",
+)
+@click.option(
+    "--top",
+    "tops",
+    multiple=True,
+    metavar="NAME",
+    help="Treat NAME as an intended top module (repeatable; exempts it from dead-module).",
+)
+def lint_cmd(
+    db_path: Path | None, as_json: bool, checks: tuple[str, ...], tops: tuple[str, ...]
+) -> None:
+    """Report graph-level lint findings (always exits 0 — a report, not a gate).
+
+    Signal-level checks skip files with parse errors and implicit-net stubs
+    so a finding is worth reading; confidences below 1.0 mark heuristics.
+    """
+    graph, files, _ = _load(db_path)
+    error_files = frozenset(f.path for f in files if f.parse_error_count)
+    try:
+        findings = lint.run_checks(
+            graph,
+            names=checks or None,
+            tops=frozenset(tops),
+            error_files=error_files,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if as_json:
+        _emit_json(findings)
+        return
+    if not findings:
+        click.echo("no findings")
+        return
+    for f in findings:
+        location = f"{f.file}:{f.line}" if f.file else "?"
+        marker = "" if f.confidence >= 0.8 else f"  [~{f.confidence:.1f}]"
+        click.echo(f"{f.check:18} {f.name:32} {location:28} {f.message}{marker}")
 
 
 @main.group()

@@ -562,12 +562,17 @@ class _Walker:
                 else:
                     expr = self._child(child, "expression")
                     port_name = self._identifier(child)
+                    if expr is not None:
+                        expr_text = self._text(expr)
+                    elif self._child(child, "(") is not None:
+                        expr_text = ""  # `.name()` — explicitly open
+                    else:
+                        expr_text = port_name  # `.name` shorthand: like-named signal
                     attrs = {
                         "port_name": port_name,
                         "position": None,
                         "wildcard": False,
-                        # `.name` shorthand connects the like-named signal.
-                        "expr_text": self._text(expr) if expr is not None else port_name,
+                        "expr_text": expr_text,
                     }
             elif child.type == "ordered_port_connection":
                 attrs = {
