@@ -191,9 +191,7 @@ class _Walker:
                 src=src,
                 dst=node.id,
                 kind=EdgeKind.DECLARES,
-                confidence=(
-                    CONFIDENCE_AMBIGUOUS if origin.ambiguous else CONFIDENCE_RESOLVED
-                ),
+                confidence=(CONFIDENCE_AMBIGUOUS if origin.ambiguous else CONFIDENCE_RESOLVED),
             )
         )
         return node
@@ -571,9 +569,7 @@ class SystemVerilogParser:
     def __init__(self) -> None:
         self._parser = TSParser(SV_LANGUAGE)
 
-    def parse(
-        self, path: Path, text: str, line_map: Sequence[LineOrigin] | None = None
-    ) -> FileIR:
+    def parse(self, path: Path, text: str, line_map: Sequence[LineOrigin] | None = None) -> FileIR:
         """Parse one file into its per-file IR.
 
         *path* should be relative to the build root; it becomes the node-id

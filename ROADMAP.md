@@ -124,17 +124,23 @@ CI green on Python 3.10–3.13.
 **Goal:** works on projects as they actually exist: `` `define ``/`` `ifdef `` soup,
 `.f` filelists, include directories.
 
-- [ ] Filelist parser: `.f`/`.vc` (`+incdir+`, `+define+`, nested `-f`, `-y`/`-v`
+- [x] Filelist parser: `.f`/`.vc` (`+incdir+`, `+define+`, nested `-f`, `-y`/`-v`
       library dirs, env-var expansion); `FILELIST` nodes; file order preserved
-- [ ] Lightweight SV preprocessor: `` `define `` (with arguments),
+      (`-y` dirs are recorded on the FILELIST node only; on-demand library
+      module lookup is M3+ territory)
+- [x] Lightweight SV preprocessor: `` `define `` (with arguments),
       `` `ifdef ``/`` `ifndef ``/`` `elsif `` branch selection from configured
       defines, `` `include `` resolution → `INCLUDES`/`DEFINES_MACRO`/`USES_MACRO`
-      edges; line map back to original source for accurate spans
-- [ ] "Both branches" mode when no define set is given (emit both sides of
-      `` `ifdef `` at confidence 0.6)
-- [ ] Config file `hdl-kgraph.toml`: source globs, filelists, defines, include
-      dirs, VHDL library map, top modules
-- [ ] CLI: `build -f tb.f`, `--define`, `--incdir`
+      edges; line map back to original source for accurate spans —
+      **`` `" `` stringification / ``` `` ``` pasting are best-effort textual,
+      and macro arguments must close on the invocation line (documented)**
+- [x] "Both branches" mode when no define set is given (emit both sides of
+      `` `ifdef ``; the branch a define-less compile would select keeps full
+      confidence, alternatives are emitted at 0.6 — this keeps `` `ifndef ``
+      include guards and default-define fallbacks at 1.0)
+- [x] Config file `hdl-kgraph.toml`: source globs, filelists, defines, include
+      dirs, VHDL library map (carried; consumed in M3), top modules
+- [x] CLI: `build -f tb.f`, `--define`, `--incdir`
 
 **Acceptance:** builds cleanly from an unmodified vendor-style `.f` file;
 macro-instantiated modules resolve after expansion; line mapping verified by tests.

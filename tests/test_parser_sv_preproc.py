@@ -75,13 +75,7 @@ def test_macro_instantiated_module_spans_invocation_line(tmp_path: Path) -> None
 
 def test_conditional_nodes_marked_and_downgraded(tmp_path: Path) -> None:
     (tmp_path / "m.sv").write_text(
-        "module top;\n"
-        "`ifdef USE_FIFO\n"
-        "fifo u_q ();\n"
-        "`else\n"
-        "stack u_q ();\n"
-        "`endif\n"
-        "endmodule\n"
+        "module top;\n`ifdef USE_FIFO\nfifo u_q ();\n`else\nstack u_q ();\n`endif\nendmodule\n"
     )
     ir, _ = parse(tmp_path, "m.sv", branch_mode="both")
 

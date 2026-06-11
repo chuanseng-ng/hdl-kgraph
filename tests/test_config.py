@@ -82,9 +82,7 @@ def test_load_wrong_types(tmp_path: Path) -> None:
 
 
 def test_load_warns_on_unknown_keys(tmp_path: Path) -> None:
-    config = BuildConfig.load(
-        write_config(tmp_path, "[build]\nbogus = 1\n\n[mystery]\nx = 2\n")
-    )
+    config = BuildConfig.load(write_config(tmp_path, "[build]\nbogus = 1\n\n[mystery]\nx = 2\n"))
     assert any("bogus" in w for w in config.warnings)
     assert any("mystery" in w for w in config.warnings)
 

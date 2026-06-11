@@ -324,7 +324,7 @@ class Preprocessor:
         event = IncludeEvent(path_text=path_text, file=relpath, line=line, resolved=None)
         self._pp.includes.append(event)
         if resolved is None:
-            self._pp.warnings.append(f"{relpath}:{line}: cannot resolve `include \"{path_text}\"")
+            self._pp.warnings.append(f'{relpath}:{line}: cannot resolve `include "{path_text}"')
             return
         header_rel = self._relpath(resolved)
         event.resolved = header_rel  # the INCLUDES edge is real even if not spliced
@@ -433,8 +433,7 @@ class Preprocessor:
                     bindings[pname] = default
                 else:
                     self._pp.warnings.append(
-                        f"{origin.file}:{origin.line}: missing argument {pname!r} "
-                        f"for `{macro.name}"
+                        f"{origin.file}:{origin.line}: missing argument {pname!r} for `{macro.name}"
                     )
                     bindings[pname] = ""
             for pname, value in bindings.items():
@@ -519,23 +518,7 @@ class PreprocEmitter:
     def emit(self, pp: PreprocessedFile, ir: FileIR) -> None:
         """Append *pp*'s MACRO/FILE/INCLUDE_FILE nodes and edges to *ir*."""
         for macro in pp.macro_defs:
-            macro_id = self._macro_id(macro)
-            if not self._add_node_once(
-                ir,
-                Node(
-                    id=macro_id,
-                    kind=NodeKind.MACRO,
-                    name=macro.name,
-                    qualified_name=macro.name,
-                    file=macro.file,
-                    line_span=(macro.line, macro.line),
-                    attrs={
-                        "body": macro.body,
-                        "arity": None if macro.params is None else len(macro.params),
-                    },
-                ),
-            ):
-                continue
+            macro_id = self._ensure_macro_node(ir, macro)
             self._file_stub(ir, macro.file)
             self._add_edge_once(
                 ir, Edge(src=file_node_id(macro.file), dst=macro_id, kind=EdgeKind.DEFINES_MACRO)
@@ -555,7 +538,9 @@ class PreprocEmitter:
                     ),
                 )
             else:
-                dst = self._macro_id(use.macro)
+                # Also materializes macros that came from +define+/--define/
+                # config rather than a `define in some source file.
+                dst = self._ensure_macro_node(ir, use.macro)
             self._file_stub(ir, use.file)
             self._add_edge_once(
                 ir,
@@ -599,11 +584,34 @@ class PreprocEmitter:
         key = (macro.file, macro.name, macro.line)
         macro_id = self._macro_ids.get(key)
         if macro_id is None:
-            macro_id = decl_node_id(macro.file, NodeKind.MACRO, macro.name)
+            if macro.file:
+                macro_id = decl_node_id(macro.file, NodeKind.MACRO, macro.name)
+            else:  # +define+/--define/config: no defining file
+                macro_id = f"macro:{macro.name}"
             if macro_id in self._used_macro_ids:  # redefinition later in the file
                 macro_id = f"{macro_id}@{macro.line}"
             self._used_macro_ids.add(macro_id)
             self._macro_ids[key] = macro_id
+        return macro_id
+
+    def _ensure_macro_node(self, ir: FileIR, macro: MacroDef) -> str:
+        macro_id = self._macro_id(macro)
+        self._add_node_once(
+            ir,
+            Node(
+                id=macro_id,
+                kind=NodeKind.MACRO,
+                name=macro.name,
+                qualified_name=macro.name,
+                file=macro.file,
+                line_span=(macro.line, macro.line),
+                attrs={
+                    "body": macro.body,
+                    "arity": None if macro.params is None else len(macro.params),
+                    **({} if macro.file else {"from_options": True}),
+                },
+            ),
+        )
         return macro_id
 
     def _aggregate_uses(self, pp: PreprocessedFile) -> list[MacroUse]:

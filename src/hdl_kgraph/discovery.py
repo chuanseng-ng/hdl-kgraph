@@ -55,9 +55,7 @@ def check_file(
 ) -> DiscoveredFile:
     """Apply the skip guards to one file (already resolved to absolute)."""
     relpath = Path(os.path.relpath(path, base)).as_posix()
-    found = DiscoveredFile(
-        path=path, relpath=relpath, language=_language_for(path), size_bytes=0
-    )
+    found = DiscoveredFile(path=path, relpath=relpath, language=_language_for(path), size_bytes=0)
     if not path.is_file():
         found.skipped_reason = "missing"
         return found

@@ -21,7 +21,10 @@ def preprocess(
     path.write_text(text)
     branch_mode = "select" if defines else "both"
     pre = Preprocessor(
-        base=tmp_path, macros=MacroTable(defines), branch_mode=branch_mode, **kw  # type: ignore[arg-type]
+        base=tmp_path,
+        macros=MacroTable(defines),
+        branch_mode=branch_mode,
+        **kw,  # type: ignore[arg-type]
     )
     return pre.preprocess(path)
 
@@ -83,8 +86,8 @@ def test_multiline_body_maps_to_invocation_line(tmp_path: Path) -> None:
 
 
 def test_file_and_line_builtins(tmp_path: Path) -> None:
-    pp = preprocess(tmp_path, 'x = `__LINE__;\ny = `__FILE__;\n')
-    assert out_lines(pp) == ['x = 1;', 'y = "unit.sv";']
+    pp = preprocess(tmp_path, "x = `__LINE__;\ny = `__FILE__;\n")
+    assert out_lines(pp) == ["x = 1;", 'y = "unit.sv";']
 
 
 def test_stringification_best_effort(tmp_path: Path) -> None:
@@ -110,13 +113,31 @@ def test_standard_directives_pass_through(tmp_path: Path) -> None:
 def test_ifdef_select_mode(tmp_path: Path) -> None:
     text = "`ifdef A\na;\n`elsif B\nb;\n`else\nc;\n`endif\n"
     assert out_lines(preprocess(tmp_path, text, defines={"A": None})) == [
-        "", "a;", "", "", "", "", ""
+        "",
+        "a;",
+        "",
+        "",
+        "",
+        "",
+        "",
     ]
     assert out_lines(preprocess(tmp_path, text, defines={"B": None})) == [
-        "", "", "", "b;", "", "", ""
+        "",
+        "",
+        "",
+        "b;",
+        "",
+        "",
+        "",
     ]
     assert out_lines(preprocess(tmp_path, text, defines={"X": None})) == [
-        "", "", "", "", "", "c;", ""
+        "",
+        "",
+        "",
+        "",
+        "",
+        "c;",
+        "",
     ]
 
 
@@ -257,9 +278,7 @@ def test_emitter_deduplicates_shared_header(tmp_path: Path) -> None:
         irs.append(ir)
     all_node_ids = [n.id for ir in irs for n in ir.nodes]
     assert len(all_node_ids) == len(set(all_node_ids))  # no duplicates across units
-    defines_edges = [
-        e for ir in irs for e in ir.local_edges if e.kind is EdgeKind.DEFINES_MACRO
-    ]
+    defines_edges = [e for ir in irs for e in ir.local_edges if e.kind is EdgeKind.DEFINES_MACRO]
     assert len(defines_edges) == 1
 
 

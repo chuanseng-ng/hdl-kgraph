@@ -47,9 +47,7 @@ def test_basic_tokens(tmp_path: Path) -> None:
 
 def test_nested_filelist_preserves_order(tmp_path: Path) -> None:
     write(tmp_path / "sub/common.f", "c.sv\n+incdir+sub_inc\n+define+FROM_CHILD\n")
-    fl = parse_filelist(
-        write(tmp_path / "tb.f", "a.sv\n-f sub/common.f\nb.sv\n"), env={}
-    )
+    fl = parse_filelist(write(tmp_path / "tb.f", "a.sv\n-f sub/common.f\nb.sv\n"), env={})
     # The nested list's files merge at the -f position.
     assert flattened_files(fl) == [
         tmp_path / "a.sv",
@@ -113,9 +111,7 @@ def test_missing_filelist_warns(tmp_path: Path) -> None:
 
 def test_filelist_irs(tmp_path: Path) -> None:
     write(tmp_path / "common.f", "c.sv\n")
-    fl = parse_filelist(
-        write(tmp_path / "tb.f", "a.sv\n-f common.f\nb.sv\n-v prims.v\n"), env={}
-    )
+    fl = parse_filelist(write(tmp_path / "tb.f", "a.sv\n-f common.f\nb.sv\n-v prims.v\n"), env={})
     irs = filelist_irs(fl, tmp_path)
     assert [ir.path for ir in irs] == ["tb.f", "common.f"]
 
@@ -138,9 +134,7 @@ def test_filelist_irs(tmp_path: Path) -> None:
 
 def test_filelist_irs_deduplicates_nested(tmp_path: Path) -> None:
     write(tmp_path / "common.f", "c.sv\n")
-    fl = parse_filelist(
-        write(tmp_path / "tb.f", "-f common.f\n-f common.f\n"), env={}
-    )
+    fl = parse_filelist(write(tmp_path / "tb.f", "-f common.f\n-f common.f\n"), env={})
     irs = filelist_irs(fl, tmp_path)
     assert [ir.path for ir in irs] == ["tb.f", "common.f"]
 

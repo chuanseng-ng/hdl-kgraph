@@ -8,9 +8,10 @@ instances, ports, parameters, signals, classes, packages, and the
 relationships between them — design hierarchy, port connectivity, package
 imports, class inheritance, clock domains, and more.
 
-> **Status: alpha (v0.1).** SystemVerilog/Verilog structural extraction, the
-> pass-2 linker, SQLite persistence, and the `build`/`status`/`query`/`tree`
-> CLI are in. The preprocessor and filelists land in M2, VHDL in M3. See
+> **Status: alpha (v0.2).** SystemVerilog/Verilog structural extraction, the
+> pass-2 linker, SQLite persistence, the `build`/`status`/`query`/`tree`
+> CLI, and real-world inputs — the SV preprocessor, `.f` filelists, include
+> dirs, and `hdl-kgraph.toml` config — are in. VHDL lands in M3. See
 > [ROADMAP.md](ROADMAP.md).
 
 ## Why
@@ -29,6 +30,8 @@ for hardware.
 pip install hdl-kgraph
 
 hdl-kgraph build ./rtl            # parse sources -> ./rtl/.hdl-kgraph/graph.db
+hdl-kgraph build -f sim/tb.f      # drive the build from a vendor-style filelist
+hdl-kgraph build -D SYNTHESIS -D WIDTH=8 -I include   # defines + incdirs
 hdl-kgraph status                 # files, parse errors, node/edge counts
 hdl-kgraph tree soc_top           # print the design hierarchy from a top module
 hdl-kgraph query instances-of fifo
@@ -41,10 +44,23 @@ still yield partial results; `status` reports the parse-error count.
 Unresolved instance targets render as `[?]` in `tree` and ambiguous matches as
 `[~0.6]` — see the confidence convention in [ROADMAP.md](ROADMAP.md).
 
+Filelists support `+incdir+`/`+define+`, nested `-f`, `-y`/`-v` library
+dirs, and `$VAR` expansion. When no defines are given at all, conditionals
+on undefined names emit *both* branches: the side a define-less compile
+would select at full confidence, the alternative at 0.6. Repeatable inputs
+can also live in an `hdl-kgraph.toml` at the build root (CLI flags win):
+
+```toml
+[build]
+filelists = ["sim/tb.f"]
+defines   = ["SYNTHESIS", "WIDTH=8"]
+incdirs   = ["include"]
+exclude   = ["vendor/*"]
+```
+
 Coming next:
 
 ```bash
-hdl-kgraph build -f sim/tb.f      # drive the build from a filelist (M2)
 hdl-kgraph impact rtl/uart_tx.sv  # what does my change affect? (M4)
 hdl-kgraph visualize              # interactive HTML graph (M5)
 hdl-kgraph serve --mcp            # MCP server for AI assistants (M6)
