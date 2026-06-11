@@ -28,7 +28,7 @@ import networkx as nx
 
 from hdl_kgraph.graph import analysis, clocks, metrics
 from hdl_kgraph.graph.analysis import HierarchyNode
-from hdl_kgraph.schema import NodeKind
+from hdl_kgraph.schema import Language, NodeKind
 
 _DATA_MARKER = "/*__DATA__*/"
 _D3_MARKER = "/*__D3__*/"
@@ -111,7 +111,8 @@ def _payload(g: nx.MultiDiGraph, full: bool, top: str | None, title: str) -> dic
             node_id
             for node_id, data in g.nodes(data=True)
             if data["kind"] in (NodeKind.MODULE, NodeKind.ENTITY)
-            and data["name"] in (top, top.lower())
+            # VHDL names are stored lowercase (case-insensitive); SV is exact.
+            and data["name"] == (top.lower() if data["language"] is Language.VHDL else top)
             and not data["attrs"].get("unresolved")
         ]
     else:

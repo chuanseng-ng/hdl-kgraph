@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""M4 benchmark: incremental update of 1 file in a 2k-file design < 1 s.
+"""Incremental-update benchmark: 1 file edited in a 2k-file design.
+
+Target: < 1.5 s since M5 (dataflow edges grew the graph ~76%); the original
+M4 target was < 1 s, measured at 0.85 s on the pre-dataflow graph.
 
 Generates a synthetic corpus (scripts/gen_corpus.py), times a full
 ``build``, touches one leaf module, then times the ``update``. See

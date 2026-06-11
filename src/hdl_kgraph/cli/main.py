@@ -607,7 +607,7 @@ def metrics_cmd(
     """
     graph, _, _ = _load(db_path)
     records = metrics.module_metrics(graph)
-    parts = metrics.communities(graph) if (show_communities or as_json) else []
+    parts = metrics.communities(graph) if show_communities else []
     if as_json:
         payload: dict[str, Any] = {"modules": records}
         if show_communities:

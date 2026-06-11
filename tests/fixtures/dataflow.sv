@@ -1,5 +1,10 @@
 // M5 fixture: dataflow extraction — signals, continuous assigns, always
 // blocks, declaration initializers, and instance-port dataflow.
+//
+// `en_missing`, `soft_clr`, and `sub_out` are deliberately never declared:
+// references to undeclared names must become implicit SIGNAL stubs at <= 0.6
+// confidence (test_dataflow.py), mirroring how real designs lean on implicit
+// nets. Do not "fix" them.
 module df_sub (
     input  logic clk,
     input  logic i,

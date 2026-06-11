@@ -82,6 +82,10 @@ const NOISY_KINDS = new Set(["file","port","parameter","signal","macro","include
                              "enum_member","typedef"]);
 const NOISY_EDGES = new Set(["declares","reads","connects","parameterizes"]);
 const color = k => KIND_COLORS[k] || "#9aa3b2";
+/* SV escaped identifiers / VHDL extended identifiers may contain markup
+   characters — everything interpolated into HTML goes through this. */
+const esc = s => String(s).replace(/[&<>"']/g, ch =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
 
 /* ---------- filters ---------- */
 const nodeKinds = [...new Set(DATA.nodes.map(n => n.kind))].sort();
@@ -124,8 +128,8 @@ function hierNode(n) {
   toggle.className = "toggle"; toggle.textContent = has ? "▾" : "·";
   li.appendChild(toggle);
   const label = document.createElement("span");
-  const name = (n.instance ? `<span class="inst">${n.instance}</span>: ` : "")
-             + `<span class="mod">${n.module}${n.architecture ? "(" + n.architecture + ")" : ""}</span>`
+  const name = (n.instance ? `<span class="inst">${esc(n.instance)}</span>: ` : "")
+             + `<span class="mod">${esc(n.module)}${n.architecture ? "(" + esc(n.architecture) + ")" : ""}</span>`
              + (n.unresolved ? ' <span class="mark">[?]</span>'
                 : n.confidence < 0.8 ? ` <span class="dim-mark">[~${n.confidence.toFixed(1)}]</span>` : "")
              + (n.truncated ? ' <span class="dim-mark">(…)</span>' : "");
@@ -244,9 +248,9 @@ canvas.addEventListener("mousemove", event => {
   tooltip.style.display = "block";
   tooltip.style.left = (event.offsetX + 14) + "px";
   tooltip.style.top = (event.offsetY + 14) + "px";
-  tooltip.innerHTML = `<b>${n.name}</b><br>${n.kind}`
-    + (n.domain ? `<br>domain: ${n.domain}` : "")
-    + (n.file ? `<br>${n.file}${n.line ? ":" + n.line : ""}` : "");
+  tooltip.innerHTML = `<b>${esc(n.name)}</b><br>${esc(n.kind)}`
+    + (n.domain ? `<br>domain: ${esc(n.domain)}` : "")
+    + (n.file ? `<br>${esc(n.file)}${n.line ? ":" + n.line : ""}` : "");
 });
 
 /* ---------- tabs + search ---------- */
@@ -265,10 +269,9 @@ views.hier.style.display = "block"; canvas.style.display = "none";
 document.getElementById("search").addEventListener("input", e => {
   query = e.target.value.trim();
   draw();
-  if (!query) return;
   const q = query.toLowerCase();
   for (const el of document.querySelectorAll("#hier .mod, #hier .inst"))
-    el.style.background = el.textContent.toLowerCase().includes(q) ? "#4c3a1e" : "";
+    el.style.background = q && el.textContent.toLowerCase().includes(q) ? "#4c3a1e" : "";
 });
 </script>
 </body>

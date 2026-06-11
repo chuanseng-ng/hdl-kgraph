@@ -43,7 +43,7 @@ def test_signal_nodes_extracted_with_attrs(graph) -> None:
 
 
 def test_continuous_assign_drives_and_reads(graph) -> None:
-    proc = "dataflow.sv::process:df_top.assign@24"
+    proc = "dataflow.sv::process:df_top.assign@29"
     assert graph.nodes[proc]["attrs"]["style"] == "continuous_assign"
     assert _edge(graph, EdgeKind.DRIVES, proc, "dataflow.sv::signal:df_top.valid")
     read = _edge(graph, EdgeKind.READS, proc, "dataflow.sv::signal:df_top.stage")
@@ -51,14 +51,14 @@ def test_continuous_assign_drives_and_reads(graph) -> None:
 
 
 def test_decl_initializer_is_a_drive(graph) -> None:
-    proc = "dataflow.sv::process:df_top.assign@21"
+    proc = "dataflow.sv::process:df_top.assign@26"
     assert graph.nodes[proc]["attrs"]["decl_init"] is True
     assert _edge(graph, EdgeKind.DRIVES, proc, "dataflow.sv::signal:df_top.doubled")
     assert _edge(graph, EdgeKind.READS, proc, "dataflow.sv::signal:df_top.stage")
 
 
 def test_always_ff_block_dataflow(graph) -> None:
-    proc = "dataflow.sv::process:df_top.always@27"
+    proc = "dataflow.sv::process:df_top.always@32"
     attrs = graph.nodes[proc]["attrs"]
     assert attrs["style"] == "always_ff"
     assert {e["name"] for e in attrs["sensitivity"]} == {"clk", "rst_n"}
@@ -67,7 +67,7 @@ def test_always_ff_block_dataflow(graph) -> None:
 
 
 def test_undeclared_name_becomes_implicit_signal_stub(graph) -> None:
-    proc = "dataflow.sv::process:df_top.assign@24"
+    proc = "dataflow.sv::process:df_top.assign@29"
     edge = _edge(graph, EdgeKind.READS, proc, "unresolved:signal:df_top.en_missing")
     assert edge is not None
     assert edge["confidence"] <= 0.6
@@ -84,14 +84,14 @@ def test_parameter_reads_are_dropped(graph) -> None:
 
 
 def test_for_loop_variable_is_not_dataflow(graph) -> None:
-    proc = "dataflow.sv::process:df_top.always@32"
+    proc = "dataflow.sv::process:df_top.always@37"
     targets = {v for u, v, d in graph.edges(data=True) if u == proc}
     assert not any(t.endswith(".idx") for t in targets)
     assert _edge(graph, EdgeKind.DRIVES, proc, "dataflow.sv::signal:df_top.mem")
 
 
 def test_memory_write_drives_root_and_reads_index(graph) -> None:
-    proc = "dataflow.sv::process:df_top.always@38"
+    proc = "dataflow.sv::process:df_top.always@43"
     assert _edge(graph, EdgeKind.DRIVES, proc, "dataflow.sv::signal:df_top.mem")
     assert _edge(graph, EdgeKind.READS, proc, "dataflow.sv::port:df_top.din")
 
