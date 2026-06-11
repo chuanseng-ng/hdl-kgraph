@@ -102,6 +102,20 @@ class MacroDef:
 
 
 @dataclass
+class MacroEvent:
+    """One :class:`MacroTable` mutation, in textual processing order.
+
+    Recorded so M4's incremental ``update`` can replay an unchanged unit's
+    effect on the shared table (``\\`define`` params are not recoverable from
+    the graph's MACRO nodes) without re-preprocessing the unit.
+    """
+
+    op: Literal["define", "undef"]
+    name: str
+    macro: MacroDef | None = None  # the definition, for op="define"
+
+
+@dataclass
 class MacroUse:
     name: str
     file: str  # use-site relpath
@@ -126,6 +140,7 @@ class PreprocessedFile:
     text: str = ""
     line_map: list[LineOrigin] = field(default_factory=list)
     macro_defs: list[MacroDef] = field(default_factory=list)
+    macro_events: list[MacroEvent] = field(default_factory=list)
     macro_uses: list[MacroUse] = field(default_factory=list)
     includes: list[IncludeEvent] = field(default_factory=list)
     included_relpaths: set[str] = field(default_factory=set)
@@ -145,6 +160,13 @@ class MacroTable:
 
     def undef(self, name: str) -> None:
         self._defs.pop(name, None)
+
+    def apply(self, event: MacroEvent) -> None:
+        """Replay one recorded mutation (M4 incremental update)."""
+        if event.op == "define" and event.macro is not None:
+            self.define(event.macro)
+        else:
+            self.undef(event.name)
 
     def get(self, name: str) -> MacroDef | None:
         return self._defs.get(name)
@@ -228,6 +250,7 @@ class Preprocessor:
                 arg = _NAME_RE.search(raw[arg_start:])
                 if arg is not None:
                     self.macros.undef(arg.group(0))
+                    self._pp.macro_events.append(MacroEvent(op="undef", name=arg.group(0)))
                 self._emit_blanks(relpath, i + 1, 1)
             elif name == "include" and self._emitting():
                 self._emit_blanks(relpath, i + 1, 1)
@@ -279,6 +302,7 @@ class Preprocessor:
         macro = MacroDef(name=name, params=params, body=rest.strip(), file=relpath, line=line)
         self.macros.define(macro)
         self._pp.macro_defs.append(macro)
+        self._pp.macro_events.append(MacroEvent(op="define", name=name, macro=macro))
 
     def _handle_conditional(self, name: str, arg: str, relpath: str, line: int) -> None:
         if name in ("ifdef", "ifndef"):

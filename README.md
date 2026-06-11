@@ -8,12 +8,13 @@ instances, ports, parameters, signals, classes, packages, and the
 relationships between them — design hierarchy, port connectivity, package
 imports, class inheritance, clock domains, and more.
 
-> **Status: alpha (v0.3).** SystemVerilog/Verilog structural extraction, the
+> **Status: alpha (v0.4).** SystemVerilog/Verilog structural extraction, the
 > pass-2 linker, SQLite persistence, the `build`/`status`/`query`/`tree`
 > CLI, real-world inputs — the SV preprocessor, `.f` filelists, include
-> dirs, and `hdl-kgraph.toml` config — and VHDL with mixed-language linking
+> dirs, and `hdl-kgraph.toml` config — VHDL with mixed-language linking
 > (entities, architectures, packages, configurations, `--lib` library
-> mapping) are in. See [ROADMAP.md](ROADMAP.md).
+> mapping), and incremental rebuilds (`update`, `watch`, `detect-changes`,
+> `impact`) are in. See [ROADMAP.md](ROADMAP.md).
 
 ## Why
 
@@ -71,10 +72,33 @@ vendor tools may bind differently (case folding, library prefixes,
 extended/escaped identifiers, generic-dependent wrappers); the score is the
 honest contract.
 
+**Incremental updates** keep the graph fresh as you edit. `update` re-parses
+only changed/added/removed files plus their dependents — files that
+`` `include `` an edited header or expand a macro it defines — and re-links
+everything else from stored parse results (one file edited in a 2000-file
+design updates in under a second; see [docs/benchmarks.md](docs/benchmarks.md)).
+A change to the effective build inputs (defines, incdirs, filelists, library
+map) falls back to a full rebuild automatically, as does a database written
+by an older schema version — the database is a derived cache, so rebuild *is*
+the migration.
+
+```bash
+hdl-kgraph update                  # re-parse only what changed, re-link, save
+hdl-kgraph detect-changes          # M/A/D lines vs the last build; exit 1 if dirty
+hdl-kgraph detect-changes --git    # ...or vs git HEAD (any ref works)
+hdl-kgraph impact rtl/uart_tx.sv   # what does my change affect?
+hdl-kgraph impact fifo --files     # affected files instead of design units
+hdl-kgraph watch ./rtl             # debounced update on every save burst
+```
+
+`impact` walks reverse `INSTANTIATES`/`IMPORTS`/`INCLUDES`/`EXTENDS` (plus
+VHDL `USES_PACKAGE`/`IMPLEMENTS`/`BINDS` and macro-use) edges transitively:
+the instantiating parents, importers, includers, and subclasses a change can
+break. `watch` needs the `watchdog` extra: `pip install 'hdl-kgraph[watch]'`.
+
 Coming next:
 
 ```bash
-hdl-kgraph impact rtl/uart_tx.sv  # what does my change affect? (M4)
 hdl-kgraph visualize              # interactive HTML graph (M5)
 hdl-kgraph serve --mcp            # MCP server for AI assistants (M6)
 ```

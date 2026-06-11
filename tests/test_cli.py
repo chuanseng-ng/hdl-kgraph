@@ -200,3 +200,128 @@ def test_build_lib_flag_malformed(tmp_path: Path) -> None:
     result = CliRunner().invoke(main, ["build", str(tmp_path), "--lib", "nopath"])
     assert result.exit_code != 0
     assert "NAME=PATH" in result.output
+
+
+# -- M4: update / detect-changes / impact ------------------------------------
+
+
+@pytest.fixture
+def small_project(tmp_path: Path) -> Path:
+    (tmp_path / "leaf.sv").write_text(
+        "module leaf(input logic a, output logic y);\n  assign y = a;\nendmodule\n"
+    )
+    (tmp_path / "top.sv").write_text(
+        "module top(input logic a, output logic y);\n  leaf u_leaf(.a(a), .y(y));\nendmodule\n"
+    )
+    result = CliRunner().invoke(main, ["build", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    return tmp_path
+
+
+def test_help_lists_m4_commands() -> None:
+    result = CliRunner().invoke(main, ["--help"])
+    assert result.exit_code == 0
+    for command in ("update", "detect-changes", "impact", "watch"):
+        assert command in result.output
+
+
+def test_update_up_to_date(small_project: Path) -> None:
+    result = CliRunner().invoke(main, ["update", str(small_project)])
+    assert result.exit_code == 0, result.output
+    assert "up to date" in result.output
+
+
+def test_update_reports_reparsed_files(small_project: Path) -> None:
+    leaf = small_project / "leaf.sv"
+    leaf.write_text(leaf.read_text() + "// touched\n")
+    result = CliRunner().invoke(main, ["update", str(small_project)])
+    assert result.exit_code == 0, result.output
+    assert "re-parsed: leaf.sv (changed)" in result.output
+    assert "files reused:   1" in result.output
+
+
+def test_update_without_db_does_full_build(tmp_path: Path) -> None:
+    (tmp_path / "a.sv").write_text("module a;\nendmodule\n")
+    result = CliRunner().invoke(main, ["update", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "full rebuild: no existing database" in result.output
+
+
+def test_update_full_flag(small_project: Path) -> None:
+    result = CliRunner().invoke(main, ["update", str(small_project), "--full"])
+    assert result.exit_code == 0, result.output
+    assert "full rebuild: forced with --full" in result.output
+
+
+def test_detect_changes_exit_codes(small_project: Path) -> None:
+    clean = CliRunner().invoke(main, ["detect-changes", str(small_project)])
+    assert clean.exit_code == 0, clean.output
+    assert clean.output == ""
+
+    (small_project / "leaf.sv").write_text("module leaf;\nendmodule\n")
+    (small_project / "new.sv").write_text("module new_mod;\nendmodule\n")
+    dirty = CliRunner().invoke(main, ["detect-changes", str(small_project)])
+    assert dirty.exit_code == 1
+    assert "M leaf.sv" in dirty.output
+    assert "A new.sv" in dirty.output
+
+
+def test_detect_changes_reports_deletions(small_project: Path) -> None:
+    (small_project / "leaf.sv").unlink()
+    result = CliRunner().invoke(main, ["detect-changes", str(small_project)])
+    assert result.exit_code == 1
+    assert "D leaf.sv" in result.output
+
+
+def test_detect_changes_without_db_fails(tmp_path: Path) -> None:
+    (tmp_path / "a.sv").write_text("module a;\nendmodule\n")
+    result = CliRunner().invoke(main, ["detect-changes", str(tmp_path)])
+    assert result.exit_code != 0
+    assert "hdl-kgraph build" in result.output
+
+
+def test_detect_changes_closure(tmp_path: Path) -> None:
+    (tmp_path / "defs.svh").write_text("`define W 8\n")
+    (tmp_path / "leaf.sv").write_text(
+        '`include "defs.svh"\nmodule leaf(output logic [`W-1:0] y);\nendmodule\n'
+    )
+    assert CliRunner().invoke(main, ["build", str(tmp_path)]).exit_code == 0
+    (tmp_path / "defs.svh").write_text("`define W 16\n")
+    db = str(tmp_path / ".hdl-kgraph" / "graph.db")
+    result = CliRunner().invoke(main, ["detect-changes", str(tmp_path), "--closure", "--db", db])
+    assert result.exit_code == 1
+    assert "M defs.svh" in result.output
+    assert "~ leaf.sv (includes defs.svh)" in result.output
+
+
+def test_impact_module(small_project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(small_project)
+    result = CliRunner().invoke(main, ["impact", "leaf"])
+    assert result.exit_code == 0, result.output
+    assert "top" in result.output
+    assert "instantiates (depth 1)" in result.output
+
+
+def test_impact_file_target_and_files_flag(small_project: Path) -> None:
+    db = ["--db", str(small_project / ".hdl-kgraph" / "graph.db")]
+    result = CliRunner().invoke(main, ["impact", "leaf.sv", *db])
+    assert result.exit_code == 0, result.output
+    assert "leaf" in result.output and "top" in result.output
+
+    files = CliRunner().invoke(main, ["impact", "leaf.sv", "--files", *db])
+    assert files.exit_code == 0, files.output
+    assert "top.sv" in files.output
+
+
+def test_impact_unknown_target(small_project: Path) -> None:
+    db = ["--db", str(small_project / ".hdl-kgraph" / "graph.db")]
+    result = CliRunner().invoke(main, ["impact", "ghost", *db])
+    assert result.exit_code != 0
+    assert "matches no file or design unit" in result.output
+
+
+def test_impact_top_has_no_dependents(small_project: Path) -> None:
+    db = ["--db", str(small_project / ".hdl-kgraph" / "graph.db")]
+    result = CliRunner().invoke(main, ["impact", "top", *db])
+    assert result.exit_code == 0, result.output
+    assert "no dependents found" in result.output

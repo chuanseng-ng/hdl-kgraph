@@ -86,6 +86,7 @@ module = [
   "tree_sitter_vhdl.*",
   "networkx.*",
   "tomli.*",
+  "watchdog.*",
 ]
 ignore_missing_imports = true
 
