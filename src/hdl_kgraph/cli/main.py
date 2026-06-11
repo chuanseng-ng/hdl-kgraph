@@ -1,8 +1,11 @@
 """hdl-kgraph CLI.
 
 M1 surface: ``build``, ``status``, ``query`` (``instances-of`` / ``modules``
-/ ``unresolved``), and ``tree``. Filelist/define options arrive in M2,
-``update``/``watch``/``impact`` in M4, ``visualize`` in M5, ``serve`` in M6.
+/ ``unresolved``), and ``tree``. M2 adds real-world build inputs to
+``build``: ``-f`` filelists, ``-D`` defines, ``-I`` include dirs, and
+``hdl-kgraph.toml`` config discovery (CLI flags win over config values).
+``update``/``watch``/``impact`` arrive in M4, ``visualize`` in M5,
+``serve`` in M6.
 
 The database lives at ``<root>/.hdl-kgraph/graph.db``; read commands locate
 it by walking up from the current directory (git-style) unless ``--db`` is
@@ -19,10 +22,16 @@ import click
 import networkx as nx
 
 from hdl_kgraph import __version__
+from hdl_kgraph.config import (
+    BuildConfig,
+    ConfigError,
+    find_config,
+    resolve_build_options,
+)
 from hdl_kgraph.discovery import DEFAULT_MAX_FILE_SIZE_KB
 from hdl_kgraph.graph import analysis
 from hdl_kgraph.pipeline import find_db, run_build
-from hdl_kgraph.schema import EdgeKind, NodeKind
+from hdl_kgraph.schema import EdgeKind, Language, NodeKind
 from hdl_kgraph.storage.sqlite_store import SchemaVersionError, SqliteStore
 
 _db_option = click.option(
@@ -60,6 +69,39 @@ def main() -> None:
 @click.argument("source", type=click.Path(exists=True, path_type=Path), default=".", required=False)
 @_db_option
 @click.option(
+    "-f",
+    "--filelist",
+    "filelists",
+    multiple=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Compile the sources listed in this .f/.vc filelist (repeatable); "
+    "SOURCE then only sets the build root.",
+)
+@click.option(
+    "-D",
+    "--define",
+    "defines",
+    multiple=True,
+    metavar="NAME[=VALUE]",
+    help="Preprocessor define (repeatable; overrides config and filelist defines).",
+)
+@click.option(
+    "-I",
+    "--incdir",
+    "incdirs",
+    multiple=True,
+    type=click.Path(path_type=Path),
+    help="`include search directory (repeatable).",
+)
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Path to hdl-kgraph.toml (default: nearest one from SOURCE upward).",
+)
+@click.option("--no-config", is_flag=True, help="Ignore any hdl-kgraph.toml.")
+@click.option(
     "--exclude",
     "excludes",
     multiple=True,
@@ -69,24 +111,63 @@ def main() -> None:
 @click.option(
     "--max-file-size",
     type=int,
-    default=DEFAULT_MAX_FILE_SIZE_KB,
-    show_default=True,
+    default=None,
     metavar="KB",
-    help="Skip files larger than this many kilobytes.",
+    help=f"Skip files larger than this many kilobytes. [default: {DEFAULT_MAX_FILE_SIZE_KB}]",
 )
 def build(
-    source: Path, db_path: Path | None, excludes: tuple[str, ...], max_file_size: int
+    source: Path,
+    db_path: Path | None,
+    filelists: tuple[Path, ...],
+    defines: tuple[str, ...],
+    incdirs: tuple[Path, ...],
+    config_path: Path | None,
+    no_config: bool,
+    excludes: tuple[str, ...],
+    max_file_size: int | None,
 ) -> None:
     """Build the knowledge graph from HDL sources under SOURCE."""
-    report = run_build(source, db_path=db_path, exclude=excludes, max_file_size_kb=max_file_size)
+    if no_config:
+        config = BuildConfig()
+    else:
+        if config_path is None:
+            config_path = find_config(source)
+        try:
+            config = BuildConfig.load(config_path) if config_path is not None else BuildConfig()
+        except ConfigError as exc:
+            raise click.ClickException(str(exc)) from exc
+    options = resolve_build_options(
+        config,
+        cli_filelists=[p.resolve() for p in filelists],
+        cli_defines=defines,
+        cli_incdirs=[p.resolve() for p in incdirs],
+        cli_exclude=excludes,
+        cli_max_file_size_kb=max_file_size,
+    )
+    report = run_build(source, db_path=db_path, options=options)
+    for warning in report.warnings:
+        click.echo(f"warning: {warning}", err=True)
     if report.parsed_files == 0:
         raise click.ClickException(f"no parseable HDL files found under {report.root}")
     click.echo(f"built {report.db_path}")
+    if report.filelists_read:
+        click.echo(f"  filelists:      {report.filelists_read}")
     click.echo(f"  files parsed:   {report.parsed_files}")
     for reason, count in sorted(report.skipped.items()):
         click.echo(f"  skipped ({reason}): {count}")
     if report.error_files:
         click.echo(f"  parse errors:   {report.parse_error_count} in {report.error_files} file(s)")
+    if report.macros_defined:
+        click.echo(f"  macros defined: {report.macros_defined}")
+    if report.includes_resolved or report.includes_unresolved:
+        includes = f"  includes:       {report.includes_resolved} resolved"
+        if report.includes_unresolved:
+            includes += f", {report.includes_unresolved} unresolved"
+        click.echo(includes)
+    if report.preproc_warning_count:
+        click.echo(f"  preprocessor warnings: {report.preproc_warning_count}")
+    if report.both_branches:
+        click.echo("  both-branches mode: no defines given; `ifdef alternatives kept at 0.6")
     click.echo(f"  nodes: {report.node_count}  edges: {report.edge_count}")
     if report.unresolved_count:
         click.echo(f"  unresolved: {report.unresolved_count}")
@@ -100,10 +181,15 @@ def status(db_path: Path | None) -> None:
     click.echo(f"root:     {meta.get('root', '?')}")
     click.echo(f"built at: {meta.get('built_at', '?')} (hdl-kgraph {meta.get('tool_version')})")
 
-    parsed = [f for f in files if f.skipped_reason is None]
+    # Filelists are recorded for M4 incremental rebuilds but are not parsed
+    # HDL sources; report them on their own line.
+    parsed = [f for f in files if f.skipped_reason is None and f.language is not Language.UNKNOWN]
+    filelists = [f for f in files if f.skipped_reason is None and f.language is Language.UNKNOWN]
     skipped = Counter(f.skipped_reason for f in files if f.skipped_reason is not None)
     error_files = [f for f in parsed if f.parse_error_count]
     click.echo(f"files:    {len(parsed)} parsed")
+    if filelists:
+        click.echo(f"          {len(filelists)} filelist(s)")
     for reason, count in sorted(skipped.items()):
         click.echo(f"          {count} skipped ({reason})")
     total_errors = sum(f.parse_error_count for f in error_files)

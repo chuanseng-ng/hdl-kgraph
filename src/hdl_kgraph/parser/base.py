@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from hdl_kgraph.schema import Edge, EdgeKind, Node
+from hdl_kgraph.schema import CONFIDENCE_RESOLVED, Edge, EdgeKind, Node
 
 
 @dataclass
@@ -53,6 +53,10 @@ class UnresolvedRef:
     target_name: str  # bare name to resolve (module/package/class name)
     line_span: tuple[int, int] = (0, 0)
     attrs: dict[str, Any] = field(default_factory=dict)
+    # Confidence of the reference *site* itself; below 1.0 for references in
+    # non-selected both-branches preprocessor regions. The linker emits
+    # min(resolution confidence, this).
+    confidence: float = CONFIDENCE_RESOLVED
 
 
 @dataclass

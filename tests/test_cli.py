@@ -15,7 +15,8 @@ def project(tmp_path_factory: pytest.TempPathFactory, fixtures_dir: Path) -> Pat
     """A tmp copy of the fixture corpus with a graph already built."""
     root = tmp_path_factory.mktemp("project")
     for path in fixtures_dir.iterdir():
-        shutil.copy(path, root / path.name)
+        if path.is_file():  # subdirectories (e.g. preproc/) have their own tests
+            shutil.copy(path, root / path.name)
     result = CliRunner().invoke(main, ["build", str(root)])
     assert result.exit_code == 0, result.output
     return root

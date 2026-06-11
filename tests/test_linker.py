@@ -168,3 +168,65 @@ def test_instances_of(graph: nx.MultiDiGraph) -> None:
     assert rec["instance_name"] == "u_counter"
     assert rec["file"] == "top.v"
     assert rec["confidence"] == 0.8
+
+
+# -- M2: shared-header dedupe and ref-site confidence ---------------------------
+
+
+def test_duplicate_node_ids_ingested_once() -> None:
+    """The same header spliced into two units must not fabricate ambiguity."""
+    parser = SystemVerilogParser()
+    leaf = "module leaf;\nendmodule\n"
+    # Both units carry identical header-attributed nodes (same ids).
+    ir_a = parser.parse(Path("hdr.svh"), leaf)
+    ir_b = parser.parse(Path("hdr.svh"), leaf)
+    ir_top = parser.parse(Path("top.sv"), "module top;\nleaf u_l ();\nendmodule\n")
+    g = build_graph([ir_a, ir_b, ir_top])
+
+    assert sum(1 for _, d in g.nodes(data=True) if d["name"] == "leaf") == 1
+    (edge,) = edges_between(
+        g, "top.sv::instance:top.u_l", "hdr.svh::module:leaf", EdgeKind.INSTANTIATES
+    )
+    assert edge["confidence"] == 0.8  # unique match, not 0.6 ambiguous
+
+
+def test_duplicate_local_edges_ingested_once() -> None:
+    parser = SystemVerilogParser()
+    leaf = "module leaf;\nendmodule\n"
+    ir_a = parser.parse(Path("hdr.svh"), leaf)
+    ir_b = parser.parse(Path("hdr.svh"), leaf)
+    g = build_graph([ir_a, ir_b])
+    declares = [
+        (u, v)
+        for u, v, d in g.edges(data=True)
+        if d["kind"] is EdgeKind.DECLARES and v == "hdr.svh::module:leaf"
+    ]
+    assert len(declares) == 1
+
+
+def test_ref_confidence_caps_resolution() -> None:
+    parser = SystemVerilogParser()
+    ir_leaf = parser.parse(Path("leaf.sv"), "module leaf;\nendmodule\n")
+    ir_top = parser.parse(Path("top.sv"), "module top;\nleaf u_l ();\nendmodule\n")
+    for ref in ir_top.unresolved_refs:
+        ref.confidence = 0.6  # as if the instantiation sat in an ifdef branch
+    g = build_graph([ir_leaf, ir_top])
+    (edge,) = edges_between(
+        g, "top.sv::instance:top.u_l", "leaf.sv::module:leaf", EdgeKind.INSTANTIATES
+    )
+    assert edge["confidence"] == 0.6  # min(0.8 unique match, 0.6 ref site)
+
+
+def test_duplicate_refs_emit_one_edge() -> None:
+    """An unguarded header spliced into two units duplicates its refs across
+    IRs; the resolved edge must still be emitted once."""
+    parser = SystemVerilogParser()
+    hdr = "module wrapper;\nleaf u_l ();\nendmodule\n"
+    ir_a = parser.parse(Path("hdr.svh"), hdr)
+    ir_b = parser.parse(Path("hdr.svh"), hdr)
+    ir_leaf = parser.parse(Path("leaf.sv"), "module leaf;\nendmodule\n")
+    g = build_graph([ir_a, ir_b, ir_leaf])
+    (edge,) = edges_between(
+        g, "hdr.svh::instance:wrapper.u_l", "leaf.sv::module:leaf", EdgeKind.INSTANTIATES
+    )
+    assert edge["confidence"] == 0.8
