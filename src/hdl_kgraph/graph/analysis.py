@@ -67,7 +67,12 @@ def hierarchy_tree(g: nx.MultiDiGraph, top_id: str, max_depth: int = 64) -> Hier
             unresolved=_is_stub(g, module_id),
         )
         if depth >= max_depth or module_id in seen:
-            node.truncated = module_id in seen
+            # A cycle is always a truncation; a depth-capped node only is one
+            # if it actually had children left to expand.
+            node.truncated = module_id in seen or any(
+                g.nodes[inst_id]["kind"] is NodeKind.INSTANCE
+                for _, inst_id, _ in _edges_of_kind(g, module_id, EdgeKind.DECLARES)
+            )
             return node
         for _, inst_id, _decl in _edges_of_kind(g, module_id, EdgeKind.DECLARES):
             if g.nodes[inst_id]["kind"] is not NodeKind.INSTANCE:

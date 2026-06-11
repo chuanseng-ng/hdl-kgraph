@@ -22,7 +22,7 @@ from hdl_kgraph import __version__
 from hdl_kgraph.discovery import DEFAULT_MAX_FILE_SIZE_KB
 from hdl_kgraph.graph import analysis
 from hdl_kgraph.pipeline import find_db, run_build
-from hdl_kgraph.schema import NodeKind
+from hdl_kgraph.schema import EdgeKind, NodeKind
 from hdl_kgraph.storage.sqlite_store import SchemaVersionError, SqliteStore
 
 _db_option = click.option(
@@ -152,10 +152,14 @@ def modules(db_path: Path | None) -> None:
     """List all modules with their instantiation counts."""
     graph, _, _ = _load(db_path)
     rows = []
-    for _node_id, data in sorted(graph.nodes(data=True), key=lambda kv: kv[1]["name"]):
+    for node_id, data in sorted(graph.nodes(data=True), key=lambda kv: kv[1]["name"]):
         if data["kind"] is not NodeKind.MODULE or data["attrs"].get("unresolved"):
             continue
-        count = len(analysis.instances_of(graph, data["name"]))
+        count = sum(
+            1
+            for _, _, edge in graph.in_edges(node_id, data=True)
+            if edge["kind"] is EdgeKind.INSTANTIATES
+        )
         rows.append((data["name"], data["file"], data["line_span"][0], count))
     for name, file, line, count in rows:
         click.echo(f"{name:30} {file}:{line}  instances={count}")

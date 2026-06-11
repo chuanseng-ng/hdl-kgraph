@@ -52,6 +52,14 @@ def test_build_empty_dir_fails(tmp_path: Path) -> None:
     assert "no parseable HDL files" in result.output
 
 
+def test_failed_build_preserves_existing_db(project: Path, tmp_path: Path) -> None:
+    db = project / ".hdl-kgraph" / "graph.db"
+    before = db.read_bytes()
+    result = CliRunner().invoke(main, ["build", str(tmp_path), "--db", str(db)])
+    assert result.exit_code != 0
+    assert db.read_bytes() == before
+
+
 def test_status(project: Path) -> None:
     result = CliRunner().invoke(main, ["status", *db_args(project)])
     assert result.exit_code == 0, result.output

@@ -94,6 +94,12 @@ def run_build(
             )
         )
 
+    # Nothing parseable: the CLI treats this as an error, so leave any
+    # previously built database untouched instead of overwriting it with an
+    # empty graph.
+    if report.parsed_files == 0:
+        return report
+
     graph = build_graph(irs)
     report.node_count = graph.number_of_nodes()
     report.edge_count = graph.number_of_edges()

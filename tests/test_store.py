@@ -34,7 +34,7 @@ def store(tmp_path: Path, fixtures_dir: Path) -> tuple[SqliteStore, object, list
     files = [
         FileMeta(
             path=ir.path,
-            language=Language.SYSTEMVERILOG,
+            language=ir.nodes[0].language,  # the FILE node carries the language
             content_hash="0" * 64,
             size_bytes=123,
             parse_error_count=ir.parse_error_count,
@@ -82,6 +82,8 @@ def test_round_trip_preserves_file_meta(store) -> None:
     assert broken.parse_error_count > 0
     assert broken.content_hash == "0" * 64
     assert broken.skipped_reason is None
+    assert by_path["adder.v"].language is Language.VERILOG
+    assert by_path["simple_counter.sv"].language is Language.SYSTEMVERILOG
 
 
 def test_save_is_a_full_rewrite(store) -> None:

@@ -2,8 +2,10 @@
 
 Releases are published automatically by `.github/workflows/release.yml` using
 [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/) (OIDC) —
-no API tokens are stored anywhere. Publishing a GitHub Release triggers the
-workflow, which builds the sdist + wheel and uploads them to PyPI.
+no API tokens are stored anywhere. Pushing a version tag (`v*`) triggers the
+workflow, which builds the sdist + wheel and uploads them to PyPI. Creating a
+GitHub Release in the web UI also works: it creates and pushes the tag, which
+fires the same trigger.
 
 The package version is single-sourced from `__version__` in
 `src/hdl_kgraph/__init__.py` (hatchling `[tool.hatch.version]`).
@@ -39,9 +41,16 @@ The package version is single-sourced from `__version__` in
    twine check dist/*
    ```
 
-3. On GitHub: **Releases → Draft a new release**, create tag `v<version>`
-   (e.g. `v0.1.0`) targeting the release commit, write the notes, and
-   **Publish release**. The workflow builds and uploads to PyPI.
+3. Tag and push:
+
+   ```sh
+   git tag v<version>        # e.g. v0.1.0, on the release commit
+   git push origin v<version>
+   ```
+
+   or create a GitHub Release for the new tag via **Releases → Draft a new
+   release** (recommended, so the version gets release notes). Either way the
+   workflow builds and uploads to PyPI.
 4. Verify from a clean environment:
 
    ```sh
