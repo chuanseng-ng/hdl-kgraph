@@ -160,8 +160,10 @@ binding is honored.
 **Goal:** fast enough to live alongside an editor; answers "what does my change
 affect?"
 
-- [ ] Content-hash incremental rebuild: `update` re-parses only
-      changed/added/removed files, then re-links pass 2
+- [ ] Content-hash incremental rebuild: `update` re-parses changed/added/removed
+      files plus their preprocessor-dependent files (reverse `INCLUDES` /
+      `USES_MACRO` closure; a changed `.f` define or incdir dirties all files in
+      that filelist), then re-links pass 2
 - [ ] `watch` via watchdog (debounced); `detect-changes` (vs git HEAD or last build)
 - [ ] Impact radius: `impact <file|module>` → transitively affected modules via
       `INSTANTIATES`/`IMPORTS`/`INCLUDES`/`EXTENDS` (reverse `` `include `` and
