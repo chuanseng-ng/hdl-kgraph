@@ -5,6 +5,7 @@ tree never changes them — the right granularity for M4's per-file incremental
 rebuild. Paths are POSIX-style and relative to the build root.
 
 * FILE nodes: ``file:{relpath}``
+* FILELIST nodes: ``filelist:{relpath}``
 * Declarations: ``{relpath}::{kind}:{dotted_scope_path}`` — e.g.
   ``rtl/fifo.sv::module:fifo``, ``rtl/fifo.sv::port:fifo.clk``,
   ``rtl/top.v::instance:top.u_counter``
@@ -22,6 +23,11 @@ from hdl_kgraph.schema import NodeKind
 def file_node_id(relpath: str) -> str:
     """Id of the FILE node for *relpath*."""
     return f"file:{relpath}"
+
+
+def filelist_node_id(relpath: str) -> str:
+    """Id of the FILELIST node for *relpath*."""
+    return f"filelist:{relpath}"
 
 
 def decl_node_id(relpath: str, kind: NodeKind, scope_path: str) -> str:
