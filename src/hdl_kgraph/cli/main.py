@@ -31,7 +31,7 @@ from hdl_kgraph.config import (
 from hdl_kgraph.discovery import DEFAULT_MAX_FILE_SIZE_KB
 from hdl_kgraph.graph import analysis
 from hdl_kgraph.pipeline import find_db, run_build
-from hdl_kgraph.schema import EdgeKind, NodeKind
+from hdl_kgraph.schema import EdgeKind, Language, NodeKind
 from hdl_kgraph.storage.sqlite_store import SchemaVersionError, SqliteStore
 
 _db_option = click.option(
@@ -181,10 +181,15 @@ def status(db_path: Path | None) -> None:
     click.echo(f"root:     {meta.get('root', '?')}")
     click.echo(f"built at: {meta.get('built_at', '?')} (hdl-kgraph {meta.get('tool_version')})")
 
-    parsed = [f for f in files if f.skipped_reason is None]
+    # Filelists are recorded for M4 incremental rebuilds but are not parsed
+    # HDL sources; report them on their own line.
+    parsed = [f for f in files if f.skipped_reason is None and f.language is not Language.UNKNOWN]
+    filelists = [f for f in files if f.skipped_reason is None and f.language is Language.UNKNOWN]
     skipped = Counter(f.skipped_reason for f in files if f.skipped_reason is not None)
     error_files = [f for f in parsed if f.parse_error_count]
     click.echo(f"files:    {len(parsed)} parsed")
+    if filelists:
+        click.echo(f"          {len(filelists)} filelist(s)")
     for reason, count in sorted(skipped.items()):
         click.echo(f"          {count} skipped ({reason})")
     total_errors = sum(f.parse_error_count for f in error_files)

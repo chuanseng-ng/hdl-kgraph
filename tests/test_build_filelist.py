@@ -78,6 +78,11 @@ def test_build_from_vendor_filelist(project: Path) -> None:
     assert refs["file:rtl/top.sv"]["order"] > nested["attrs"]["order"]
     assert refs["file:prims.v"]["role"] == "library"
 
+    # status separates HDL sources from the recorded filelists.
+    status = CliRunner().invoke(main, ["status", "--db", str(project / ".hdl-kgraph" / "graph.db")])
+    assert "4 parsed" in status.output
+    assert "2 filelist(s)" in status.output
+
     # files table: the spliced header is recorded as included; the filelists
     # themselves are content-hashed for M4 incremental rebuilds.
     by_path = {f.path: f for f in files}
