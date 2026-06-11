@@ -8,8 +8,10 @@ instances, ports, parameters, signals, classes, packages, and the
 relationships between them — design hierarchy, port connectivity, package
 imports, class inheritance, clock domains, and more.
 
-> **Status: pre-alpha.** The schema, roadmap, and project skeleton are in
-> place; parsing lands in milestone M1. See [ROADMAP.md](ROADMAP.md).
+> **Status: alpha (v0.1).** SystemVerilog/Verilog structural extraction, the
+> pass-2 linker, SQLite persistence, and the `build`/`status`/`query`/`tree`
+> CLI are in. The preprocessor and filelists land in M2, VHDL in M3. See
+> [ROADMAP.md](ROADMAP.md).
 
 ## Why
 
@@ -21,15 +23,28 @@ architecture follows
 [code-review-graph](https://github.com/tirth8205/code-review-graph), adapted
 for hardware.
 
-## Planned usage
+## Quickstart
 
 ```bash
-pip install hdl-kgraph            # coming with the v0.1 release
+pip install hdl-kgraph
 
-hdl-kgraph build ./rtl            # parse sources, build the graph
-hdl-kgraph build -f sim/tb.f      # or drive it from a filelist (M2)
-hdl-kgraph tree --top soc_top     # print the design hierarchy
+hdl-kgraph build ./rtl            # parse sources -> ./rtl/.hdl-kgraph/graph.db
+hdl-kgraph status                 # files, parse errors, node/edge counts
+hdl-kgraph tree soc_top           # print the design hierarchy from a top module
 hdl-kgraph query instances-of fifo
+hdl-kgraph query unresolved       # what couldn't be resolved (vendor IP, macros)
+```
+
+`build` accepts `--exclude GLOB` (repeatable) and `--max-file-size KB` to keep
+generated netlists and vendored IP out of the graph. Files with syntax errors
+still yield partial results; `status` reports the parse-error count.
+Unresolved instance targets render as `[?]` in `tree` and ambiguous matches as
+`[~0.6]` — see the confidence convention in [ROADMAP.md](ROADMAP.md).
+
+Coming next:
+
+```bash
+hdl-kgraph build -f sim/tb.f      # drive the build from a filelist (M2)
 hdl-kgraph impact rtl/uart_tx.sv  # what does my change affect? (M4)
 hdl-kgraph visualize              # interactive HTML graph (M5)
 hdl-kgraph serve --mcp            # MCP server for AI assistants (M6)
