@@ -18,6 +18,28 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
+      - name: Verify tag matches package version
+        run: |
+          python - "$GITHUB_REF_NAME" <<'EOF'
+          import pathlib
+          import re
+          import sys
+
+          tag = sys.argv[1]
+          path = pathlib.Path("src/hdl_kgraph/__init__.py")
+          match = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', path.read_text())
+          if not match:
+              print(f"::error::Could not find __version__ in {path}")
+              sys.exit(1)
+          pkg_version = match[1]
+          if pkg_version != tag.removeprefix("v"):
+              print(
+                  f"::error::Tag {tag} does not match __version__ {pkg_version} "
+                  f"in {path}. Bump the version before tagging."
+              )
+              sys.exit(1)
+          print(f"Tag {tag} matches __version__ {pkg_version}")
+          EOF
       - run: python -m pip install build
       - run: python -m build
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
