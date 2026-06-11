@@ -92,13 +92,23 @@ class _Linker:
         self.node_file: dict[str, str] = {}
         self.node_obj: dict[str, Node] = {}
 
+        seen_local: set[tuple[str, str, EdgeKind]] = set()
         for ir in file_irs:
             for node in ir.nodes:
+                if node.id in self.node_obj:
+                    # The same header spliced into several compilation units
+                    # (or a FILE node emitted by both the parser and the
+                    # preprocessor/filelist adapters): first occurrence wins.
+                    continue
                 _add_node(self.graph, node)
                 self.node_obj[node.id] = node
                 self.node_file[node.id] = ir.path
                 self.definitions[(node.kind, node.name)].append(node.id)
             for edge in ir.local_edges:
+                key = (edge.src, edge.dst, edge.kind)
+                if key in seen_local:
+                    continue
+                seen_local.add(key)
                 _add_edge(self.graph, edge)
                 if edge.kind is EdgeKind.DECLARES:
                     self.children[edge.src].append(self.node_obj[edge.dst])
@@ -216,7 +226,15 @@ class _Linker:
         attrs["line_span"] = ref.line_span
         _add_edge(
             self.graph,
-            Edge(src=ref.src_id, dst=dst, kind=ref.edge_kind, confidence=confidence, attrs=attrs),
+            Edge(
+                src=ref.src_id,
+                dst=dst,
+                kind=ref.edge_kind,
+                # A reference from a non-selected both-branches region caps
+                # the edge at the site's own confidence.
+                confidence=min(confidence, ref.confidence),
+                attrs=attrs,
+            ),
         )
 
 

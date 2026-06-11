@@ -14,10 +14,18 @@ Implementation notes:
   IMPORTS / EXTENDS recorded as :class:`UnresolvedRef` for the pass-2 linker.
 * Files containing tree-sitter ERROR nodes still yield partial results; the
   error count is reported in ``FileIR.parse_error_count``.
+* M2: ``parse`` accepts the preprocessor's line map. Spans and node ids then
+  attribute to the *original* file and line — declarations spliced from a
+  ``\\`include`` belong to the header, and nodes from non-selected
+  both-branches regions carry ``attrs["conditional"]`` with their DECLARES
+  edge and refs at ``CONFIDENCE_AMBIGUOUS``. A node straddling an include
+  boundary keeps the start line's file with a collapsed span (documented
+  limitation).
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -28,7 +36,16 @@ from tree_sitter import Parser as TSParser
 
 from hdl_kgraph.ids import decl_node_id, file_node_id
 from hdl_kgraph.parser.base import FileIR, UnresolvedRef
-from hdl_kgraph.schema import Edge, EdgeKind, Language, Node, NodeKind
+from hdl_kgraph.parser.preprocessor import LineOrigin
+from hdl_kgraph.schema import (
+    CONFIDENCE_AMBIGUOUS,
+    CONFIDENCE_RESOLVED,
+    Edge,
+    EdgeKind,
+    Language,
+    Node,
+    NodeKind,
+)
 
 SUFFIXES = frozenset({".v", ".vh", ".sv", ".svh"})
 SYSTEMVERILOG_SUFFIXES = frozenset({".sv", ".svh"})
@@ -70,15 +87,43 @@ class _Scope:
 
 
 class _Walker:
-    def __init__(self, ir: FileIR, relpath: str, language: Language, source: bytes) -> None:
+    def __init__(
+        self,
+        ir: FileIR,
+        relpath: str,
+        language: Language,
+        source: bytes,
+        line_map: Sequence[LineOrigin] | None = None,
+    ) -> None:
         self.ir = ir
         self.relpath = relpath
         self.language = language
         self.source = source
+        self.line_map = line_map
         self.scopes: list[_Scope] = []
         self._used_ids: set[str] = set()
 
     # -- small helpers -------------------------------------------------------
+
+    def _origin(self, node: TSNode) -> LineOrigin:
+        return self._origin_at(node.start_point[0])
+
+    def _origin_at(self, row: int) -> LineOrigin:
+        if not self.line_map:
+            return LineOrigin(file=self.relpath, line=row + 1)
+        return self.line_map[min(row, len(self.line_map) - 1)]
+
+    def _span(self, node: TSNode) -> tuple[int, int]:
+        if self.line_map is None:
+            return _line_span(node)
+        start = self._origin(node)
+        end = self._origin_at(node.end_point[0])
+        if end.file != start.file:  # straddles an include boundary
+            return (start.line, start.line)
+        return (start.line, max(start.line, end.line))
+
+    def _ref_confidence(self, node: TSNode) -> float:
+        return CONFIDENCE_AMBIGUOUS if self._origin(node).ambiguous else CONFIDENCE_RESOLVED
 
     def _text(self, node: TSNode) -> str:
         return self.source[node.start_byte : node.end_byte].decode(errors="replace")
@@ -115,24 +160,41 @@ class _Walker:
 
     def _new_node(self, kind: NodeKind, name: str, ts_node: TSNode, **attrs: object) -> Node:
         """Create a node in the current scope and emit its DECLARES edge."""
+        origin = self._origin(ts_node)
         qualified = self.scope.child_path(name)
-        node_id = decl_node_id(self.relpath, kind, qualified)
+        node_id = decl_node_id(origin.file, kind, qualified)
         if node_id in self._used_ids:
-            node_id = f"{node_id}@{ts_node.start_point[0] + 1}"
+            node_id = f"{node_id}@{origin.line}"
+            if node_id in self._used_ids:  # e.g. the same header spliced twice
+                node_id = f"{node_id}.{ts_node.start_point[0] + 1}"
         self._used_ids.add(node_id)
+        if origin.ambiguous:
+            attrs["conditional"] = True
         node = Node(
             id=node_id,
             kind=kind,
             name=name,
             qualified_name=qualified,
-            file=self.relpath,
-            line_span=_line_span(ts_node),
+            file=origin.file,
+            line_span=self._span(ts_node),
             language=self.language,
             attrs={k: v for k, v in attrs.items() if v is not None},
         )
         self.ir.nodes.append(node)
+        # A file-scope declaration spliced from a header belongs to the
+        # header's FILE node, not the including unit's.
+        src = self.scope.node_id
+        if len(self.scopes) == 1 and origin.file != self.relpath:
+            src = file_node_id(origin.file)
         self.ir.local_edges.append(
-            Edge(src=self.scope.node_id, dst=node.id, kind=EdgeKind.DECLARES)
+            Edge(
+                src=src,
+                dst=node.id,
+                kind=EdgeKind.DECLARES,
+                confidence=(
+                    CONFIDENCE_AMBIGUOUS if origin.ambiguous else CONFIDENCE_RESOLVED
+                ),
+            )
         )
         return node
 
@@ -218,8 +280,9 @@ class _Walker:
                 edge_kind=EdgeKind.EXTENDS,
                 src_id=cls.id,
                 target_name=text.strip(),
-                line_span=_line_span(base),
+                line_span=self._span(base),
                 attrs={"package": package, "param_args_text": param_args},
+                confidence=self._ref_confidence(base),
             )
         )
 
@@ -372,7 +435,8 @@ class _Walker:
                     edge_kind=EdgeKind.INSTANTIATES,
                     src_id=inst.id,
                     target_name=target,
-                    line_span=_line_span(hier),
+                    line_span=self._span(hier),
+                    confidence=self._ref_confidence(hier),
                 )
             )
             for override in param_overrides:
@@ -381,8 +445,9 @@ class _Walker:
                         edge_kind=EdgeKind.PARAMETERIZES,
                         src_id=inst.id,
                         target_name=target,
-                        line_span=_line_span(hier),
+                        line_span=self._span(hier),
                         attrs=dict(override),
+                        confidence=self._ref_confidence(hier),
                     )
                 )
             self._collect_connections(hier, inst, target)
@@ -452,8 +517,9 @@ class _Walker:
                         edge_kind=EdgeKind.CONNECTS,
                         src_id=inst.id,
                         target_name=target,
-                        line_span=_line_span(child),
+                        line_span=self._span(child),
                         attrs=attrs,
+                        confidence=self._ref_confidence(child),
                     )
                 )
 
@@ -471,8 +537,9 @@ class _Walker:
                     edge_kind=EdgeKind.IMPORTS,
                     src_id=self.scope.node_id,
                     target_name=package,
-                    line_span=_line_span(item),
+                    line_span=self._span(item),
                     attrs={"symbol": symbol},
+                    confidence=self._ref_confidence(item),
                 )
             )
 
@@ -504,11 +571,15 @@ class SystemVerilogParser:
     def __init__(self) -> None:
         self._parser = TSParser(SV_LANGUAGE)
 
-    def parse(self, path: Path, text: str) -> FileIR:
+    def parse(
+        self, path: Path, text: str, line_map: Sequence[LineOrigin] | None = None
+    ) -> FileIR:
         """Parse one file into its per-file IR.
 
         *path* should be relative to the build root; it becomes the node-id
-        prefix and ``Node.file`` for everything in the file.
+        prefix and ``Node.file`` for everything in the file. When *text* is
+        preprocessor output, pass its *line_map* so spans and file
+        attribution track the original sources (including spliced headers).
         """
         relpath = path.as_posix()
         language = (
@@ -527,7 +598,7 @@ class SystemVerilogParser:
         source = text.encode()
         try:
             tree = self._parser.parse(source)
-            walker = _Walker(ir, relpath, language, source)
+            walker = _Walker(ir, relpath, language, source, line_map)
             walker.scopes.append(_Scope(node_id=file_node.id, path=""))
             walker.visit(tree.root_node)
         except Exception:  # defensive: a walker bug must not abort the build
