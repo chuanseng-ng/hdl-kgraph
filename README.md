@@ -8,11 +8,12 @@ instances, ports, parameters, signals, classes, packages, and the
 relationships between them — design hierarchy, port connectivity, package
 imports, class inheritance, clock domains, and more.
 
-> **Status: alpha (v0.2).** SystemVerilog/Verilog structural extraction, the
+> **Status: alpha (v0.3).** SystemVerilog/Verilog structural extraction, the
 > pass-2 linker, SQLite persistence, the `build`/`status`/`query`/`tree`
-> CLI, and real-world inputs — the SV preprocessor, `.f` filelists, include
-> dirs, and `hdl-kgraph.toml` config — are in. VHDL lands in M3. See
-> [ROADMAP.md](ROADMAP.md).
+> CLI, real-world inputs — the SV preprocessor, `.f` filelists, include
+> dirs, and `hdl-kgraph.toml` config — and VHDL with mixed-language linking
+> (entities, architectures, packages, configurations, `--lib` library
+> mapping) are in. See [ROADMAP.md](ROADMAP.md).
 
 ## Why
 
@@ -56,7 +57,19 @@ filelists = ["sim/tb.f"]
 defines   = ["SYNTHESIS", "WIDTH=8"]
 incdirs   = ["include"]
 exclude   = ["vendor/*"]
+
+[vhdl.libraries]
+work = "src/vhdl"        # or: hdl-kgraph build --lib work=./src/vhdl
 ```
+
+**Mixed Verilog/VHDL designs link into one hierarchy.** VHDL names are
+case-insensitive (normalized to lowercase, original casing kept in attrs);
+`tree` and `query` cross the language boundary in both directions, and a
+VHDL configuration overriding a component's default binding is honored.
+Cross-language matches are by name at confidence ≤0.8 — never 1.0 — because
+vendor tools may bind differently (case folding, library prefixes,
+extended/escaped identifiers, generic-dependent wrappers); the score is the
+honest contract.
 
 Coming next:
 

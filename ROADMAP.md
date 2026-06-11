@@ -150,17 +150,23 @@ macro-instantiated modules resolve after expansion; line mapping verified by tes
 **Goal:** first-class VHDL extraction and Verilog↔VHDL linking — completes the
 "HDL" promise of the project name.
 
-- [ ] tree-sitter VHDL parser: `ENTITY`, `ARCHITECTURE` (+`IMPLEMENTS`),
+- [x] tree-sitter VHDL parser: `ENTITY`, `ARCHITECTURE` (+`IMPLEMENTS`),
       `VHDL_PACKAGE`/`PACKAGE_BODY`, `CONFIGURATION` (+`BINDS`),
       generics→`PARAMETER`, ports, signals, processes, component and direct
-      entity instantiation
-- [ ] Case-insensitive name normalization (original casing kept in attrs)
-- [ ] Library/work mapping (`--lib work=./src` style config); `LIBRARY` nodes;
-      `USES_PACKAGE` edges; component-vs-entity binding resolution
-- [ ] Cross-language pass-2 linking: VHDL component instantiating an SV module and
-      vice versa (name match, confidence 0.8; vendor name-mangling caveats
-      documented)
-- [ ] `tree` and `query` work across language boundaries
+      entity instantiation — **grammar: `jpt13653903/tree-sitter-vhdl` (PyPI
+      `tree-sitter-vhdl`); caveats in docs/grammar-bakeoff.md. Component
+      declarations are deliberately not graph nodes: instantiations carry the
+      style and the linker resolves through configuration/default binding**
+- [x] Case-insensitive name normalization (original casing kept in attrs)
+- [x] Library/work mapping (`--lib work=./src` style config); `LIBRARY` nodes;
+      `USES_PACKAGE` edges; component-vs-entity binding resolution (specific
+      label > `all` > `others`; `ieee`/`std` packages stay library-qualified
+      stubs by design)
+- [x] Cross-language pass-2 linking: VHDL component instantiating an SV module and
+      vice versa (case-insensitive name match, capped at confidence 0.8 even
+      within one file; vendor name-mangling caveats documented in README)
+- [x] `tree` and `query` work across language boundaries (entities expand
+      through their architectures, printed as `name(arch)`)
 
 **Acceptance:** mixed Verilog-top/VHDL-leaf and VHDL-top/Verilog-leaf fixtures both
 produce a single connected hierarchy; a VHDL configuration overriding a default
