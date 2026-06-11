@@ -18,8 +18,8 @@ Schema::
     exclude   = ["vendor/*"]
     max_file_size_kb = 1024
 
-    [vhdl.libraries]                 # parsed and carried now; consumed in M3
-    work = "src/vhdl"
+    [vhdl.libraries]                 # VHDL library name -> source directory
+    work = "src/vhdl"                # (M3; CLI --lib NAME=PATH wins per name)
 
 Relative paths resolve against the config file's own directory, so a config
 at the repo root keeps working from any subdirectory.
@@ -139,7 +139,19 @@ class BuildOptions:
     exclude: tuple[str, ...] = ()
     max_file_size_kb: int | None = None
     top: list[str] = field(default_factory=list)
+    vhdl_libraries: dict[str, Path] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+
+
+def parse_lib(text: str) -> tuple[str, Path]:
+    """Split a ``NAME=PATH`` VHDL library mapping (the ``--lib`` flag).
+
+    Library names are case-insensitive in VHDL and normalized to lowercase.
+    """
+    name, sep, value = text.partition("=")
+    if not sep or not name or not value:
+        raise ConfigError(f"--lib expects NAME=PATH, got {text!r}")
+    return name.lower(), Path(value).resolve()
 
 
 def resolve_build_options(
@@ -150,10 +162,13 @@ def resolve_build_options(
     cli_incdirs: Sequence[Path] = (),
     cli_exclude: Sequence[str] = (),
     cli_max_file_size_kb: int | None = None,
+    cli_libs: Sequence[str] = (),
 ) -> BuildOptions:
     """Merge config-file values with CLI flags (CLI appended last, so it wins)."""
     defines = dict(config.defines)
     defines.update(parse_define(d) for d in cli_defines)
+    vhdl_libraries = {name.lower(): path for name, path in config.vhdl_libraries.items()}
+    vhdl_libraries.update(parse_lib(lib) for lib in cli_libs)
     return BuildOptions(
         filelists=[*config.filelists, *cli_filelists],
         defines=defines,
@@ -164,5 +179,6 @@ def resolve_build_options(
             cli_max_file_size_kb if cli_max_file_size_kb is not None else config.max_file_size_kb
         ),
         top=list(config.top),
+        vhdl_libraries=vhdl_libraries,
         warnings=list(config.warnings),
     )

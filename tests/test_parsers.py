@@ -23,7 +23,6 @@ ALL_BACKENDS = [
 
 # Backends not yet implemented, with the milestone their NotImplementedError names.
 STUB_BACKENDS_AND_MILESTONES = [
-    (VhdlParser, "M3"),
     (SdcParser, "M10"),
     (UpfParser, "M10"),
     (TclScriptParser, "M10"),

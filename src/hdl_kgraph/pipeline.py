@@ -32,6 +32,7 @@ from hdl_kgraph.discovery import (
     discover_from_paths,
 )
 from hdl_kgraph.graph.builder import build_graph
+from hdl_kgraph.ids import file_node_id, library_node_id
 from hdl_kgraph.parser.base import FileIR
 from hdl_kgraph.parser.filelist import (
     Filelist,
@@ -44,7 +45,8 @@ from hdl_kgraph.parser.filelist import (
 )
 from hdl_kgraph.parser.preprocessor import MacroTable, PreprocEmitter, Preprocessor
 from hdl_kgraph.parser.systemverilog import SystemVerilogParser
-from hdl_kgraph.schema import Language
+from hdl_kgraph.parser.vhdl import DEFAULT_LIBRARY, VhdlParser
+from hdl_kgraph.schema import Edge, EdgeKind, Language, Node, NodeKind
 from hdl_kgraph.storage.sqlite_store import FileMeta, SqliteStore
 
 DB_DIRNAME = ".hdl-kgraph"
@@ -58,6 +60,7 @@ class BuildReport:
     root: Path
     db_path: Path
     parsed_files: int = 0
+    vhdl_files: int = 0
     error_files: int = 0
     parse_error_count: int = 0
     skipped: dict[str, int] = field(default_factory=dict)  # reason -> count
@@ -137,12 +140,14 @@ def run_build(
         branch_mode="both" if report.both_branches else "select",
     )
     parser = SystemVerilogParser()
+    vhdl_parser = VhdlParser()
     emitter = PreprocEmitter()
     irs: list[FileIR] = []
     files_meta: list[FileMeta] = []
     macro_keys: set[tuple[str, str, int]] = set()
     processed: set[str] = set()  # units preprocessed standalone so far
     consumed: set[str] = set()  # spliced into an earlier unit -> skip standalone
+    vhdl_file_libs: dict[str, str] = {}  # relpath -> library name
 
     for found in discovered:
         skipped_reason = found.skipped_reason
@@ -160,20 +165,28 @@ def run_build(
                 )
             )
             continue
-        pp = preprocessor.preprocess(found.path)
-        processed.add(found.relpath)
-        consumed |= pp.included_relpaths - processed
-        ir = parser.parse(Path(found.relpath), pp.text, line_map=pp.line_map)
-        emitter.emit(pp, ir)
+        if found.language is Language.VHDL:
+            # VHDL has no SV preprocessor pass; route by configured library.
+            library = _library_for(found.path, options.vhdl_libraries)
+            vhdl_file_libs[found.relpath] = library
+            text = found.path.read_text(errors="replace")
+            ir = vhdl_parser.parse(Path(found.relpath), text, library=library)
+            report.vhdl_files += 1
+        else:
+            pp = preprocessor.preprocess(found.path)
+            processed.add(found.relpath)
+            consumed |= pp.included_relpaths - processed
+            ir = parser.parse(Path(found.relpath), pp.text, line_map=pp.line_map)
+            emitter.emit(pp, ir)
+            report.includes_resolved += sum(1 for ev in pp.includes if ev.resolved is not None)
+            report.includes_unresolved += sum(1 for ev in pp.includes if ev.resolved is None)
+            report.preproc_warning_count += len(pp.warnings)
+            macro_keys |= {(d.file, d.name, d.line) for d in pp.macro_defs}
         irs.append(ir)
         report.parsed_files += 1
         if ir.parse_error_count:
             report.error_files += 1
             report.parse_error_count += ir.parse_error_count
-        report.includes_resolved += sum(1 for ev in pp.includes if ev.resolved is not None)
-        report.includes_unresolved += sum(1 for ev in pp.includes if ev.resolved is None)
-        report.preproc_warning_count += len(pp.warnings)
-        macro_keys |= {(d.file, d.name, d.line) for d in pp.macro_defs}
         files_meta.append(
             FileMeta(
                 path=found.relpath,
@@ -197,6 +210,8 @@ def run_build(
     for fl in filelists:
         irs.extend(filelist_irs(fl, base))
         files_meta.extend(_filelist_meta(fl, base, seen_meta))
+    if vhdl_file_libs:
+        irs.append(_library_ir(vhdl_file_libs, options.vhdl_libraries))
 
     graph = build_graph(irs)
     report.node_count = graph.number_of_nodes()
@@ -207,6 +222,62 @@ def run_build(
 
     SqliteStore(db_path).save(graph, files_meta, root=base)
     return report
+
+
+def _library_for(path: Path, libraries: dict[str, Path]) -> str:
+    """The VHDL library *path* compiles into: longest matching mapped prefix."""
+    best = DEFAULT_LIBRARY
+    best_len = -1
+    for name, lib_path in libraries.items():
+        lib_path = lib_path.resolve()
+        if path == lib_path or lib_path in path.parents:
+            depth = len(lib_path.parts)
+            if depth > best_len:
+                best, best_len = name, depth
+    return best
+
+
+def _library_ir(file_libs: dict[str, str], libraries: dict[str, Path]) -> FileIR:
+    """LIBRARY nodes + LIBRARY->FILE DECLARES edges for the VHDL files seen.
+
+    Emitted as an adapter IR (the FILELIST pattern); parser-emitted FILE
+    nodes win the linker's first-occurrence dedupe, so the minimal FILE
+    stubs here only matter if a file somehow failed to parse.
+    """
+    ir = FileIR(path="<vhdl-libraries>")
+    seen: set[str] = set()
+    for relpath, library in file_libs.items():
+        lib_id = library_node_id(library)
+        if library not in seen:
+            seen.add(library)
+            attrs: dict[str, object] = {}
+            mapped = libraries.get(library)
+            if mapped is not None:
+                attrs["path"] = str(mapped)
+            ir.nodes.append(
+                Node(
+                    id=lib_id,
+                    kind=NodeKind.LIBRARY,
+                    name=library,
+                    qualified_name=library,
+                    language=Language.VHDL,
+                    attrs=attrs,
+                )
+            )
+        ir.nodes.append(
+            Node(
+                id=file_node_id(relpath),
+                kind=NodeKind.FILE,
+                name=Path(relpath).name,
+                qualified_name=relpath,
+                file=relpath,
+                language=Language.VHDL,
+            )
+        )
+        ir.local_edges.append(
+            Edge(src=lib_id, dst=file_node_id(relpath), kind=EdgeKind.DECLARES)
+        )
+    return ir
 
 
 def _walk_filelists(fl: Filelist, seen: set[Path]) -> list[Filelist]:

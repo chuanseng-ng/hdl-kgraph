@@ -12,7 +12,7 @@ from typing import Any
 
 import networkx as nx
 
-from hdl_kgraph.schema import EdgeKind, NodeKind
+from hdl_kgraph.schema import EdgeKind, Language, NodeKind
 
 
 def _is_stub(g: nx.MultiDiGraph, node_id: str) -> bool:
@@ -26,12 +26,16 @@ def _edges_of_kind(
     return [(u, v, d) for u, v, d in edges if d["kind"] is kind]
 
 
+#: Design-unit kinds that root a hierarchy (SV modules and VHDL entities).
+_HIERARCHY_ROOT_KINDS = (NodeKind.MODULE, NodeKind.ENTITY)
+
+
 def find_top_modules(g: nx.MultiDiGraph) -> list[str]:
-    """MODULE nodes that are never instantiated (excluding unresolved stubs)."""
+    """MODULE/ENTITY nodes never instantiated (excluding unresolved stubs)."""
     tops = [
         node_id
         for node_id, data in g.nodes(data=True)
-        if data["kind"] is NodeKind.MODULE
+        if data["kind"] in _HIERARCHY_ROOT_KINDS
         and not _is_stub(g, node_id)
         and not _edges_of_kind(g, node_id, EdgeKind.INSTANTIATES, reverse=True)
     ]
@@ -40,23 +44,53 @@ def find_top_modules(g: nx.MultiDiGraph) -> list[str]:
 
 @dataclass
 class HierarchyNode:
-    """One level of the design hierarchy under a module."""
+    """One level of the design hierarchy under a module/entity."""
 
     module_id: str
     module_name: str
     instance_name: str | None  # None for the root
     confidence: float = 1.0
     unresolved: bool = False
+    architecture: str | None = None  # the VHDL architecture expanded, if one
     children: list[HierarchyNode] = field(default_factory=list)
     truncated: bool = False  # depth limit or instantiation cycle reached
 
 
+def _instance_holders(g: nx.MultiDiGraph, unit_id: str, via_arch: str | None) -> list[str]:
+    """Scopes whose declared instances are *unit_id*'s children.
+
+    A MODULE holds its instances directly; an ENTITY's instances live in its
+    ARCHITECTURE(s), reached via reverse IMPLEMENTS — narrowed to *via_arch*
+    when the instantiation site named one (``entity work.alu(rtl)``).
+    """
+    holders = [unit_id]
+    archs = [u for u, _, d in g.in_edges(unit_id, data=True) if d["kind"] is EdgeKind.IMPLEMENTS]
+    if via_arch:
+        named = [a for a in archs if g.nodes[a]["name"] == via_arch]
+        archs = named or archs
+    holders.extend(sorted(archs, key=lambda a: g.nodes[a]["qualified_name"]))
+    return holders
+
+
 def hierarchy_tree(g: nx.MultiDiGraph, top_id: str, max_depth: int = 64) -> HierarchyNode:
     """Design hierarchy from *top_id* via DECLARES(module->instance) +
-    INSTANTIATES(instance->module), with a cycle/repeat guard."""
+    INSTANTIATES(instance->module), with a cycle/repeat guard. VHDL entities
+    expand through their architectures (reverse IMPLEMENTS)."""
+
+    def has_instances(unit_id: str, via_arch: str | None) -> bool:
+        return any(
+            g.nodes[inst_id]["kind"] is NodeKind.INSTANCE
+            for holder in _instance_holders(g, unit_id, via_arch)
+            for _, inst_id, _ in _edges_of_kind(g, holder, EdgeKind.DECLARES)
+        )
 
     def expand(
-        module_id: str, instance_name: str | None, conf: float, seen: frozenset[str], depth: int
+        module_id: str,
+        instance_name: str | None,
+        conf: float,
+        seen: frozenset[str],
+        depth: int,
+        via_arch: str | None = None,
     ) -> HierarchyNode:
         data = g.nodes[module_id]
         node = HierarchyNode(
@@ -66,27 +100,30 @@ def hierarchy_tree(g: nx.MultiDiGraph, top_id: str, max_depth: int = 64) -> Hier
             confidence=conf,
             unresolved=_is_stub(g, module_id),
         )
+        holders = _instance_holders(g, module_id, via_arch)
+        archs = holders[1:]
+        if len(archs) == 1:
+            node.architecture = g.nodes[archs[0]]["name"]
         if depth >= max_depth or module_id in seen:
             # A cycle is always a truncation; a depth-capped node only is one
             # if it actually had children left to expand.
-            node.truncated = module_id in seen or any(
-                g.nodes[inst_id]["kind"] is NodeKind.INSTANCE
-                for _, inst_id, _ in _edges_of_kind(g, module_id, EdgeKind.DECLARES)
-            )
+            node.truncated = module_id in seen or has_instances(module_id, via_arch)
             return node
-        for _, inst_id, _decl in _edges_of_kind(g, module_id, EdgeKind.DECLARES):
-            if g.nodes[inst_id]["kind"] is not NodeKind.INSTANCE:
-                continue
-            for _, child_id, inst_edge in _edges_of_kind(g, inst_id, EdgeKind.INSTANTIATES):
-                node.children.append(
-                    expand(
-                        child_id,
-                        g.nodes[inst_id]["name"],
-                        inst_edge["confidence"],
-                        seen | {module_id},
-                        depth + 1,
+        for holder in holders:
+            for _, inst_id, _decl in _edges_of_kind(g, holder, EdgeKind.DECLARES):
+                if g.nodes[inst_id]["kind"] is not NodeKind.INSTANCE:
+                    continue
+                for _, child_id, inst_edge in _edges_of_kind(g, inst_id, EdgeKind.INSTANTIATES):
+                    node.children.append(
+                        expand(
+                            child_id,
+                            g.nodes[inst_id]["name"],
+                            inst_edge["confidence"],
+                            seen | {module_id},
+                            depth + 1,
+                            via_arch=inst_edge["attrs"].get("architecture"),
+                        )
                     )
-                )
         node.children.sort(key=lambda c: (c.instance_name or "", c.module_name))
         return node
 
@@ -102,12 +139,17 @@ def instances_of(g: nx.MultiDiGraph, name: str) -> list[dict[str, Any]]:
     """
     results: list[dict[str, Any]] = []
     for target_id, data in g.nodes(data=True):
-        if data["name"] != name or data["kind"] not in (
+        if data["kind"] not in (
             NodeKind.MODULE,
             NodeKind.INTERFACE,
             NodeKind.PROGRAM,
             NodeKind.PRIMITIVE,
+            NodeKind.ENTITY,
         ):
+            continue
+        # VHDL names are stored lowercase and match case-insensitively.
+        wanted = name.lower() if data["language"] is Language.VHDL else name
+        if data["name"] != wanted:
             continue
         for inst_id, _, edge in _edges_of_kind(g, target_id, EdgeKind.INSTANTIATES, reverse=True):
             inst = g.nodes[inst_id]
