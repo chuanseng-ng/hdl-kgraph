@@ -14,10 +14,14 @@ given.
 
 from __future__ import annotations
 
+import dataclasses
+import enum
+import json
 import sys
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import click
 import networkx as nx
@@ -31,7 +35,7 @@ from hdl_kgraph.config import (
     resolve_build_options,
 )
 from hdl_kgraph.discovery import DEFAULT_MAX_FILE_SIZE_KB, SUFFIXES
-from hdl_kgraph.graph import analysis
+from hdl_kgraph.graph import analysis, clocks
 from hdl_kgraph.incremental import detect_git_changes, dirty_closure
 from hdl_kgraph.pipeline import (
     BuildReport,
@@ -52,6 +56,22 @@ _db_option = click.option(
     default=None,
     help="Path to the graph database (default: nearest .hdl-kgraph/graph.db).",
 )
+
+_json_option = click.option(
+    "--json", "as_json", is_flag=True, help="Emit JSON instead of the text report."
+)
+
+
+def _json_default(value: Any) -> Any:
+    if isinstance(value, enum.Enum):
+        return value.value
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return dataclasses.asdict(value)
+    return str(value)
+
+
+def _emit_json(payload: Any) -> None:
+    click.echo(json.dumps(payload, indent=2, default=_json_default))
 
 
 def _load(db_path: Path | None) -> tuple[nx.MultiDiGraph, list, dict[str, str]]:
@@ -551,6 +571,135 @@ def modules(db_path: Path | None) -> None:
         rows.append((data["name"], marker, data["file"], data["line_span"][0], count))
     for name, marker, file, line, count in rows:
         click.echo(f"{name + marker:30} {file}:{line}  instances={count}")
+
+
+@query.command("clock-domains")
+@_db_option
+@_json_option
+def clock_domains_cmd(db_path: Path | None, as_json: bool) -> None:
+    """Report clock domains: clock nets, their processes and signals.
+
+    Domains come from CLOCKED_BY edges (sensitivity-list evidence = 1.0,
+    name heuristics = 0.4) with clock nets alias-merged across the
+    hierarchy through single-identifier port connections.
+    """
+    graph, _, _ = _load(db_path)
+    domains = clocks.clock_domains(graph)
+    if as_json:
+        _emit_json(domains)
+        return
+    if not domains:
+        click.echo("no clocked processes found")
+        return
+    for domain in domains:
+        label = graph.nodes[domain.clock_id]["qualified_name"]
+        aliases = [n for n in domain.clock_names if n != graph.nodes[domain.clock_id]["name"]]
+        if aliases:
+            label += " (= " + ", ".join(aliases) + ")"
+        marker = "" if domain.min_confidence >= 0.8 else f"  [~{domain.min_confidence:.1f}]"
+        click.echo(f"{label}{marker}")
+        click.echo(f"    processes: {len(domain.process_ids)}")
+        click.echo(f"    signals driven: {len(domain.signal_ids)}")
+
+
+@query.command("reset-tree")
+@_db_option
+@_json_option
+def reset_tree_cmd(db_path: Path | None, as_json: bool) -> None:
+    """Report reset nets and the processes they reset."""
+    graph, _, _ = _load(db_path)
+    groups = clocks.reset_tree(graph)
+    if as_json:
+        _emit_json(groups)
+        return
+    if not groups:
+        click.echo("no resets found")
+        return
+    for group in groups:
+        label = graph.nodes[group.reset_id]["qualified_name"]
+        aliases = [n for n in group.reset_names if n != graph.nodes[group.reset_id]["name"]]
+        if aliases:
+            label += " (= " + ", ".join(aliases) + ")"
+        flavor = "async" if group.is_async else "sync (name heuristic)"
+        marker = "" if group.min_confidence >= 0.8 else f"  [~{group.min_confidence:.1f}]"
+        click.echo(f"{label}  {flavor}{marker}")
+        for proc in group.process_ids:
+            click.echo(f"    resets {graph.nodes[proc]['qualified_name']}")
+
+
+@query.command("cdc")
+@_db_option
+@_json_option
+def cdc_cmd(db_path: Path | None, as_json: bool) -> None:
+    """Report clock-domain-crossing suspects.
+
+    A suspect is a signal driven in one domain and read by a process in
+    another. Synchronizers are not recognized — review each finding (this
+    is a report, not a gate; the exit code is always 0).
+    """
+    graph, _, _ = _load(db_path)
+    suspects = clocks.cdc_suspects(graph)
+    if as_json:
+        _emit_json(suspects)
+        return
+    if not suspects:
+        click.echo("no CDC suspects found")
+        return
+    for s in suspects:
+        location = f"{s.file}:{s.line}" if s.file else "?"
+        click.echo(
+            f"{s.signal_name:24} {s.driver_domain} -> {s.reader_domain}"
+            f"  read by {graph.nodes[s.reader_id]['qualified_name']}"
+            f"  {location}  confidence={s.confidence:.1f}"
+        )
+
+
+@query.command("drivers")
+@click.argument("signal")
+@_db_option
+@_json_option
+@click.option("--readers", is_flag=True, help="List readers instead of drivers.")
+def drivers_cmd(signal: str, db_path: Path | None, as_json: bool, readers: bool) -> None:
+    """List what drives (or reads) signals named SIGNAL."""
+    graph, _, _ = _load(db_path)
+    kind = EdgeKind.READS if readers else EdgeKind.DRIVES
+    records: list[dict[str, Any]] = []
+    for node_id, data in graph.nodes(data=True):
+        if data["kind"] not in (NodeKind.SIGNAL, NodeKind.PORT):
+            continue
+        wanted = signal.lower() if data["language"] is Language.VHDL else signal
+        if data["name"] != wanted:
+            continue
+        for src, _, edge in graph.in_edges(node_id, data=True):
+            if edge["kind"] is not kind:
+                continue
+            site = graph.nodes[src]
+            span = edge["attrs"].get("line_span") or site["line_span"]
+            records.append(
+                {
+                    "signal_id": node_id,
+                    "signal": data["qualified_name"],
+                    "site_id": src,
+                    "site": site["qualified_name"],
+                    "site_kind": site["kind"].value,
+                    "file": site["file"],
+                    "line": span[0] if span else 0,
+                    "confidence": edge["confidence"],
+                }
+            )
+    records.sort(key=lambda r: (r["signal"], r["file"], r["line"], r["site"]))
+    if as_json:
+        _emit_json(records)
+        return
+    if not records:
+        verb = "reads" if readers else "drives"
+        click.echo(f"nothing {verb} a signal named {signal!r}", err=True)
+        sys.exit(1)
+    for rec in records:
+        click.echo(
+            f"{rec['signal']:30} <- {rec['site_kind']} {rec['site']}"
+            f"  {rec['file']}:{rec['line']}  confidence={rec['confidence']:.1f}"
+        )
 
 
 @query.command("unresolved")

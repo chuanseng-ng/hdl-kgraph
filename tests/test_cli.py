@@ -42,7 +42,7 @@ def test_help_lists_commands() -> None:
 def test_build_reports_summary(project: Path) -> None:
     result = CliRunner().invoke(main, ["build", str(project)])
     assert result.exit_code == 0
-    assert "files parsed:   27" in result.output
+    assert "files parsed:   28" in result.output
     assert "vhdl files:     6" in result.output
     assert "parse errors:" in result.output  # broken.sv
     assert "unresolved:" in result.output  # ghost_mod etc.
@@ -65,7 +65,7 @@ def test_failed_build_preserves_existing_db(project: Path, tmp_path: Path) -> No
 def test_status(project: Path) -> None:
     result = CliRunner().invoke(main, ["status", *db_args(project)])
     assert result.exit_code == 0, result.output
-    assert "27 parsed" in result.output
+    assert "28 parsed" in result.output
     assert "parse error(s)" in result.output
     assert "module" in result.output
     assert "instantiates" in result.output
@@ -106,6 +106,50 @@ def test_query_unresolved(project: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "module:ghost_mod" in result.output
     assert "class:uvm_test" in result.output
+
+
+def test_query_clock_domains(project: Path) -> None:
+    result = CliRunner().invoke(main, ["query", "clock-domains", *db_args(project)])
+    assert result.exit_code == 0, result.output
+    assert "two_clock_top.clk_a" in result.output
+    assert "processes:" in result.output
+
+
+def test_query_cdc_finds_the_planted_crossing(project: Path) -> None:
+    result = CliRunner().invoke(main, ["query", "cdc", *db_args(project)])
+    assert result.exit_code == 0, result.output
+    assert "data_a" in result.output
+    assert "clk_a ->" in result.output
+
+
+def test_query_cdc_json(project: Path) -> None:
+    import json as json_mod
+
+    result = CliRunner().invoke(main, ["query", "cdc", "--json", *db_args(project)])
+    assert result.exit_code == 0, result.output
+    payload = json_mod.loads(result.output)
+    assert any(item["signal_name"] == "data_a" for item in payload)
+
+
+def test_query_reset_tree(project: Path) -> None:
+    result = CliRunner().invoke(main, ["query", "reset-tree", *db_args(project)])
+    assert result.exit_code == 0, result.output
+    assert "rst_n" in result.output
+    assert "async" in result.output
+
+
+def test_query_drivers(project: Path) -> None:
+    result = CliRunner().invoke(main, ["query", "drivers", "data_a", *db_args(project)])
+    assert result.exit_code == 0, result.output
+    assert "two_clock_top.always@22" in result.output
+
+
+def test_query_drivers_readers(project: Path) -> None:
+    result = CliRunner().invoke(
+        main, ["query", "drivers", "data_a", "--readers", *db_args(project)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "two_clock_top.always@28" in result.output
 
 
 def test_tree_from_top(project: Path) -> None:
