@@ -22,11 +22,14 @@ def test_discovers_only_hdl_suffixes(tmp_path: Path) -> None:
     make(tmp_path / "c.svh")
     make(tmp_path / "d.vh")
     make(tmp_path / "ignored.txt")
-    make(tmp_path / "alu.vhd")  # VHDL lands in M3
+    make(tmp_path / "alu.vhd")
+    make(tmp_path / "pkg.vhdl")
     found = by_rel(discover(tmp_path))
-    assert set(found) == {"a.sv", "b.v", "c.svh", "d.vh"}
+    assert set(found) == {"a.sv", "b.v", "c.svh", "d.vh", "alu.vhd", "pkg.vhdl"}
     assert found["a.sv"].language is Language.SYSTEMVERILOG
     assert found["b.v"].language is Language.VERILOG
+    assert found["alu.vhd"].language is Language.VHDL
+    assert found["pkg.vhdl"].language is Language.VHDL
 
 
 def test_exclude_glob_matches_relative_path(tmp_path: Path) -> None:

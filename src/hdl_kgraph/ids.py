@@ -6,6 +6,7 @@ rebuild. Paths are POSIX-style and relative to the build root.
 
 * FILE nodes: ``file:{relpath}``
 * FILELIST nodes: ``filelist:{relpath}``
+* LIBRARY nodes: ``library:{name}`` (VHDL library names, lowercase)
 * Declarations: ``{relpath}::{kind}:{dotted_scope_path}`` — e.g.
   ``rtl/fifo.sv::module:fifo``, ``rtl/fifo.sv::port:fifo.clk``,
   ``rtl/top.v::instance:top.u_counter``
@@ -28,6 +29,11 @@ def file_node_id(relpath: str) -> str:
 def filelist_node_id(relpath: str) -> str:
     """Id of the FILELIST node for *relpath*."""
     return f"filelist:{relpath}"
+
+
+def library_node_id(name: str) -> str:
+    """Id of the LIBRARY node for VHDL library *name* (already lowercase)."""
+    return f"library:{name}"
 
 
 def decl_node_id(relpath: str, kind: NodeKind, scope_path: str) -> str:

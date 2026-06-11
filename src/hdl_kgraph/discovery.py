@@ -9,7 +9,7 @@ M2 adds :func:`discover_from_paths` for explicit file sets (filelists,
 config source globs): input order is preserved because compile order governs
 ``\\`define`` visibility, and two extra skip reasons appear — ``missing``
 (a filelist entry that does not exist) and ``unsupported`` (a suffix no
-parser handles yet, e.g. ``.vhd`` until M3).
+parser handles yet). M3 adds the VHDL suffixes.
 """
 
 from __future__ import annotations
@@ -21,8 +21,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from hdl_kgraph.parser.systemverilog import SUFFIXES, SYSTEMVERILOG_SUFFIXES
+from hdl_kgraph.parser.systemverilog import SUFFIXES as SV_SUFFIXES
+from hdl_kgraph.parser.systemverilog import SYSTEMVERILOG_SUFFIXES
+from hdl_kgraph.parser.vhdl import SUFFIXES as VHDL_SUFFIXES
 from hdl_kgraph.schema import Language
+
+SUFFIXES = SV_SUFFIXES | VHDL_SUFFIXES
 
 DEFAULT_MAX_FILE_SIZE_KB = 1024
 _PRAGMA_PROTECT_PROBE_BYTES = 4096
@@ -42,7 +46,9 @@ class DiscoveredFile:
 
 
 def _language_for(path: Path) -> Language:
-    if path.suffix not in SUFFIXES:
+    if path.suffix in VHDL_SUFFIXES:
+        return Language.VHDL
+    if path.suffix not in SV_SUFFIXES:
         return Language.UNKNOWN
     return Language.SYSTEMVERILOG if path.suffix in SYSTEMVERILOG_SUFFIXES else Language.VERILOG
 

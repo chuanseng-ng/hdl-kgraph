@@ -94,6 +94,14 @@ def main() -> None:
     help="`include search directory (repeatable).",
 )
 @click.option(
+    "--lib",
+    "libs",
+    multiple=True,
+    metavar="NAME=PATH",
+    help="Map a VHDL library name to a source directory (repeatable; "
+    "overrides [vhdl.libraries] config entries; default library is 'work').",
+)
+@click.option(
     "--config",
     "config_path",
     type=click.Path(exists=True, path_type=Path),
@@ -121,6 +129,7 @@ def build(
     filelists: tuple[Path, ...],
     defines: tuple[str, ...],
     incdirs: tuple[Path, ...],
+    libs: tuple[str, ...],
     config_path: Path | None,
     no_config: bool,
     excludes: tuple[str, ...],
@@ -136,14 +145,18 @@ def build(
             config = BuildConfig.load(config_path) if config_path is not None else BuildConfig()
         except ConfigError as exc:
             raise click.ClickException(str(exc)) from exc
-    options = resolve_build_options(
-        config,
-        cli_filelists=[p.resolve() for p in filelists],
-        cli_defines=defines,
-        cli_incdirs=[p.resolve() for p in incdirs],
-        cli_exclude=excludes,
-        cli_max_file_size_kb=max_file_size,
-    )
+    try:
+        options = resolve_build_options(
+            config,
+            cli_filelists=[p.resolve() for p in filelists],
+            cli_defines=defines,
+            cli_incdirs=[p.resolve() for p in incdirs],
+            cli_exclude=excludes,
+            cli_max_file_size_kb=max_file_size,
+            cli_libs=libs,
+        )
+    except ConfigError as exc:
+        raise click.ClickException(str(exc)) from exc
     report = run_build(source, db_path=db_path, options=options)
     for warning in report.warnings:
         click.echo(f"warning: {warning}", err=True)
@@ -153,6 +166,8 @@ def build(
     if report.filelists_read:
         click.echo(f"  filelists:      {report.filelists_read}")
     click.echo(f"  files parsed:   {report.parsed_files}")
+    if report.vhdl_files:
+        click.echo(f"  vhdl files:     {report.vhdl_files}")
     for reason, count in sorted(report.skipped.items()):
         click.echo(f"  skipped ({reason}): {count}")
     if report.error_files:
@@ -235,20 +250,23 @@ def instances_of(name: str, db_path: Path | None) -> None:
 @query.command("modules")
 @_db_option
 def modules(db_path: Path | None) -> None:
-    """List all modules with their instantiation counts."""
+    """List all modules and entities with their instantiation counts."""
     graph, _, _ = _load(db_path)
     rows = []
     for node_id, data in sorted(graph.nodes(data=True), key=lambda kv: kv[1]["name"]):
-        if data["kind"] is not NodeKind.MODULE or data["attrs"].get("unresolved"):
+        if data["kind"] not in (NodeKind.MODULE, NodeKind.ENTITY) or data["attrs"].get(
+            "unresolved"
+        ):
             continue
         count = sum(
             1
             for _, _, edge in graph.in_edges(node_id, data=True)
             if edge["kind"] is EdgeKind.INSTANTIATES
         )
-        rows.append((data["name"], data["file"], data["line_span"][0], count))
-    for name, file, line, count in rows:
-        click.echo(f"{name:30} {file}:{line}  instances={count}")
+        marker = " [vhdl]" if data["kind"] is NodeKind.ENTITY else ""
+        rows.append((data["name"], marker, data["file"], data["line_span"][0], count))
+    for name, marker, file, line, count in rows:
+        click.echo(f"{name + marker:30} {file}:{line}  instances={count}")
 
 
 @query.command("unresolved")
@@ -277,12 +295,13 @@ def tree(top: str | None, depth: int, db_path: Path | None) -> None:
         roots = [
             node_id
             for node_id, data in graph.nodes(data=True)
-            if data["kind"] is NodeKind.MODULE
-            and data["name"] == top
+            if data["kind"] in (NodeKind.MODULE, NodeKind.ENTITY)
+            # VHDL entity names are stored lowercase (case-insensitive).
+            and data["name"] == (top.lower() if data["language"] is Language.VHDL else top)
             and not data["attrs"].get("unresolved")
         ]
         if not roots:
-            raise click.ClickException(f"module {top!r} not found in the graph")
+            raise click.ClickException(f"module or entity {top!r} not found in the graph")
     else:
         roots = analysis.find_top_modules(graph)
         if not roots:
@@ -293,11 +312,13 @@ def tree(top: str | None, depth: int, db_path: Path | None) -> None:
 
 
 def _print_tree(node: analysis.HierarchyNode, prefix: str, is_last: bool) -> None:
+    # A VHDL entity shows the architecture its children came from: alu(rtl).
+    unit = node.module_name + (f"({node.architecture})" if node.architecture else "")
     if node.instance_name is None:
-        label = node.module_name
+        label = unit
     else:
         connector = "`-- " if is_last else "|-- "
-        label = f"{prefix}{connector}{node.instance_name}: {node.module_name}"
+        label = f"{prefix}{connector}{node.instance_name}: {unit}"
     if node.unresolved:
         label += " [?]"
     elif node.confidence < 0.8:

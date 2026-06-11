@@ -31,13 +31,13 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
   "Topic :: Software Development :: Compilers",
 ]
-# Grammar choice: see docs/grammar-bakeoff.md (ROADMAP.md "Risks" #1).
-# tree-sitter-vhdl is added in M3.
+# Grammar choices: see docs/grammar-bakeoff.md (ROADMAP.md "Risks" #1 and #2).
 dependencies = [
   "click>=8.1",
   "networkx>=3.0",
   "tree-sitter>=0.23",
   "tree-sitter-systemverilog>=0.3.1",
+  "tree-sitter-vhdl>=1.5",
   'tomli>=2.0; python_version < "3.11"',
 ]
 
@@ -80,7 +80,13 @@ warn_unused_ignores = true
 warn_redundant_casts = true
 
 [[tool.mypy.overrides]]
-module = ["tree_sitter.*", "tree_sitter_systemverilog.*", "networkx.*", "tomli.*"]
+module = [
+  "tree_sitter.*",
+  "tree_sitter_systemverilog.*",
+  "tree_sitter_vhdl.*",
+  "networkx.*",
+  "tomli.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
