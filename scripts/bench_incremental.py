@@ -7,7 +7,7 @@ docs/benchmarks.md for the procedure and recorded results.
 
 Usage::
 
-    python scripts/bench_incremental.py [--files 2000] [--target-s 1.0]
+    python scripts/bench_incremental.py [--files 2000] [--target-s 1.5]
 """
 
 from __future__ import annotations
@@ -27,7 +27,9 @@ from hdl_kgraph.pipeline import run_build, run_update  # noqa: E402
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--files", type=int, default=2000)
-    parser.add_argument("--target-s", type=float, default=1.0)
+    # M4 measured 0.85 s against a < 1 s target; M5's dataflow edges grew the
+    # graph ~76% and the budget to < 1.5 s (see docs/benchmarks.md).
+    parser.add_argument("--target-s", type=float, default=1.5)
     parser.add_argument(
         "--keep", type=Path, default=None, help="generate into this directory and keep it"
     )

@@ -5,7 +5,9 @@ M1 surface: ``build``, ``status``, ``query`` (``instances-of`` / ``modules``
 ``build``: ``-f`` filelists, ``-D`` defines, ``-I`` include dirs, and
 ``hdl-kgraph.toml`` config discovery (CLI flags win over config values).
 M4 adds ``update`` (incremental rebuild), ``detect-changes``, ``impact``,
-and ``watch``. ``visualize`` arrives in M5, ``serve`` in M6.
+and ``watch``. M5 adds the analyses — ``lint``, ``metrics``, ``visualize``,
+and ``query`` ``clock-domains``/``reset-tree``/``cdc``/``drivers``/``uvm``
+(all with ``--json``). ``serve`` arrives in M6.
 
 The database lives at ``<root>/.hdl-kgraph/graph.db``; read commands locate
 it by walking up from the current directory (git-style) unless ``--db`` is

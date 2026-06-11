@@ -8,13 +8,15 @@ instances, ports, parameters, signals, classes, packages, and the
 relationships between them — design hierarchy, port connectivity, package
 imports, class inheritance, clock domains, and more.
 
-> **Status: alpha (v0.4).** SystemVerilog/Verilog structural extraction, the
+> **Status: alpha (v0.5).** SystemVerilog/Verilog structural extraction, the
 > pass-2 linker, SQLite persistence, the `build`/`status`/`query`/`tree`
 > CLI, real-world inputs — the SV preprocessor, `.f` filelists, include
 > dirs, and `hdl-kgraph.toml` config — VHDL with mixed-language linking
 > (entities, architectures, packages, configurations, `--lib` library
-> mapping), and incremental rebuilds (`update`, `watch`, `detect-changes`,
-> `impact`) are in. See [ROADMAP.md](ROADMAP.md).
+> mapping), incremental rebuilds (`update`, `watch`, `detect-changes`,
+> `impact`), and the M5 analyses — dataflow, clock domains / reset tree /
+> CDC suspects, lint checks, graph metrics, UVM topology, and an
+> interactive `visualize` — are in. See [ROADMAP.md](ROADMAP.md).
 
 ## Why
 
@@ -96,10 +98,32 @@ VHDL `USES_PACKAGE`/`IMPLEMENTS`/`BINDS` and macro-use) edges transitively:
 the instantiating parents, importers, includers, and subclasses a change can
 break. `watch` needs the `watchdog` extra: `pip install 'hdl-kgraph[watch]'`.
 
+**Analyses (M5)** turn structure into insight. Dataflow (`DRIVES`/`READS`)
+is extracted from always/process blocks, continuous assigns, and instance
+port directions; clocks and resets carry evidence scores (sensitivity-list
+proof = 1.0, name-pattern heuristics = 0.4):
+
+```bash
+hdl-kgraph query clock-domains     # clock nets, alias-merged across hierarchy
+hdl-kgraph query cdc               # signals driven in domain A, read in domain B
+hdl-kgraph query reset-tree        # async vs (heuristic) sync resets
+hdl-kgraph query drivers ready     # what drives signal 'ready' (--readers flips it)
+hdl-kgraph query uvm               # UVM components by role + TEST_COVERS links
+hdl-kgraph lint                    # unconnected ports, undriven/unread signals,
+                                   #   dead modules, redundant parameter overrides
+hdl-kgraph metrics --communities   # fan-in/out, hubs/bridges, Louvain subsystems
+hdl-kgraph visualize -o graph.html # self-contained interactive HTML (d3 vendored,
+                                   #   opens air-gapped): hierarchy + force views,
+                                   #   filter by node/edge kind and clock domain
+```
+
+CDC findings are *suspects*, not violations — synchronizers are not
+recognized (SDC `set_clock_groups` suppression lands with M10). `lint`
+always exits 0; it is a report, not a gate. All new commands take `--json`.
+
 Coming next:
 
 ```bash
-hdl-kgraph visualize              # interactive HTML graph (M5)
 hdl-kgraph serve --mcp            # MCP server for AI assistants (M6)
 ```
 
@@ -111,8 +135,8 @@ hdl-kgraph serve --mcp            # MCP server for AI assistants (M6)
   generate blocks, `include`/`define` relationships, filelists
 - **Verification:** SV classes (UVM hierarchies via inheritance chains),
   constraints, covergroups, assertions/properties/sequences, clocking blocks
-- **Dataflow (M5):** signal drivers/readers, clock and reset trees,
-  CDC-suspect crossings
+- **Dataflow:** signal drivers/readers (process-, assign-, and
+  instance-level), clock and reset trees, CDC-suspect crossings
 
 Every cross-file edge carries a confidence score (resolved → heuristic), so
 the graph is honest about what was proven syntactically vs inferred by name
