@@ -215,3 +215,18 @@ def test_ref_confidence_caps_resolution() -> None:
         g, "top.sv::instance:top.u_l", "leaf.sv::module:leaf", EdgeKind.INSTANTIATES
     )
     assert edge["confidence"] == 0.6  # min(0.8 unique match, 0.6 ref site)
+
+
+def test_duplicate_refs_emit_one_edge() -> None:
+    """An unguarded header spliced into two units duplicates its refs across
+    IRs; the resolved edge must still be emitted once."""
+    parser = SystemVerilogParser()
+    hdr = "module wrapper;\nleaf u_l ();\nendmodule\n"
+    ir_a = parser.parse(Path("hdr.svh"), hdr)
+    ir_b = parser.parse(Path("hdr.svh"), hdr)
+    ir_leaf = parser.parse(Path("leaf.sv"), "module leaf;\nendmodule\n")
+    g = build_graph([ir_a, ir_b, ir_leaf])
+    (edge,) = edges_between(
+        g, "hdr.svh::instance:wrapper.u_l", "leaf.sv::module:leaf", EdgeKind.INSTANTIATES
+    )
+    assert edge["confidence"] == 0.8

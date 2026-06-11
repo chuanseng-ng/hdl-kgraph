@@ -80,6 +80,7 @@ def test_build_from_vendor_filelist(project: Path) -> None:
 
     # status separates HDL sources from the recorded filelists.
     status = CliRunner().invoke(main, ["status", "--db", str(project / ".hdl-kgraph" / "graph.db")])
+    assert status.exit_code == 0, status.output
     assert "4 parsed" in status.output
     assert "2 filelist(s)" in status.output
 

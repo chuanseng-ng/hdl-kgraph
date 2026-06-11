@@ -91,6 +91,9 @@ class _Linker:
         self.children: defaultdict[str, list[Node]] = defaultdict(list)
         self.node_file: dict[str, str] = {}
         self.node_obj: dict[str, Node] = {}
+        # The same header spliced into several compilation units duplicates
+        # its refs across IRs; emitted-edge identity keeps one of each.
+        self._emitted: set[tuple[str, str, EdgeKind, float, tuple[tuple[str, str], ...]]] = set()
 
         seen_local: set[tuple[str, str, EdgeKind]] = set()
         for ir in file_irs:
@@ -224,17 +227,22 @@ class _Linker:
         if port_name is not None:
             attrs["port_name"] = port_name
         attrs["line_span"] = ref.line_span
+        # A reference from a non-selected both-branches region caps the edge
+        # at the site's own confidence.
+        effective = min(confidence, ref.confidence)
+        key = (
+            ref.src_id,
+            dst,
+            ref.edge_kind,
+            effective,
+            tuple(sorted((k, str(v)) for k, v in attrs.items())),
+        )
+        if key in self._emitted:
+            return
+        self._emitted.add(key)
         _add_edge(
             self.graph,
-            Edge(
-                src=ref.src_id,
-                dst=dst,
-                kind=ref.edge_kind,
-                # A reference from a non-selected both-branches region caps
-                # the edge at the site's own confidence.
-                confidence=min(confidence, ref.confidence),
-                attrs=attrs,
-            ),
+            Edge(src=ref.src_id, dst=dst, kind=ref.edge_kind, confidence=effective, attrs=attrs),
         )
 
 

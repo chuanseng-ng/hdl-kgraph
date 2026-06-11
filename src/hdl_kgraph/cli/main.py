@@ -166,7 +166,7 @@ def build(
         click.echo(includes)
     if report.preproc_warning_count:
         click.echo(f"  preprocessor warnings: {report.preproc_warning_count}")
-    if report.both_branches and report.macros_defined:
+    if report.both_branches:
         click.echo("  both-branches mode: no defines given; `ifdef alternatives kept at 0.6")
     click.echo(f"  nodes: {report.node_count}  edges: {report.edge_count}")
     if report.unresolved_count:

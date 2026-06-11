@@ -67,12 +67,13 @@ def check_file(
     elif found.size_bytes > max_file_size_kb * 1024:
         found.skipped_reason = "size"
     else:
-        with path.open("rb") as f:
-            head = f.read(_PRAGMA_PROTECT_PROBE_BYTES)
-        if b"`pragma protect" in head:
+        # One read serves both the pragma-protect probe and the hash; the
+        # size guard above already bounds how much this loads.
+        data = path.read_bytes()
+        if b"`pragma protect" in data[:_PRAGMA_PROTECT_PROBE_BYTES]:
             found.skipped_reason = "pragma_protect"
         else:
-            found.content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+            found.content_hash = hashlib.sha256(data).hexdigest()
     return found
 
 
