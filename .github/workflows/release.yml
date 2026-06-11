@@ -20,12 +20,26 @@ jobs:
           python-version: "3.12"
       - name: Verify tag matches package version
         run: |
-          pkg_version="$(python -c 'import re, pathlib; print(re.search(r"__version__ = \"([^\"]+)\"", pathlib.Path("src/hdl_kgraph/__init__.py").read_text())[1])')"
-          tag_version="${GITHUB_REF_NAME#v}"
-          if [ "$pkg_version" != "$tag_version" ]; then
-            echo "::error::Tag ${GITHUB_REF_NAME} does not match __version__ ${pkg_version} in src/hdl_kgraph/__init__.py. Bump the version before tagging."
-            exit 1
-          fi
+          python - "$GITHUB_REF_NAME" <<'EOF'
+          import pathlib
+          import re
+          import sys
+
+          tag = sys.argv[1]
+          path = pathlib.Path("src/hdl_kgraph/__init__.py")
+          match = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', path.read_text())
+          if not match:
+              print(f"::error::Could not find __version__ in {path}")
+              sys.exit(1)
+          pkg_version = match[1]
+          if pkg_version != tag.removeprefix("v"):
+              print(
+                  f"::error::Tag {tag} does not match __version__ {pkg_version} "
+                  f"in {path}. Bump the version before tagging."
+              )
+              sys.exit(1)
+          print(f"Tag {tag} matches __version__ {pkg_version}")
+          EOF
       - run: python -m pip install build
       - run: python -m build
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
