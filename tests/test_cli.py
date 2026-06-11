@@ -184,6 +184,25 @@ def test_lint_unknown_check_fails(project: Path) -> None:
     assert "unknown lint check" in result.output
 
 
+def test_metrics_lists_hubs(project: Path) -> None:
+    result = CliRunner().invoke(main, ["metrics", "--top", "0", *db_args(project)])
+    assert result.exit_code == 0, result.output
+    assert "fan-in" in result.output
+    assert "alu" in result.output
+
+
+def test_metrics_communities_json(project: Path) -> None:
+    import json as json_mod
+
+    result = CliRunner().invoke(
+        main, ["metrics", "--communities", "--json", *db_args(project)]
+    )
+    assert result.exit_code == 0, result.output
+    payload = json_mod.loads(result.output)
+    assert payload["modules"]
+    assert payload["communities"]
+
+
 def test_tree_from_top(project: Path) -> None:
     result = CliRunner().invoke(main, ["tree", "top", *db_args(project)])
     assert result.exit_code == 0, result.output

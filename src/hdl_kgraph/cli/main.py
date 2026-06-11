@@ -35,7 +35,7 @@ from hdl_kgraph.config import (
     resolve_build_options,
 )
 from hdl_kgraph.discovery import DEFAULT_MAX_FILE_SIZE_KB, SUFFIXES
-from hdl_kgraph.graph import analysis, clocks, lint
+from hdl_kgraph.graph import analysis, clocks, lint, metrics
 from hdl_kgraph.incremental import detect_git_changes, dirty_closure
 from hdl_kgraph.pipeline import (
     BuildReport,
@@ -575,6 +575,60 @@ def lint_cmd(
         location = f"{f.file}:{f.line}" if f.file else "?"
         marker = "" if f.confidence >= 0.8 else f"  [~{f.confidence:.1f}]"
         click.echo(f"{f.check:18} {f.name:32} {location:28} {f.message}{marker}")
+
+
+@main.command("metrics")
+@_db_option
+@_json_option
+@click.option(
+    "--top",
+    "top_n",
+    type=int,
+    default=10,
+    show_default=True,
+    metavar="N",
+    help="How many units to list (0 = all).",
+)
+@click.option(
+    "--communities",
+    "show_communities",
+    is_flag=True,
+    help="Also report Louvain communities (subsystem suggestions).",
+)
+def metrics_cmd(
+    db_path: Path | None, as_json: bool, top_n: int, show_communities: bool
+) -> None:
+    """Module fan-in/fan-out, hub/bridge detection, community discovery.
+
+    Metrics are computed on the module-level instantiation projection;
+    units are listed hubs-first (descending betweenness centrality).
+    """
+    graph, _, _ = _load(db_path)
+    records = metrics.module_metrics(graph)
+    parts = metrics.communities(graph) if (show_communities or as_json) else []
+    if as_json:
+        payload: dict[str, Any] = {"modules": records}
+        if show_communities:
+            payload["communities"] = parts
+        _emit_json(payload)
+        return
+    if not records:
+        click.echo("no design units in the graph")
+        return
+    shown = records if top_n <= 0 else records[:top_n]
+    click.echo(f"{'unit':30} {'fan-in':>6} {'fan-out':>7} {'betweenness':>12}")
+    for m in shown:
+        markers = ""
+        if m.is_articulation:
+            markers += " [bridge]"
+        if m.unresolved:
+            markers += " [?]"
+        click.echo(f"{m.name:30} {m.fan_in:>6} {m.fan_out:>7} {m.betweenness:>12.4f}{markers}")
+    if show_communities:
+        click.echo(f"communities: {len(parts)}")
+        for i, part in enumerate(parts):
+            names = ", ".join(sorted(graph.nodes[n]["name"] for n in part))
+            click.echo(f"    [{i}] {names}")
 
 
 @main.group()
