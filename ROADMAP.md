@@ -1,13 +1,15 @@
 # hdl-kgraph Roadmap
 
 `hdl-kgraph` builds a queryable knowledge graph from hardware description language
-(HDL) source code — SystemVerilog, Verilog, and VHDL first, with C/C++/Python and
-emerging HDLs (Chisel, Amaranth, SpinalHDL) as future targets. The architecture is
+(HDL) source code — SystemVerilog, Verilog, and VHDL first, with C/C++/Python,
+emerging HDLs (Chisel, Amaranth, SpinalHDL), and EDA flow languages (Tcl/SDC
+constraints, UPF power intent, Perl scripting, SLN portable stimulus) as future
+targets. The architecture is
 modeled on [code-review-graph](https://github.com/tirth8205/code-review-graph):
 Python 3.10+, tree-sitter parsing, NetworkX graph algorithms, SQLite persistence,
 a CLI, and (later) an MCP server for AI assistants. Distribution is via pip/PyPI.
 
-**MVP line:** Milestones M1–M4. M5–M6 are value-add. M7–M9 are stretch goals.
+**MVP line:** Milestones M1–M4. M5–M6 are value-add. M7–M10 are stretch goals.
 
 ---
 
@@ -31,6 +33,7 @@ Every node carries: `id`, `kind`, `name`, `qualified_name`, `file`, `line_span`,
 | Data | `PORT`, `PARAMETER` (param/localparam/generic), `SIGNAL` (net/variable/VHDL signal), `TYPEDEF`, `STRUCT`, `ENUM`, `ENUM_MEMBER` | direction, width expression, data type, default |
 | Elaboration | `INSTANCE` | instance name, target name, parameter overrides |
 | Preprocessor | `MACRO` (`` `define ``), `INCLUDE_FILE` | body, arity, guard macro |
+| Constraints / scenarios | `CLOCK`, `TIMING_CONSTRAINT`, `POWER_DOMAIN`, `SCENARIO`, `ACTION` | period/waveform, virtual/generated clock master, constraint command, supply/isolation strategies, scenario resources |
 
 ### Edge kinds
 
@@ -52,9 +55,11 @@ Every edge carries: `src`, `dst`, `kind`, `confidence`, and `attrs`.
 | `DRIVES` / `READS` | process/assign/instance port → signal (dataflow) |
 | `CLOCKED_BY` / `RESETS` | process/module → clock/reset signal |
 | `ASSERTS_ON` / `COVERS` | assertion/covergroup → signal/property |
-| `TEST_COVERS` | testbench/UVM test → DUT module |
+| `TEST_COVERS` | testbench/UVM test/SLN scenario → DUT module |
 | `FOREIGN_BINDS` | SV DPI-C import/export ↔ C function (M8) |
-| `GENERATED_FROM` | generated Verilog → Chisel/Amaranth/SpinalHDL source (M9) |
+| `GENERATED_FROM` | generated HDL → generator source (M9 Chisel/Amaranth/SpinalHDL, M10 Perl codegen) |
+| `CONSTRAINS` | timing constraint/clock/power domain → port/signal/instance/clock (M10) |
+| `REFERENCES_FILE` | Perl/Tcl script → HDL file it reads/compiles/generates (M10) |
 
 ### Confidence convention
 
@@ -257,6 +262,49 @@ graph spanning all three languages.
 - [ ] Amaranth: Python AST scan of `m.submodules` structure
 - [ ] Each generator shipped as an optional extra
 
+## M10 — v1.x: EDA flow languages — Tcl/SDC/UPF, Perl, SLN (stretch)
+
+**Goal:** capture the flow *around* the RTL: timing constraints as authoritative
+clock evidence, power intent, legacy script codegen lineage, and portable-stimulus
+scenario coverage.
+
+- [ ] SDC/XDC parsing (Tcl subset): `create_clock`/`create_generated_clock` →
+      `CLOCK` nodes (virtual and generated clocks supported); `set_false_path`,
+      `set_multicycle_path`, `set_input_delay`/`set_output_delay`,
+      `set_clock_groups` → `TIMING_CONSTRAINT` nodes with `CONSTRAINS` edges;
+      `get_ports`/`get_pins`/`get_cells`/`get_clocks` object queries resolved to
+      design nodes (exact match 1.0; glob patterns 0.8/0.6)
+- [ ] M5 synergy: `create_clock` is authoritative `CLOCKED_BY` evidence — upgrades
+      the 0.4 name heuristic to 1.0; `set_clock_groups -asynchronous` and
+      `set_false_path` feed the CDC report as declared-safe crossings
+- [ ] UPF (IEEE 1801) power intent: `create_power_domain` → `POWER_DOMAIN` nodes
+      with `CONSTRAINS` edges to their elements; supply nets/sets and isolation/
+      retention/level-shifter strategies in attrs; power-domain report (domains,
+      strategies, domain-crossing suspects) analogous to the CDC report
+- [ ] Tcl flow scripts: `read_verilog`/`read_vhdl`/`analyze`/`add_files` →
+      `REFERENCES_FILE` edges; `source` chains → `INCLUDES`; literal `set`
+      variable substitution only — Tcl is never evaluated (see Risks)
+- [ ] Perl legacy scripting: detect HDL files a script reads/writes/generates
+      (`open()` of `.v`/`.sv` paths, heredoc-embedded Verilog) →
+      `REFERENCES_FILE` + `GENERATED_FROM` lineage for generated RTL;
+      expectations modest — codegen patterns, not Perl semantics
+      (tree-sitter-perl exists if needed)
+- [ ] SLN (Cadence Perspec System Level Notation) portable stimulus:
+      actions/scenarios/resources → `SCENARIO`/`ACTION` nodes; scenario → DUT
+      linkage via `TEST_COVERS`; Accellera PSS (`.pss`), the open sibling format,
+      is the natural follow-on
+- [ ] `.sln` disambiguation: content-sniff the Visual Studio solution header and
+      skip non-SLN files
+- [ ] Fixtures: an SDC and a UPF for the counter fixtures, a flow `.tcl`, a Perl
+      heredoc codegen script, a minimal SLN scenario
+
+**Acceptance:** an SDC on the two-clock M5 fixture upgrades both clock domains to
+confidence 1.0 and the declared false path suppresses the CDC suspect; the UPF
+fixture yields a power-domain report listing the domain and its isolated
+instances; the Perl codegen fixture yields a `GENERATED_FROM` edge from its
+emitted Verilog; the SLN scenario fixture links to the DUT module via
+`TEST_COVERS`; a Visual Studio `.sln` is recognized and skipped.
+
 ---
 
 ## Risks
@@ -288,3 +336,13 @@ graph spanning all three languages.
 7. **Real-world inputs:** encrypted IP (`` `pragma protect ``), megabyte-scale
    generated netlists, and vendor primitive libraries can hang naive parsers —
    file-size guards and exclude globs ship in M1.
+8. **Tcl and Perl are full programming languages** — static extraction is
+   best-effort by design. SDC and UPF are constrained Tcl subsets and tractable;
+   arbitrary flow scripts (loops, procs, `eval`) are out of scope, with only
+   literal `set` substitution attempted. Confidence scoring and
+   `REFERENCES_FILE` attrs are the honest contract.
+9. **`.sln` name collision and proprietary syntax:** `.sln` is overwhelmingly
+   Visual Studio solution files in the wild — content sniffing is mandatory
+   before parsing. Perspec SLN has no public grammar; the parser targets the
+   documented subset, with Accellera PSS (`.pss`, openly specified) as the
+   safer long-term sibling target.

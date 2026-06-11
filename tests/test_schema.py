@@ -59,6 +59,12 @@ EXPECTED_NODE_KINDS = {
     # Preprocessor
     "MACRO",
     "INCLUDE_FILE",
+    # Constraints / scenarios
+    "CLOCK",
+    "TIMING_CONSTRAINT",
+    "POWER_DOMAIN",
+    "SCENARIO",
+    "ACTION",
 }
 
 EXPECTED_EDGE_KINDS = {
@@ -83,6 +89,22 @@ EXPECTED_EDGE_KINDS = {
     "TEST_COVERS",
     "FOREIGN_BINDS",
     "GENERATED_FROM",
+    "CONSTRAINS",
+    "REFERENCES_FILE",
+}
+
+EXPECTED_LANGUAGES = {
+    "VERILOG",
+    "SYSTEMVERILOG",
+    "VHDL",
+    "C",
+    "CPP",
+    "PYTHON",
+    "FIRRTL",
+    "PERL",
+    "TCL",
+    "SLN",
+    "UNKNOWN",
 }
 
 
@@ -96,10 +118,16 @@ def test_edge_kinds_complete() -> None:
     assert {k.name for k in EdgeKind} == EXPECTED_EDGE_KINDS
 
 
+def test_languages_complete() -> None:
+    """Language matches the targets documented in ROADMAP.md exactly."""
+    assert {lang.name for lang in Language} == EXPECTED_LANGUAGES
+
+
 def test_kind_values_unique() -> None:
     """Enum string values never collide (they are persisted to SQLite)."""
     assert len({k.value for k in NodeKind}) == len(NodeKind)
     assert len({k.value for k in EdgeKind}) == len(EdgeKind)
+    assert len({lang.value for lang in Language}) == len(Language)
 
 
 def test_confidence_ordering() -> None:
