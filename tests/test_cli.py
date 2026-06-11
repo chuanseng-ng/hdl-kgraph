@@ -192,6 +192,15 @@ def test_query_uvm(project: Path) -> None:
     assert "covers verif_dut" in result.output
 
 
+def test_visualize_writes_html(project: Path, tmp_path: Path) -> None:
+    out = tmp_path / "g.html"
+    result = CliRunner().invoke(main, ["visualize", "-o", str(out), *db_args(project)])
+    assert result.exit_code == 0, result.output
+    html = out.read_text()
+    assert html.startswith("<!DOCTYPE html>")
+    assert "simple_counter" in html
+
+
 def test_metrics_lists_hubs(project: Path) -> None:
     result = CliRunner().invoke(main, ["metrics", "--top", "0", *db_args(project)])
     assert result.exit_code == 0, result.output

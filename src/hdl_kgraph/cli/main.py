@@ -631,6 +631,54 @@ def metrics_cmd(
             click.echo(f"    [{i}] {names}")
 
 
+@main.command("visualize")
+@_db_option
+@click.option(
+    "-o",
+    "--output",
+    "output",
+    type=click.Path(path_type=Path),
+    default=Path("graph.html"),
+    show_default=True,
+    help="Output HTML file.",
+)
+@click.option(
+    "--full",
+    is_flag=True,
+    help="Embed every node and edge (default: the module-level projection, "
+    "which stays responsive on large designs).",
+)
+@click.option("--top", "top", default=None, help="Root the hierarchy view at this module.")
+@click.option("--title", default=None, help="Page title (default: the build root's name).")
+@click.option("--open", "open_browser", is_flag=True, help="Open the result in a browser.")
+def visualize(
+    db_path: Path | None,
+    output: Path,
+    full: bool,
+    top: str | None,
+    title: str | None,
+    open_browser: bool,
+) -> None:
+    """Render a self-contained interactive HTML view of the graph.
+
+    The file embeds D3 and the graph data — no network access needed to
+    open it. Two views: a collapsible hierarchy and a force-directed graph
+    with node-kind / edge-kind / clock-domain filters.
+    """
+    from hdl_kgraph.viz import render_html
+
+    graph, _, meta = _load(db_path)
+    if title is None:
+        root = meta.get("root", "")
+        title = f"hdl-kgraph: {Path(root).name}" if root else "hdl-kgraph"
+    path = render_html(graph, output, full=full, top=top, title=title)
+    click.echo(f"wrote {path}")
+    if open_browser:
+        import webbrowser
+
+        webbrowser.open(path.resolve().as_uri())
+
+
 @main.group()
 def query() -> None:
     """Query the knowledge graph."""
