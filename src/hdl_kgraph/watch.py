@@ -23,7 +23,7 @@ from typing import Any
 from hdl_kgraph.config import BuildOptions
 from hdl_kgraph.discovery import SUFFIXES
 from hdl_kgraph.incremental import is_build_input
-from hdl_kgraph.pipeline import DB_DIRNAME, ProgressFn, UpdateReport, run_update
+from hdl_kgraph.pipeline import DB_DIRNAME, ProgressFn, TickFn, UpdateReport, run_update
 
 DEFAULT_QUIET_S = 0.3
 
@@ -102,6 +102,7 @@ def run_watch(
     quiet_s: float = DEFAULT_QUIET_S,
     on_report: Callable[[UpdateReport], None] = lambda report: None,
     progress: ProgressFn | None = None,
+    tick: TickFn | None = None,
     on_error: Callable[[BaseException], None] | None = None,
 ) -> None:
     """Run an initial ``update``, then one per debounced change burst.
@@ -132,7 +133,7 @@ def run_watch(
                     events.put(str(path))
 
     def do_update(_batch: set[str]) -> None:
-        on_report(run_update(root, db_path, options, progress=progress))
+        on_report(run_update(root, db_path, options, progress=progress, tick=tick))
 
     try:
         do_update(set())  # initial sync (full build if no database yet)

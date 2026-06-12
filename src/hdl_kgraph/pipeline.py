@@ -80,9 +80,12 @@ from hdl_kgraph.storage.sqlite_store import (
 DB_DIRNAME = ".hdl-kgraph"
 DB_FILENAME = "graph.db"
 
-#: Stage-progress callback (``build -v``): called with one human-readable
-#: line per pipeline stage as it starts.
+#: Stage-progress callback: called with one human-readable line per
+#: pipeline stage as it starts.
 ProgressFn = Callable[[str], None]
+
+#: Per-file progress callback for the pass 0+1 loop: ``tick(done, total)``.
+TickFn = Callable[[int, int], None]
 
 
 @dataclass
@@ -207,9 +210,14 @@ def run_build(
     db_path: Path | None = None,
     options: BuildOptions | None = None,
     progress: ProgressFn | None = None,
+    tick: TickFn | None = None,
 ) -> BuildReport:
     return _execute(
-        root, db_path, options if options is not None else BuildOptions(), progress=progress
+        root,
+        db_path,
+        options if options is not None else BuildOptions(),
+        progress=progress,
+        tick=tick,
     )
 
 
@@ -222,6 +230,7 @@ def _execute(
     discovered: list[DiscoveredFile] | None = None,
     prior_warnings: dict[str, list[str]] | None = None,
     progress: ProgressFn | None = None,
+    tick: TickFn | None = None,
 ) -> BuildReport:
     """One pipeline run; units named in *reuse* re-link from their stored IR.
 
@@ -229,6 +238,7 @@ def _execute(
     warnings for reused units (their preprocessor never re-runs).
     """
     progress = progress if progress is not None else lambda _line: None
+    tick = tick if tick is not None else lambda _done, _total: None
     root = root.resolve()
     base = root.parent if root.is_file() else root
     db_path = db_path if db_path is not None else default_db_path(base)
@@ -273,7 +283,9 @@ def _execute(
     vhdl_file_libs: dict[str, str] = {}  # relpath -> library name
 
     progress(f"pass 0+1: preprocessing and parsing {len(discovered)} file(s)")
-    for found in discovered:
+    for index, found in enumerate(discovered, start=1):
+        # Skipped/reused files advance the counter too: it always reaches total.
+        tick(index, len(discovered))
         skipped_reason = found.skipped_reason
         if skipped_reason is None and found.relpath in consumed:
             skipped_reason = "included"
@@ -416,6 +428,7 @@ def run_update(
     options: BuildOptions | None = None,
     full: bool = False,
     progress: ProgressFn | None = None,
+    tick: TickFn | None = None,
 ) -> UpdateReport:
     """Incrementally refresh the database after source edits.
 
@@ -439,7 +452,7 @@ def run_update(
 
     def full_rebuild(reason: str) -> UpdateReport:
         report.full_rebuild_reason = reason
-        report.build = run_build(root, db_path, options, progress=progress)
+        report.build = run_build(root, db_path, options, progress=progress, tick=tick)
         report.elapsed_s = time.perf_counter() - started
         return report
 
@@ -493,6 +506,7 @@ def run_update(
         discovered=discovered,
         prior_warnings=store.load_file_warnings(),
         progress=progress,
+        tick=tick,
     )
     report.elapsed_s = time.perf_counter() - started
     return report
