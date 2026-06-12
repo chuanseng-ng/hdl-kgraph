@@ -330,7 +330,7 @@ def _execute(
     if vhdl_file_libs:
         irs.append(_library_ir(vhdl_file_libs, options.vhdl_libraries))
 
-    graph = build_graph(irs)
+    graph = build_graph(irs, warnings=report.warnings)
     report.node_count = graph.number_of_nodes()
     report.edge_count = graph.number_of_edges()
     report.unresolved_count = sum(

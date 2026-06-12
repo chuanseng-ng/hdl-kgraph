@@ -74,7 +74,7 @@ from typing import Any
 import networkx as nx
 
 from hdl_kgraph.graph.uvm import derive_test_covers
-from hdl_kgraph.ids import file_node_id, stub_node_id
+from hdl_kgraph.ids import file_node_id, parse_node_id, stub_node_id
 from hdl_kgraph.parser.base import FileIR, UnresolvedRef
 from hdl_kgraph.schema import (
     CONFIDENCE_AMBIGUOUS,
@@ -243,6 +243,8 @@ class _Linker:
         self._emitted: set[tuple[str, str, EdgeKind, float, tuple[tuple[str, str], ...]]] = set()
         # unit id -> name -> child nodes, built lazily for scoped resolution
         self._scope_indices: dict[str, dict[str, list[Node]]] = {}
+        # Edge endpoints no parser emitted as nodes (materialized as stubs).
+        self.warnings: list[str] = []
 
         seen_local: set[tuple[str, str, EdgeKind]] = set()
         for ir in file_irs:
@@ -257,15 +259,46 @@ class _Linker:
                 self.node_file[node.id] = ir.path
                 self.definitions[(node.kind, node.name)].append(node.id)
                 self.definitions_ci[(node.kind, node.name.lower())].append(node.id)
+        for ir in file_irs:
             for edge in ir.local_edges:
                 key = (edge.src, edge.dst, edge.kind)
                 if key in seen_local:
                     continue
                 seen_local.add(key)
+                self._ensure_endpoint(edge.src, edge.kind, edge.dst, ir.path)
+                self._ensure_endpoint(edge.dst, edge.kind, edge.src, ir.path)
                 _add_edge(self.graph, edge)
                 if edge.kind is EdgeKind.DECLARES:
                     self.children[edge.src].append(self.node_obj[edge.dst])
                     self.parent[edge.dst] = edge.src
+
+    def _ensure_endpoint(
+        self, node_id: str, edge_kind: EdgeKind, other: str, source: str = ""
+    ) -> None:
+        """Materialize a stub for an edge endpoint no parser emitted as a node.
+
+        ``MultiDiGraph.add_edge`` would otherwise auto-create the endpoint as
+        an attribute-less node, and every ``data["kind"]`` consumer downstream
+        would crash on it. The warning names the id so the emitting parser
+        gap can be found and closed.
+        """
+        if node_id in self.node_obj:
+            return
+        parsed = parse_node_id(node_id)
+        attrs: dict[str, Any] = {"unresolved": True, "dangling": True}
+        if parsed is None:
+            kind, name = NodeKind.SIGNAL, node_id
+            attrs["kind_unknown"] = True
+        else:
+            kind, name = parsed
+        stub = Node(id=node_id, kind=kind, name=name, qualified_name=node_id, attrs=attrs)
+        _add_node(self.graph, stub)
+        self.node_obj[node_id] = stub
+        origin = f" in {source}" if source else ""
+        self.warnings.append(
+            f"dangling edge endpoint '{node_id}' ({edge_kind.value} edge with '{other}'"
+            f"{origin}) materialized as unresolved stub"
+        )
 
     def link(self, file_irs: list[FileIR]) -> None:
         # BINDS first: configuration bindings must be on record before the
@@ -615,6 +648,8 @@ class _Linker:
         if key in self._emitted:
             return
         self._emitted.add(key)
+        self._ensure_endpoint(src, kind, dst)
+        self._ensure_endpoint(dst, kind, src)
         _add_edge(self.graph, Edge(src=src, dst=dst, kind=kind, confidence=confidence, attrs=attrs))
 
     # -- per-kind resolution ---------------------------------------------------
@@ -724,16 +759,25 @@ class _Linker:
         if key in self._emitted:
             return
         self._emitted.add(key)
+        self._ensure_endpoint(ref.src_id, ref.edge_kind, dst)
+        self._ensure_endpoint(dst, ref.edge_kind, ref.src_id)
         _add_edge(
             self.graph,
             Edge(src=ref.src_id, dst=dst, kind=ref.edge_kind, confidence=effective, attrs=attrs),
         )
 
 
-def build_graph(file_irs: list[FileIR]) -> nx.MultiDiGraph:
-    """Link per-file IRs into the global knowledge graph (pass 2)."""
+def build_graph(file_irs: list[FileIR], warnings: list[str] | None = None) -> nx.MultiDiGraph:
+    """Link per-file IRs into the global knowledge graph (pass 2).
+
+    *warnings* (when given) collects diagnostics for edge endpoints that no
+    parser emitted as a node — each is materialized as an unresolved stub so
+    the graph never carries attribute-less nodes.
+    """
     linker = _Linker(file_irs)
     linker.link(file_irs)
     for edge in derive_test_covers(linker.graph):
         _add_edge(linker.graph, edge)
+    if warnings is not None:
+        warnings.extend(linker.warnings)
     return linker.graph
