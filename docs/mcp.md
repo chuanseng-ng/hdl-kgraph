@@ -69,9 +69,10 @@ hdl-kgraph serve --mcp --http 127.0.0.1:8000   # streamable HTTP at /mcp
 
 > **Security:** the HTTP transport has **no authentication**, and the graph
 > exposes your design's structure (module names, hierarchy, files). Keep it
-> bound to `127.0.0.1` — the CLI warns when you bind any other host. Only
-> bind a routable address on a network where every host is trusted, or put
-> an authenticating reverse proxy in front.
+> bound to a loopback address (`127.0.0.1`, `localhost`, or `[::1]`) — the
+> CLI warns when you bind any other host. Only bind a routable address on a
+> network where every host is trusted, or put an authenticating reverse
+> proxy in front.
 
 ## Tools
 
