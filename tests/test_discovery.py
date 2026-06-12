@@ -1,9 +1,17 @@
 """File discovery and guard tests (exclude globs, size cap, pragma protect)."""
 
+import os
+import sys
 from pathlib import Path
 
-from hdl_kgraph.discovery import discover
+import pytest
+
+from hdl_kgraph.discovery import discover, glob_sources
 from hdl_kgraph.schema import Language
+
+needs_symlinks = pytest.mark.skipif(
+    sys.platform == "win32", reason="symlink creation needs privileges on Windows"
+)
 
 
 def make(path: Path, content: str = "module m; endmodule\n") -> Path:
@@ -66,3 +74,58 @@ def test_single_file_root(tmp_path: Path) -> None:
     path = make(tmp_path / "only.sv")
     (found,) = discover(path)
     assert found.relpath == "only.sv"
+
+
+@needs_symlinks
+def test_discovers_through_symlinked_directory(tmp_path: Path) -> None:
+    make(tmp_path / "external" / "ip.sv")
+    root = tmp_path / "root"
+    make(root / "top.sv")
+    os.symlink(tmp_path / "external", root / "vendor")
+    found = by_rel(discover(root))
+    assert set(found) == {"top.sv", "vendor/ip.sv"}
+    found = by_rel(discover(root, exclude=("vendor/*",)))
+    assert found["vendor/ip.sv"].skipped_reason == "exclude"
+
+
+@needs_symlinks
+def test_symlink_loop_terminates(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    make(root / "top.sv")
+    make(root / "sub" / "leaf.sv")
+    os.symlink(root, root / "sub" / "loop")
+    found = by_rel(discover(root))
+    assert set(found) == {"top.sv", "sub/leaf.sv"}
+
+
+@needs_symlinks
+def test_symlinked_file_alias_is_deduped(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    make(root / "a.sv")
+    os.symlink(root / "a.sv", root / "alias.sv")
+    (found,) = discover(root)
+    assert found.relpath == "a.sv"
+
+
+def test_glob_sources_keeps_glob_semantics(tmp_path: Path) -> None:
+    make(tmp_path / "rtl" / "top.sv")
+    make(tmp_path / "rtl" / "core" / "alu.sv")
+    make(tmp_path / "rtl" / "core.txt")
+    assert glob_sources(tmp_path, "rtl/*.sv") == [tmp_path / "rtl" / "top.sv"]
+    assert glob_sources(tmp_path, "rtl/**/*.sv") == [
+        tmp_path / "rtl" / "core" / "alu.sv",
+        tmp_path / "rtl" / "top.sv",
+    ]
+    assert glob_sources(tmp_path, "rtl/c?re/alu.sv") == [tmp_path / "rtl" / "core" / "alu.sv"]
+
+
+@needs_symlinks
+def test_glob_sources_through_symlinked_directory(tmp_path: Path) -> None:
+    make(tmp_path / "external" / "ip.sv")
+    root = tmp_path / "root"
+    make(root / "rtl" / "top.sv")
+    os.symlink(tmp_path / "external", root / "rtl" / "vendor")
+    assert glob_sources(root, "rtl/**/*.sv") == [
+        root / "rtl" / "top.sv",
+        root / "rtl" / "vendor" / "ip.sv",
+    ]
