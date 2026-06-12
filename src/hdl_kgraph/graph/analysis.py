@@ -8,12 +8,17 @@ topology (M5).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
+from pathlib import Path
 from typing import Any
 
 import networkx as nx
 
+from hdl_kgraph.discovery import SUFFIXES
 from hdl_kgraph.schema import EdgeKind, Language, NodeKind
+from hdl_kgraph.storage.sqlite_store import FileMeta
 
 
 def _is_stub(g: nx.MultiDiGraph, node_id: str) -> bool:
@@ -292,6 +297,229 @@ def impact_radius(
                 next_frontier.append(dep)
         frontier = next_frontier
     return sorted(records, key=lambda r: (r.depth, r.kind.value, r.name, r.node_id))
+
+
+def impact_seeds(g: nx.MultiDiGraph, files: list[FileMeta], target: str) -> list[str]:
+    """Resolve an impact *target* (file path first, else unit name) to node ids."""
+    known_paths = {f.path for f in files}
+    candidate = target.replace("\\", "/").lstrip("./")
+    if candidate in known_paths or "/" in candidate or Path(candidate).suffix in SUFFIXES:
+        matches = [p for p in known_paths if p == candidate or p.endswith("/" + candidate)]
+        return [f"file:{p}" for p in matches if f"file:{p}" in g]
+    return [
+        node_id
+        for node_id, data in g.nodes(data=True)
+        if data["kind"] in IMPACT_UNIT_KINDS
+        and data["name"] == (target.lower() if data["language"] is Language.VHDL else target)
+        and not data["attrs"].get("unresolved")
+    ]
+
+
+def signal_drivers(
+    g: nx.MultiDiGraph,
+    signal: str,
+    module: str | None = None,
+    readers: bool = False,
+) -> list[dict[str, Any]]:
+    """What drives (or, with *readers*, reads) signals/ports named *signal*.
+
+    One record per DRIVES/READS edge into a matching SIGNAL/PORT node.
+    *module* narrows matches to signals whose enclosing design unit has that
+    name (VHDL names match case-insensitively, as everywhere else).
+    """
+    kind = EdgeKind.READS if readers else EdgeKind.DRIVES
+    records: list[dict[str, Any]] = []
+    for node_id, data in g.nodes(data=True):
+        if data["kind"] not in (NodeKind.SIGNAL, NodeKind.PORT):
+            continue
+        is_vhdl = data["language"] is Language.VHDL
+        if data["name"] != (signal.lower() if is_vhdl else signal):
+            continue
+        unit_id = _enclosing_unit(g, node_id)
+        unit_name = g.nodes[unit_id]["name"] if unit_id else None
+        unit_names = {unit_name} if unit_name else set()
+        if unit_id and g.nodes[unit_id]["kind"] is NodeKind.ARCHITECTURE:
+            # A VHDL architecture's signals belong to its entity for callers.
+            unit_names.update(
+                g.nodes[dst]["name"]
+                for _, dst, d in g.out_edges(unit_id, data=True)
+                if d["kind"] is EdgeKind.IMPLEMENTS
+            )
+        if module is not None and (module.lower() if is_vhdl else module) not in unit_names:
+            continue
+        for src, _, edge in g.in_edges(node_id, data=True):
+            if edge["kind"] is not kind:
+                continue
+            site = g.nodes[src]
+            span = edge["attrs"].get("line_span") or site["line_span"]
+            records.append(
+                {
+                    "signal_id": node_id,
+                    "signal": data["qualified_name"],
+                    "module": unit_name,
+                    "site_id": src,
+                    "site": site["qualified_name"],
+                    "site_kind": site["kind"].value,
+                    "file": site["file"],
+                    "line": span[0] if span else 0,
+                    "confidence": edge["confidence"],
+                }
+            )
+    return sorted(records, key=lambda r: (r["signal"], r["file"], r["line"], r["site"]))
+
+
+#: Kinds a ``port_map``/``find_module`` lookup treats as instantiable units.
+INSTANTIABLE_KINDS = frozenset(
+    {
+        NodeKind.MODULE,
+        NodeKind.INTERFACE,
+        NodeKind.PROGRAM,
+        NodeKind.PRIMITIVE,
+        NodeKind.ENTITY,
+    }
+)
+
+
+def _match_name(data: dict[str, Any], wanted: str) -> bool:
+    """Node-name equality with the project's VHDL case-insensitivity rule."""
+    return bool(
+        data["name"] == (wanted.lower() if data["language"] is Language.VHDL else wanted)
+    )
+
+
+def _declaration_order(record: dict[str, Any]) -> tuple[bool, Any, int, str]:
+    return (record["index"] is None, record["index"], record["line"], record["name"])
+
+
+def port_map(g: nx.MultiDiGraph, unit: str, instance: str | None = None) -> list[dict[str, Any]]:
+    """Ports and parameters of design units named *unit*, in declaration order.
+
+    With *instance*, each unit record also lists the CONNECTS bindings of
+    matching instances of that unit (by instance name or qualified name).
+    """
+    results: list[dict[str, Any]] = []
+    for unit_id, data in g.nodes(data=True):
+        if data["kind"] not in INSTANTIABLE_KINDS or _is_stub(g, unit_id):
+            continue
+        if not _match_name(data, unit):
+            continue
+        ports: list[dict[str, Any]] = []
+        parameters: list[dict[str, Any]] = []
+        for _, child_id, decl in g.out_edges(unit_id, data=True):
+            if decl["kind"] is not EdgeKind.DECLARES:
+                continue
+            child = g.nodes[child_id]
+            record = {
+                "id": child_id,
+                "name": child["name"],
+                "index": child["attrs"].get("index"),
+                "line": child["line_span"][0],
+                "attrs": child["attrs"],
+            }
+            if child["kind"] is NodeKind.PORT:
+                ports.append({**record, "direction": child["attrs"].get("direction")})
+            elif child["kind"] is NodeKind.PARAMETER:
+                parameters.append(
+                    {**record, "is_localparam": child["attrs"].get("is_localparam", False)}
+                )
+        unit_record: dict[str, Any] = {
+            "unit_id": unit_id,
+            "name": data["name"],
+            "kind": data["kind"],
+            "file": data["file"],
+            "line": data["line_span"][0],
+            "language": data["language"],
+            "ports": sorted(ports, key=_declaration_order),
+            "parameters": sorted(parameters, key=_declaration_order),
+        }
+        if instance is not None:
+            unit_record["instances"] = _instance_bindings(g, unit_id, instance)
+        results.append(unit_record)
+    return sorted(results, key=lambda r: (r["kind"].value, r["file"], r["line"]))
+
+
+def _instance_bindings(g: nx.MultiDiGraph, unit_id: str, instance: str) -> list[dict[str, Any]]:
+    """CONNECTS bindings of instances of *unit_id* matching *instance*."""
+    out: list[dict[str, Any]] = []
+    for inst_id, _, edge in g.in_edges(unit_id, data=True):
+        if edge["kind"] is not EdgeKind.INSTANTIATES:
+            continue
+        inst = g.nodes[inst_id]
+        if instance not in (inst["name"], inst["qualified_name"]):
+            continue
+        bindings = []
+        for _, dst, conn in g.out_edges(inst_id, data=True):
+            if conn["kind"] is not EdgeKind.CONNECTS:
+                continue
+            attrs = conn["attrs"]
+            dst_data = g.nodes[dst]
+            port_name = attrs.get("port_name")
+            if port_name is None and dst_data["kind"] is NodeKind.PORT:
+                port_name = dst_data["name"]
+            span = attrs.get("line_span")
+            bindings.append(
+                {
+                    "port": port_name,
+                    "actual": attrs.get("expr_text"),
+                    "position": attrs.get("position"),
+                    "wildcard": attrs.get("wildcard", False),
+                    "confidence": conn["confidence"],
+                    "line": span[0] if span else None,
+                }
+            )
+        bindings.sort(key=lambda b: (b["position"] is None, b["position"], b["port"] or ""))
+        out.append(
+            {
+                "instance_id": inst_id,
+                "instance_name": inst["name"],
+                "qualified_name": inst["qualified_name"],
+                "file": inst["file"],
+                "line": inst["line_span"][0],
+                "bindings": bindings,
+            }
+        )
+    return sorted(out, key=lambda i: (i["file"], i["line"], i["qualified_name"]))
+
+
+def search_nodes(
+    g: nx.MultiDiGraph,
+    name: str = "*",
+    kinds: Sequence[NodeKind] | None = None,
+    file: str | None = None,
+) -> list[dict[str, Any]]:
+    """Nodes matching a *name* glob, optionally filtered by kind and file glob.
+
+    The pattern matches the node ``name`` (``qualified_name`` too when it
+    contains a ``.``); VHDL nodes match case-insensitively. Unresolved stubs
+    are included and flagged so callers can filter them.
+    """
+    kind_set = frozenset(kinds) if kinds is not None else None
+    qualified = "." in name
+    results: list[dict[str, Any]] = []
+    for node_id, data in g.nodes(data=True):
+        if kind_set is not None and data["kind"] not in kind_set:
+            continue
+        if file is not None and not fnmatchcase(data["file"] or "", file):
+            continue
+        pattern = name.lower() if data["language"] is Language.VHDL else name
+        subject = data["name"].lower() if data["language"] is Language.VHDL else data["name"]
+        if not fnmatchcase(subject, pattern) and not (
+            qualified and fnmatchcase(data["qualified_name"], name)
+        ):
+            continue
+        results.append(
+            {
+                "id": node_id,
+                "kind": data["kind"],
+                "name": data["name"],
+                "qualified_name": data["qualified_name"],
+                "file": data["file"],
+                "line": data["line_span"][0],
+                "language": data["language"],
+                "unresolved": bool(data["attrs"].get("unresolved")),
+            }
+        )
+    return sorted(results, key=lambda r: (r["kind"].value, r["qualified_name"], r["id"]))
 
 
 def unresolved_stubs(g: nx.MultiDiGraph) -> list[dict[str, Any]]:

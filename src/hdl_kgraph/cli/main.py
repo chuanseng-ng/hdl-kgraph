@@ -403,7 +403,7 @@ def impact(target: str, db_path: Path | None, max_depth: int, show_files: bool) 
     change to TARGET can break.
     """
     graph, files, _ = _load(db_path)
-    seeds = _impact_seeds(graph, files, target)
+    seeds = analysis.impact_seeds(graph, files, target)
     if not seeds:
         raise click.ClickException(f"{target!r} matches no file or design unit in the graph")
     records = analysis.impact_radius(graph, seeds, max_depth=max_depth)
@@ -419,22 +419,6 @@ def impact(target: str, db_path: Path | None, max_depth: int, show_files: bool) 
         click.echo(
             f"{r.kind.value:13} {r.name:30} {location:30} <- {r.via.value} (depth {r.depth})"
         )
-
-
-def _impact_seeds(graph: nx.MultiDiGraph, files: list, target: str) -> list[str]:
-    """Resolve an ``impact`` TARGET to seed node ids (file path first)."""
-    known_paths = {f.path for f in files}
-    candidate = target.replace("\\", "/").lstrip("./")
-    if candidate in known_paths or "/" in candidate or Path(candidate).suffix in SUFFIXES:
-        matches = [p for p in known_paths if p == candidate or p.endswith("/" + candidate)]
-        return [f"file:{p}" for p in matches if f"file:{p}" in graph]
-    return [
-        node_id
-        for node_id, data in graph.nodes(data=True)
-        if data["kind"] in analysis.IMPACT_UNIT_KINDS
-        and data["name"] == (target.lower() if data["language"] is Language.VHDL else target)
-        and not data["attrs"].get("unresolved")
-    ]
 
 
 @main.command()
@@ -809,35 +793,13 @@ def cdc_cmd(db_path: Path | None, as_json: bool) -> None:
 @_db_option
 @_json_option
 @click.option("--readers", is_flag=True, help="List readers instead of drivers.")
-def drivers_cmd(signal: str, db_path: Path | None, as_json: bool, readers: bool) -> None:
+@click.option("--module", default=None, help="Only signals inside this design unit.")
+def drivers_cmd(
+    signal: str, db_path: Path | None, as_json: bool, readers: bool, module: str | None
+) -> None:
     """List what drives (or reads) signals named SIGNAL."""
     graph, _, _ = _load(db_path)
-    kind = EdgeKind.READS if readers else EdgeKind.DRIVES
-    records: list[dict[str, Any]] = []
-    for node_id, data in graph.nodes(data=True):
-        if data["kind"] not in (NodeKind.SIGNAL, NodeKind.PORT):
-            continue
-        wanted = signal.lower() if data["language"] is Language.VHDL else signal
-        if data["name"] != wanted:
-            continue
-        for src, _, edge in graph.in_edges(node_id, data=True):
-            if edge["kind"] is not kind:
-                continue
-            site = graph.nodes[src]
-            span = edge["attrs"].get("line_span") or site["line_span"]
-            records.append(
-                {
-                    "signal_id": node_id,
-                    "signal": data["qualified_name"],
-                    "site_id": src,
-                    "site": site["qualified_name"],
-                    "site_kind": site["kind"].value,
-                    "file": site["file"],
-                    "line": span[0] if span else 0,
-                    "confidence": edge["confidence"],
-                }
-            )
-    records.sort(key=lambda r: (r["signal"], r["file"], r["line"], r["site"]))
+    records = analysis.signal_drivers(graph, signal, module=module, readers=readers)
     if as_json:
         _emit_json(records)
         return
@@ -863,18 +825,7 @@ def uvm_cmd(db_path: Path | None, as_json: bool) -> None:
     """
     graph, _, _ = _load(db_path)
     components = uvm.uvm_topology(graph)
-    covers = [
-        {
-            "test_id": u,
-            "test": graph.nodes[u]["name"],
-            "dut_id": v,
-            "dut": graph.nodes[v]["name"],
-            "confidence": d["confidence"],
-        }
-        for u, v, d in graph.edges(data=True)
-        if d["kind"] is EdgeKind.TEST_COVERS
-    ]
-    covers.sort(key=lambda c: (str(c["test"]), str(c["dut"])))
+    covers = uvm.test_covers(graph)
     if as_json:
         _emit_json({"components": components, "test_covers": covers})
         return
