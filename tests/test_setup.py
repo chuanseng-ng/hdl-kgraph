@@ -17,9 +17,11 @@ def _target(path: Path, backup: bool = False) -> Target:
 
 
 def test_plan_entry_points_at_serve() -> None:
-    entry = plan_entry(Path("/work/.hdl-kgraph/graph.db"))
+    db = Path("/work/.hdl-kgraph/graph.db")
+    entry = plan_entry(db)
     assert entry["command"] == "hdl-kgraph"
-    assert entry["args"] == ["serve", "--mcp", "--db", "/work/.hdl-kgraph/graph.db"]
+    # str(db) keeps the comparison native to the platform's path separator.
+    assert entry["args"] == ["serve", "--mcp", "--db", str(db)]
 
 
 def test_detect_claude_code_via_env(monkeypatch, tmp_path: Path) -> None:
