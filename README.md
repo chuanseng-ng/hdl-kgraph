@@ -121,11 +121,21 @@ CDC findings are *suspects*, not violations — synchronizers are not
 recognized (SDC `set_clock_groups` suppression lands with M10). `lint`
 always exits 0; it is a report, not a gate. All new commands take `--json`.
 
-Coming next:
+**AI assistants (M6)** can query the design directly over MCP — find
+modules, walk the hierarchy, trace signal drivers, and run impact analysis
+without leaving the conversation:
 
 ```bash
-hdl-kgraph serve --mcp            # MCP server for AI assistants (M6)
+pip install 'hdl-kgraph[mcp]'
+hdl-kgraph setup                  # detect Claude Code / Claude Desktop and
+                                  #   write their MCP config (idempotent)
+hdl-kgraph serve --mcp            # or run the server by hand (stdio;
+                                  #   --http HOST:PORT for streamable HTTP)
 ```
+
+The server is read-only and picks up database rebuilds automatically.
+Nine tools, paginated for LLM context windows: see [docs/mcp.md](docs/mcp.md)
+for the tool reference and manual config snippets for other MCP clients.
 
 ## What gets extracted
 
