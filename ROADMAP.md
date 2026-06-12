@@ -112,7 +112,7 @@ hierarchy graph for a Verilog/SystemVerilog codebase.
       `` `pragma protect `` encrypted IP)
 - [x] Test corpus: 10–15 small fixtures (plain Verilog, SV interfaces, a class,
       an unresolved instance)
-- [ ] Claim the `hdl-kgraph` name on PyPI with a 0.1 release (release workflow
+- [x] Claim the `hdl-kgraph` name on PyPI with a 0.1 release (release workflow
       and docs/releasing.md are in; publishing is a maintainer action)
 
 **Acceptance:** builds a graph from a real OSS design (e.g. ibex-class repo);
