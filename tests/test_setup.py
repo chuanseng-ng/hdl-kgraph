@@ -1,4 +1,4 @@
-"""``hdl-kgraph setup`` tests (M6): detection, JSON merge, idempotence."""
+"""``hdl-kgraph setup`` tests (M6): detection, JSON/TOML merge, idempotence."""
 
 import json
 import shutil
@@ -11,9 +11,34 @@ from hdl_kgraph.cli.main import main
 from hdl_kgraph.mcp import setup as mcp_setup
 from hdl_kgraph.mcp.setup import Target, detect_targets, plan_entry, write_config
 
+try:
+    import tomllib
+except ImportError:  # Python 3.10
+    import tomli as tomllib
+
 
 def _target(path: Path, backup: bool = False) -> Target:
     return Target(name="t", config_path=path, detected=True, backup=backup)
+
+
+def _toml_target(path: Path) -> Target:
+    return Target(
+        name="codex",
+        config_path=path,
+        detected=True,
+        backup=False,
+        servers_key="mcp_servers",
+        fmt="toml",
+    )
+
+
+@pytest.fixture()
+def fake_home(monkeypatch, tmp_path: Path) -> Path:
+    """An empty home dir so detection never sees the real machine."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(mcp_setup, "_home", lambda: home)
+    return home
 
 
 def test_plan_entry_points_at_serve() -> None:
@@ -40,6 +65,54 @@ def test_detect_claude_desktop_via_config_dir(monkeypatch, tmp_path: Path) -> No
     found = {t.name: t for t in detect_targets()}["claude-desktop"]
     assert found.detected
     assert found.config_path == desktop / "claude_desktop_config.json"
+
+
+def test_detect_cursor_via_home_dir(monkeypatch, fake_home: Path, tmp_path: Path) -> None:
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    project = tmp_path / "proj"
+    project.mkdir()
+    assert not {t.name: t for t in detect_targets(project_dir=project)}["cursor"].detected
+    (fake_home / ".cursor").mkdir()
+    found = {t.name: t for t in detect_targets(project_dir=project)}["cursor"]
+    assert found.detected
+    assert found.config_path == project / ".cursor" / "mcp.json"
+
+
+def test_detect_codex_and_gemini_via_path(monkeypatch, fake_home: Path, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        shutil, "which", lambda name: "/usr/bin/x" if name in ("codex", "gemini") else None
+    )
+    targets = {t.name: t for t in detect_targets(project_dir=tmp_path)}
+    assert targets["codex"].detected
+    assert targets["codex"].config_path == fake_home / ".codex" / "config.toml"
+    assert targets["codex"].fmt == "toml"
+    assert targets["gemini-cli"].detected
+    assert targets["gemini-cli"].config_path == fake_home / ".gemini" / "settings.json"
+
+
+def test_detect_windsurf_via_config_dir(monkeypatch, fake_home: Path, tmp_path: Path) -> None:
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    assert not {t.name: t for t in detect_targets(project_dir=tmp_path)}["windsurf"].detected
+    (fake_home / ".codeium" / "windsurf").mkdir(parents=True)
+    found = {t.name: t for t in detect_targets(project_dir=tmp_path)}["windsurf"]
+    assert found.detected
+    assert found.config_path == fake_home / ".codeium" / "windsurf" / "mcp_config.json"
+
+
+def test_vscode_entry_uses_servers_key_and_stdio_type(tmp_path: Path) -> None:
+    target = Target(
+        name="vscode",
+        config_path=tmp_path / ".vscode" / "mcp.json",
+        detected=True,
+        backup=False,
+        servers_key="servers",
+        entry_extras={"type": "stdio"},
+    )
+    write_config(target, plan_entry(tmp_path / "graph.db"))
+    config = json.loads(target.config_path.read_text())
+    assert config["servers"]["hdl-kgraph"]["type"] == "stdio"
+    assert config["servers"]["hdl-kgraph"]["command"] == "hdl-kgraph"
+    assert "mcpServers" not in config
 
 
 def test_write_config_creates_fresh_file(tmp_path: Path) -> None:
@@ -91,8 +164,55 @@ def test_malformed_json_aborts(tmp_path: Path) -> None:
     assert path.read_text() == "{not json"  # never clobbered
 
 
+def test_toml_write_creates_fresh_file(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    assert write_config(_toml_target(path), plan_entry(tmp_path / "graph.db")) is True
+    data = tomllib.loads(path.read_text())
+    assert data["mcp_servers"]["hdl-kgraph"]["command"] == "hdl-kgraph"
+    assert data["mcp_servers"]["hdl-kgraph"]["args"][:2] == ["serve", "--mcp"]
+
+
+def test_toml_write_preserves_comments_and_other_tables(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('# my codex config\nmodel = "o3"\n\n[mcp_servers.other]\ncommand = "x"\n')
+    write_config(_toml_target(path), plan_entry(tmp_path / "graph.db"))
+    text = path.read_text()
+    assert "# my codex config" in text  # textual merge keeps comments
+    data = tomllib.loads(text)
+    assert data["model"] == "o3"
+    assert data["mcp_servers"]["other"] == {"command": "x"}
+    assert "hdl-kgraph" in data["mcp_servers"]
+
+
+def test_toml_write_is_idempotent(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    entry = plan_entry(tmp_path / "graph.db")
+    assert write_config(_toml_target(path), entry) is True
+    assert write_config(_toml_target(path), entry) is False
+
+
+def test_toml_replaces_existing_section_in_place(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[mcp_servers.hdl-kgraph]\ncommand = "old"\nargs = []\n\n[profile]\nname = "work"\n'
+    )
+    assert write_config(_toml_target(path), plan_entry(tmp_path / "graph.db")) is True
+    data = tomllib.loads(path.read_text())
+    assert data["mcp_servers"]["hdl-kgraph"]["command"] == "hdl-kgraph"
+    assert data["profile"] == {"name": "work"}
+    assert '"old"' not in path.read_text()
+
+
+def test_malformed_toml_aborts(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("model = =\n")
+    with pytest.raises(ValueError, match="not valid TOML"):
+        write_config(_toml_target(path), plan_entry(tmp_path / "graph.db"))
+    assert path.read_text() == "model = =\n"  # never clobbered
+
+
 @pytest.fixture()
-def detected_project(monkeypatch, tmp_path: Path) -> Path:
+def detected_project(monkeypatch, fake_home: Path, tmp_path: Path) -> Path:
     """cwd with a fake graph.db where only claude-code is detected."""
     monkeypatch.setattr(shutil, "which", lambda _: None)
     monkeypatch.setenv("CLAUDECODE", "1")
@@ -138,7 +258,7 @@ def test_cli_setup_unknown_assistant(detected_project: Path) -> None:
     assert "unknown assistant" in result.output
 
 
-def test_cli_setup_nothing_detected(monkeypatch, tmp_path: Path) -> None:
+def test_cli_setup_nothing_detected(monkeypatch, fake_home: Path, tmp_path: Path) -> None:
     monkeypatch.setattr(shutil, "which", lambda _: None)
     monkeypatch.delenv("CLAUDECODE", raising=False)
     monkeypatch.setattr(mcp_setup, "_claude_desktop_dir", lambda: tmp_path / "no-desktop")
@@ -148,7 +268,7 @@ def test_cli_setup_nothing_detected(monkeypatch, tmp_path: Path) -> None:
     assert "no supported AI assistant detected" in result.output
 
 
-def test_cli_setup_missing_db(monkeypatch, tmp_path: Path) -> None:
+def test_cli_setup_missing_db(monkeypatch, fake_home: Path, tmp_path: Path) -> None:
     monkeypatch.setattr(shutil, "which", lambda _: None)
     monkeypatch.setenv("CLAUDECODE", "1")
     monkeypatch.setattr(mcp_setup, "_claude_desktop_dir", lambda: tmp_path / "no-desktop")

@@ -959,9 +959,11 @@ def setup(
     """Detect installed AI assistants and configure them to use this graph.
 
     Writes (or updates) the ``hdl-kgraph`` MCP server entry in each detected
-    assistant's config — project-scope ``.mcp.json`` for Claude Code, the
-    desktop config file for Claude Desktop. Re-running is safe: the entry is
-    updated in place and everything else in the file is preserved.
+    assistant's config — project-scope files for Claude Code (``.mcp.json``),
+    Cursor (``.cursor/mcp.json``), and VS Code (``.vscode/mcp.json``);
+    user-level files for Claude Desktop, Codex (``~/.codex/config.toml``),
+    Windsurf, and Gemini CLI. Re-running is safe: the entry is updated in
+    place and everything else in the file is preserved.
     """
     from hdl_kgraph.mcp.setup import detect_targets, plan_entry, write_config
 
@@ -1006,7 +1008,10 @@ def setup(
     for target in detected:
         if dry_run:
             click.echo(f"would write {target.config_path}:")
-            click.echo(json.dumps(target.merged_config(entry), indent=2))
+            try:
+                click.echo(target.preview(entry), nl=False)
+            except ValueError as exc:
+                raise click.ClickException(str(exc)) from exc
             continue
         if not assume_yes and not click.confirm(f"configure {target.name}?", default=True):
             continue
