@@ -103,6 +103,17 @@ def test_schema_version_mismatch_raises(store) -> None:
         sqlite_store.load()
 
 
+def test_v2_database_is_refused(store) -> None:
+    """The M5 IR changes bumped the schema to v3: an M4 (v2) database must be
+    refused with the rebuild message — rebuild *is* the migration."""
+    assert SCHEMA_VERSION == "3"
+    sqlite_store, _, _ = store
+    with sqlite3.connect(sqlite_store.db_path) as conn:
+        conn.execute("UPDATE meta SET value = '2' WHERE key = 'schema_version'")
+    with pytest.raises(SchemaVersionError, match="hdl-kgraph build"):
+        sqlite_store.load()
+
+
 def test_units_and_options_hash_round_trip(store) -> None:
     sqlite_store, graph, files = store
     units = {

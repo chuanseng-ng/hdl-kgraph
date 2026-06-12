@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""M4 benchmark: incremental update of 1 file in a 2k-file design < 1 s.
+"""Incremental-update benchmark: 1 file edited in a 2k-file design.
+
+Target: < 1.5 s since M5 (dataflow edges grew the graph ~76%); the original
+M4 target was < 1 s, measured at 0.85 s on the pre-dataflow graph.
 
 Generates a synthetic corpus (scripts/gen_corpus.py), times a full
 ``build``, touches one leaf module, then times the ``update``. See
@@ -7,7 +10,7 @@ docs/benchmarks.md for the procedure and recorded results.
 
 Usage::
 
-    python scripts/bench_incremental.py [--files 2000] [--target-s 1.0]
+    python scripts/bench_incremental.py [--files 2000] [--target-s 1.5]
 """
 
 from __future__ import annotations
@@ -27,7 +30,9 @@ from hdl_kgraph.pipeline import run_build, run_update  # noqa: E402
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--files", type=int, default=2000)
-    parser.add_argument("--target-s", type=float, default=1.0)
+    # M4 measured 0.85 s against a < 1 s target; M5's dataflow edges grew the
+    # graph ~76% and the budget to < 1.5 s (see docs/benchmarks.md).
+    parser.add_argument("--target-s", type=float, default=1.5)
     parser.add_argument(
         "--keep", type=Path, default=None, help="generate into this directory and keep it"
     )

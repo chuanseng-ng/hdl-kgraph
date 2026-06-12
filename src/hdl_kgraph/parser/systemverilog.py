@@ -21,10 +21,42 @@ Implementation notes:
   edge and refs at ``CONFIDENCE_AMBIGUOUS``. A node straddling an include
   boundary keeps the start line's file with a collapsed span (documented
   limitation).
+* M5 — dataflow, clocks, and verification constructs:
+
+  - Module/interface/program-scope net and variable declarations become
+    SIGNAL nodes (``attrs``: ``net_type``, ``type_text``, ``is_net``).
+    Class properties and function/task locals deliberately do not.
+  - ``assign`` statements and always blocks become PROCESS nodes named
+    ``assign@<line>`` / ``always@<line>`` (``attrs["style"]``; explicit
+    sensitivity lists in ``attrs["sensitivity"]`` as ``{"edge", "name"}``
+    dicts — lists, never tuples, so cached IRs round-trip identically).
+    A declaration initializer (``wire x = ...``) is its own ``assign@<line>``
+    PROCESS with ``attrs["decl_init"]``, per the LRM equivalence.
+  - DRIVES/READS refs go from the PROCESS to *root identifiers*:
+    ``mem[addr] <= w`` drives ``mem`` and reads ``addr``/``w``;
+    ``top.sub.sig`` reads ``top``. Subroutine callee names, ``pkg::`` scope
+    prefixes, system tasks, and macro usages are excluded; names declared
+    inside the block (for-loop variables, automatic locals) are too. These
+    refs resolve in pass 2 against the *enclosing unit's* PORT/SIGNAL
+    children (see graph/builder.py), never by global name.
+  - CLOCKED_BY/RESETS: one edge term in the event control → CLOCKED_BY at
+    1.0 (``evidence: "sensitivity"``); several → reset-named terms
+    (rst/reset/clr/clear) become RESETS at 1.0 (``async: True``) and a
+    unique remaining term CLOCKED_BY at 1.0, else each unclassified term
+    CLOCKED_BY at 0.4. A reset-named signal *read* in a clocked block is a
+    sync-reset RESETS at 0.4 (``evidence: "name"``).
+  - PROPERTY/SEQUENCE/ASSERTION (labeled or ``assert@<line>``; statement
+    flavor in ``attrs["statement"]``), COVERGROUP/COVERPOINT, CONSTRAINT,
+    and CLOCKING_BLOCK nodes; ASSERTS_ON refs from assertion/property/
+    sequence bodies (resolved to a sibling PROPERTY/SEQUENCE first, then
+    PORT/SIGNAL), COVERS refs from coverpoint expressions, CLOCKED_BY from
+    their clocking events. Immediate (procedural) assertions are out of
+    scope for M5.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -39,6 +71,7 @@ from hdl_kgraph.parser.base import FileIR, UnresolvedRef
 from hdl_kgraph.parser.preprocessor import LineOrigin
 from hdl_kgraph.schema import (
     CONFIDENCE_AMBIGUOUS,
+    CONFIDENCE_HEURISTIC,
     CONFIDENCE_RESOLVED,
     Edge,
     EdgeKind,
@@ -65,6 +98,22 @@ _HEADER_TYPES = frozenset(
 
 _IDENTIFIER_TYPES = ("simple_identifier", "escaped_identifier")
 
+#: Scopes whose nets/variables are design signals (dataflow endpoints).
+_DATAFLOW_SCOPE_KINDS = frozenset({NodeKind.MODULE, NodeKind.INTERFACE, NodeKind.PROGRAM})
+
+#: Procedural/continuous assignment node types (lvalue child + RHS).
+_ASSIGNMENT_TYPES = frozenset({"nonblocking_assignment", "operator_assignment", "net_assignment"})
+
+_RESET_NAME_RE = re.compile(r"rst|reset|clr|clear", re.IGNORECASE)
+
+_ASSERT_STATEMENT_TYPES = {
+    "assert_property_statement": "assert",
+    "assume_property_statement": "assume",
+    "cover_property_statement": "cover",
+    "cover_sequence_statement": "cover",
+    "restrict_property_statement": "restrict",
+}
+
 
 def _line_span(node: TSNode) -> tuple[int, int]:
     return (node.start_point[0] + 1, node.end_point[0] + 1)
@@ -76,6 +125,7 @@ class _Scope:
 
     node_id: str
     path: str  # dotted qualified-name prefix ("" for file scope)
+    kind: NodeKind | None = None
     port_index: int = 0
     param_index: int = 0
     last_port_direction: str = ""
@@ -216,12 +266,28 @@ class _Walker:
         for child in node.children:
             self.visit(child)
 
+    def _count_subtree_errors(self, node: TSNode) -> None:
+        """Keep ``parse_error_count`` honest for subtrees a handler consumes
+        without re-dispatching (mirrors :meth:`visit`'s counting)."""
+        if node.is_missing:
+            self.ir.parse_error_count += 1
+        if node.type == "ERROR":
+            self.ir.parse_error_count += 1
+            return
+        for child in node.children:
+            self._count_subtree_errors(child)
+
     def _visit_in_scope(self, node: TSNode, scope_node: Node) -> None:
-        self.scopes.append(_Scope(node_id=scope_node.id, path=scope_node.qualified_name))
+        self.scopes.append(
+            _Scope(node_id=scope_node.id, path=scope_node.qualified_name, kind=scope_node.kind)
+        )
         try:
             self._visit_children(node)
         finally:
             self.scopes.pop()
+
+    def _in_dataflow_scope(self) -> bool:
+        return self.scope.kind in _DATAFLOW_SCOPE_KINDS
 
     # -- design units ----------------------------------------------------------
 
@@ -494,12 +560,17 @@ class _Walker:
                 else:
                     expr = self._child(child, "expression")
                     port_name = self._identifier(child)
+                    if expr is not None:
+                        expr_text = self._text(expr)
+                    elif self._child(child, "(") is not None:
+                        expr_text = ""  # `.name()` — explicitly open
+                    else:
+                        expr_text = port_name  # `.name` shorthand: like-named signal
                     attrs = {
                         "port_name": port_name,
                         "position": None,
                         "wildcard": False,
-                        # `.name` shorthand connects the like-named signal.
-                        "expr_text": self._text(expr) if expr is not None else port_name,
+                        "expr_text": expr_text,
                     }
             elif child.type == "ordered_port_connection":
                 attrs = {
@@ -541,6 +612,493 @@ class _Walker:
                 )
             )
 
+    # -- dataflow (M5) -------------------------------------------------------------
+
+    def _dataflow_ref(
+        self,
+        kind: EdgeKind,
+        src_id: str,
+        name: str,
+        ts_node: TSNode,
+        confidence: float | None = None,
+        **attrs: object,
+    ) -> None:
+        """A scoped ref: pass 2 resolves *name* in the enclosing unit."""
+        self.ir.unresolved_refs.append(
+            UnresolvedRef(
+                edge_kind=kind,
+                src_id=src_id,
+                target_name=name,
+                line_span=self._span(ts_node),
+                attrs={k: v for k, v in attrs.items() if v is not None},
+                confidence=(
+                    min(confidence, self._ref_confidence(ts_node))
+                    if confidence is not None
+                    else self._ref_confidence(ts_node)
+                ),
+            )
+        )
+
+    def _hier_root(self, node: TSNode) -> str:
+        """Root identifier of a (possibly dotted) hierarchical_identifier."""
+        ident = self._child(node, *_IDENTIFIER_TYPES)
+        return self._text(ident) if ident is not None else ""
+
+    def _collect_signal_idents(
+        self, node: TSNode, out: list[TSNode], skip: frozenset[str] = frozenset()
+    ) -> None:
+        """hierarchical_identifier nodes under *node* that name signals.
+
+        Skips subroutine callee names and ``pkg::``/object prefixes of method
+        calls; system-task names and macro usages never produce
+        hierarchical_identifier nodes, so they are excluded structurally.
+        *skip* prunes whole subtrees (e.g. a body walk skipping its event
+        controls, which the clock/reset extraction handles).
+        """
+        if node.type in skip:
+            return
+        if node.type == "hierarchical_identifier":
+            out.append(node)
+            return
+        if node.type == "tf_call":
+            skip_callee = True
+            for child in node.children:
+                if skip_callee and child.type == "hierarchical_identifier":
+                    skip_callee = False
+                    continue
+                self._collect_signal_idents(child, out, skip)
+            return
+        if node.type == "method_call":
+            body = self._child(node, "method_call_body")
+            if body is not None:
+                self._collect_signal_idents(body, out, skip)
+            return
+        for child in node.children:
+            self._collect_signal_idents(child, out, skip)
+
+    def _lvalue_roots(self, lvalue: TSNode, out: list[TSNode]) -> None:
+        """Driven root-identifier nodes of an lvalue (concats recurse;
+        identifiers inside selects are reads, collected separately)."""
+        nested = self._children(lvalue, "net_lvalue", "variable_lvalue")
+        if nested:
+            for inner in nested:
+                self._lvalue_roots(inner, out)
+            return
+        hier = self._child(lvalue, "hierarchical_identifier")
+        if hier is not None:
+            out.append(hier)
+            return
+        ident = self._child(lvalue, *_IDENTIFIER_TYPES)
+        if ident is not None:
+            out.append(ident)
+
+    def _find_all(self, node: TSNode, types: frozenset[str], out: list[TSNode]) -> None:
+        if node.type in types:
+            out.append(node)
+        for child in node.children:
+            self._find_all(child, types, out)
+
+    def _local_decl_names(self, body: TSNode) -> set[str]:
+        """Names declared inside a procedural body (for-loop variables,
+        automatic locals) — excluded from the unit-scoped dataflow refs."""
+        decls: list[TSNode] = []
+        self._find_all(
+            body,
+            frozenset(
+                {"variable_decl_assignment", "net_decl_assignment", "for_variable_declaration"}
+            ),
+            decls,
+        )
+        names: set[str] = set()
+        for decl in decls:
+            for ident in self._children(decl, *_IDENTIFIER_TYPES):
+                names.add(self._text(ident))
+        return names
+
+    def _statement_dataflow(self, proc: Node, body: TSNode) -> set[str]:
+        """Emit DRIVES/READS refs from the assignments under *body*; returns
+        the names read."""
+        assignments: list[TSNode] = []
+        self._find_all(body, _ASSIGNMENT_TYPES, assignments)
+        drive_nodes: list[TSNode] = []
+        for assignment in assignments:
+            lvalue = self._child(assignment, "variable_lvalue", "net_lvalue")
+            if lvalue is not None:
+                self._lvalue_roots(lvalue, drive_nodes)
+        drive_ids = {n.id for n in drive_nodes}
+        idents: list[TSNode] = []
+        # Event/delay controls are clock-domain evidence, not data reads.
+        self._collect_signal_idents(body, idents, skip=frozenset({"event_control"}))
+        locals_ = self._local_decl_names(body)
+
+        emitted: set[tuple[EdgeKind, str]] = set()
+
+        def emit(kind: EdgeKind, name: str, site: TSNode, role: str) -> None:
+            if not name or name in locals_ or (kind, name) in emitted:
+                return
+            emitted.add((kind, name))
+            self._dataflow_ref(kind, proc.id, name, site, role=role)
+
+        for node in drive_nodes:
+            name = (
+                self._hier_root(node)
+                if node.type == "hierarchical_identifier"
+                else (self._text(node))
+            )
+            emit(EdgeKind.DRIVES, name, node, "lhs")
+        for node in idents:
+            if node.id in drive_ids:
+                continue
+            emit(EdgeKind.READS, self._hier_root(node), node, "rhs")
+        return {name for kind, name in emitted if kind is EdgeKind.READS}
+
+    def _on_net_declaration(self, node: TSNode) -> None:
+        if not self._in_dataflow_scope():
+            return
+        self._count_subtree_errors(node)
+        net_type_node = self._child(node, "net_type")
+        type_node = self._child(node, "data_type_or_implicit")
+        decl_list = self._child(node, "list_of_net_decl_assignments")
+        if decl_list is None:
+            return
+        for decl in self._children(decl_list, "net_decl_assignment"):
+            name = self._identifier(decl)
+            if not name:
+                continue
+            self._new_node(
+                NodeKind.SIGNAL,
+                name,
+                decl,
+                net_type=self._text(net_type_node) if net_type_node is not None else None,
+                type_text=self._text(type_node) if type_node is not None else None,
+                is_net=True,
+            )
+            self._decl_init_dataflow(decl, name)
+
+    def _on_data_declaration(self, node: TSNode) -> None:
+        decl_list = self._child(node, "list_of_variable_decl_assignments")
+        if decl_list is None:
+            # A nested type_declaration / package import / net-type alias:
+            # let the normal dispatch see it.
+            self._visit_children(node)
+            return
+        if not self._in_dataflow_scope():
+            return  # class properties and subroutine locals are not SIGNALs
+        self._count_subtree_errors(node)
+        type_node = self._child(node, "data_type_or_implicit")
+        for decl in self._children(decl_list, "variable_decl_assignment"):
+            name = self._identifier(decl)
+            if not name:
+                continue
+            self._new_node(
+                NodeKind.SIGNAL,
+                name,
+                decl,
+                type_text=self._text(type_node) if type_node is not None else None,
+                is_net=False,
+            )
+            self._decl_init_dataflow(decl, name)
+
+    def _decl_init_dataflow(self, decl: TSNode, name: str) -> None:
+        """``wire x = expr;`` — the LRM-equivalent continuous assign."""
+        expr = self._child(decl, "expression", "constant_expression")
+        if expr is None:
+            return
+        origin = self._origin(decl)
+        proc = self._new_node(
+            NodeKind.PROCESS,
+            f"assign@{origin.line}",
+            decl,
+            style="continuous_assign",
+            decl_init=True,
+        )
+        self._dataflow_ref(EdgeKind.DRIVES, proc.id, name, decl, role="lhs")
+        idents: list[TSNode] = []
+        self._collect_signal_idents(expr, idents)
+        seen: set[str] = set()
+        for ident in idents:
+            root = self._hier_root(ident)
+            if root and root not in seen:
+                seen.add(root)
+                self._dataflow_ref(EdgeKind.READS, proc.id, root, ident, role="rhs")
+
+    def _on_continuous_assign(self, node: TSNode) -> None:
+        if not self._in_dataflow_scope():
+            return
+        self._count_subtree_errors(node)
+        origin = self._origin(node)
+        proc = self._new_node(
+            NodeKind.PROCESS, f"assign@{origin.line}", node, style="continuous_assign"
+        )
+        self._statement_dataflow(proc, node)
+
+    # -- always blocks, clocks, resets (M5) -----------------------------------------
+
+    def _event_entries(self, event_control: TSNode | None) -> list[dict[str, object]] | None:
+        """Explicit sensitivity entries, or None for ``@*``/no event control."""
+        if event_control is None:
+            return None
+        clocking = self._child(event_control, "clocking_event")
+        if clocking is None:
+            return None  # @* / @(*)
+        entries = self._event_entries_from_clocking(clocking)
+        if not entries:
+            # ``@cb`` — a named event or clocking block.
+            ident = self._child(clocking, "hierarchical_identifier", *_IDENTIFIER_TYPES)
+            if ident is not None:
+                name = (
+                    self._hier_root(ident)
+                    if ident.type == "hierarchical_identifier"
+                    else self._text(ident)
+                )
+                entries.append({"edge": None, "name": name})
+        return entries
+
+    def _clock_reset_refs(
+        self, src: Node, entries: list[dict[str, object]], site: TSNode
+    ) -> tuple[bool, set[str]]:
+        """CLOCKED_BY/RESETS refs from edge-sensitivity terms.
+
+        Returns (edge-clocked at 1.0, names already emitted as async RESETS) —
+        the former enables the sync-reset name heuristic on the block's reads,
+        the latter exempts the async resets from it.
+        """
+        edge_terms = [e for e in entries if e["edge"]]
+        if not edge_terms:
+            return False, set()
+        if len(edge_terms) == 1:
+            term = edge_terms[0]
+            self._dataflow_ref(
+                EdgeKind.CLOCKED_BY,
+                src.id,
+                str(term["name"]),
+                site,
+                evidence="sensitivity",
+                edge=term["edge"],
+            )
+            return True, set()
+        resets = [t for t in edge_terms if _RESET_NAME_RE.search(str(t["name"]))]
+        others = [t for t in edge_terms if t not in resets]
+        reset_names = {str(t["name"]) for t in resets}
+        for term in resets:
+            self._dataflow_ref(
+                EdgeKind.RESETS,
+                src.id,
+                str(term["name"]),
+                site,
+                evidence="sensitivity",
+                edge=term["edge"],
+                is_async=True,
+            )
+        if len(others) == 1:
+            self._dataflow_ref(
+                EdgeKind.CLOCKED_BY,
+                src.id,
+                str(others[0]["name"]),
+                site,
+                evidence="sensitivity",
+                edge=others[0]["edge"],
+            )
+            return True, reset_names
+        for term in others:  # 0 or 2+ clock candidates: heuristic only
+            self._dataflow_ref(
+                EdgeKind.CLOCKED_BY,
+                src.id,
+                str(term["name"]),
+                site,
+                confidence=CONFIDENCE_HEURISTIC,
+                evidence="ambiguous_sensitivity",
+                edge=term["edge"],
+            )
+        return bool(resets), reset_names
+
+    def _on_always(self, node: TSNode) -> None:
+        if not self._in_dataflow_scope():
+            self._visit_children(node)
+            return
+        self._count_subtree_errors(node)
+        keyword = self._child(node, "always_keyword")
+        style = self._text(keyword) if keyword is not None else "always"
+        event_control = self._find_first(node, "event_control", max_depth=4)
+        entries = self._event_entries(event_control)
+        combinational = style in ("always_comb", "always_latch") or (
+            event_control is not None and entries is None
+        )
+        origin = self._origin(node)
+        proc = self._new_node(
+            NodeKind.PROCESS,
+            f"always@{origin.line}",
+            node,
+            style=style,
+            sensitivity=entries,
+            combinational=combinational or None,
+        )
+        clocked = False
+        async_resets: set[str] = set()
+        if entries:
+            clocked, async_resets = self._clock_reset_refs(proc, entries, event_control or node)
+        reads = self._statement_dataflow(proc, node)
+        for entry in entries or ():
+            if not entry["edge"] and str(entry["name"]) not in reads:
+                self._dataflow_ref(
+                    EdgeKind.READS, proc.id, str(entry["name"]), node, role="sensitivity"
+                )
+        if clocked:
+            # Sync-reset heuristic: a reset-named signal read by a clocked block.
+            for name in sorted(reads - async_resets):
+                if _RESET_NAME_RE.search(name):
+                    self._dataflow_ref(
+                        EdgeKind.RESETS,
+                        proc.id,
+                        name,
+                        node,
+                        confidence=CONFIDENCE_HEURISTIC,
+                        evidence="name",
+                        is_async=False,
+                    )
+
+    # -- verification constructs (M5) -------------------------------------------
+
+    def _clocking_event_refs(self, src: Node, subtree: TSNode) -> set[int]:
+        """CLOCKED_BY refs for every clocking event under *subtree*.
+
+        Returns the ts-node ids of identifiers inside those events so signal
+        collection can skip them (the clock is not an asserted-on signal).
+        """
+        events: list[TSNode] = []
+        self._find_all(subtree, frozenset({"clocking_event"}), events)
+        consumed: set[int] = set()
+        seen: set[str] = set()
+        for event in events:
+            idents: list[TSNode] = []
+            self._collect_signal_idents(event, idents)
+            consumed.update(n.id for n in idents)
+            for entry in self._event_entries_from_clocking(event):
+                name = str(entry["name"])
+                if entry["edge"] and name not in seen:
+                    seen.add(name)
+                    self._dataflow_ref(
+                        EdgeKind.CLOCKED_BY,
+                        src.id,
+                        name,
+                        event,
+                        evidence="sensitivity",
+                        edge=entry["edge"],
+                    )
+        return consumed
+
+    def _event_entries_from_clocking(self, clocking: TSNode) -> list[dict[str, object]]:
+        entries: list[dict[str, object]] = []
+
+        def walk(ee: TSNode) -> None:
+            subs = self._children(ee, "event_expression")
+            if subs:
+                for sub in subs:
+                    walk(sub)
+                return
+            edge_node = self._child(ee, "edge_identifier")
+            expr = self._child(ee, "expression")
+            if expr is None:
+                return
+            idents: list[TSNode] = []
+            self._collect_signal_idents(expr, idents)
+            if idents:
+                entries.append(
+                    {
+                        "edge": self._text(edge_node) if edge_node is not None else None,
+                        "name": self._hier_root(idents[0]),
+                    }
+                )
+
+        top = self._child(clocking, "event_expression")
+        if top is not None:
+            walk(top)
+        return entries
+
+    def _spec_refs(self, src: Node, subtree: TSNode, kind: EdgeKind) -> None:
+        """ASSERTS_ON/COVERS refs for the signal names under *subtree*,
+        with its clocking events lifted out as CLOCKED_BY."""
+        consumed = self._clocking_event_refs(src, subtree)
+        idents: list[TSNode] = []
+        self._collect_signal_idents(subtree, idents)
+        seen: set[str] = set()
+        for ident in idents:
+            if ident.id in consumed:
+                continue
+            name = self._hier_root(ident)
+            if name and name not in seen:
+                seen.add(name)
+                self._dataflow_ref(kind, src.id, name, ident)
+
+    def _on_property_decl(self, node: TSNode) -> None:
+        name = self._identifier(node)
+        if not name:
+            return
+        self._count_subtree_errors(node)
+        kind = NodeKind.PROPERTY if node.type == "property_declaration" else NodeKind.SEQUENCE
+        decl = self._new_node(kind, name, node)
+        self._spec_refs(decl, node, EdgeKind.ASSERTS_ON)
+
+    def _on_assertion(self, node: TSNode) -> None:
+        if not self._in_dataflow_scope():
+            self._visit_children(node)
+            return
+        self._count_subtree_errors(node)
+        statement = next((c for c in node.children if c.type in _ASSERT_STATEMENT_TYPES), None)
+        label = self._identifier(node)
+        origin = self._origin(node)
+        assertion = self._new_node(
+            NodeKind.ASSERTION,
+            label or f"assert@{origin.line}",
+            node,
+            statement=_ASSERT_STATEMENT_TYPES[statement.type] if statement is not None else None,
+        )
+        self._spec_refs(
+            assertion, statement if statement is not None else node, EdgeKind.ASSERTS_ON
+        )
+
+    def _on_covergroup(self, node: TSNode) -> None:
+        origin = self._origin(node)
+        self._count_subtree_errors(node)
+        name = self._identifier(node) or f"covergroup@{origin.line}"
+        group = self._new_node(NodeKind.COVERGROUP, name, node)
+        event = self._child(node, "coverage_event")
+        if event is not None:
+            self._clocking_event_refs(group, event)
+        self.scopes.append(_Scope(node_id=group.id, path=group.qualified_name, kind=group.kind))
+        try:
+            for spec in self._children(node, "coverage_spec_or_option"):
+                point = self._child(spec, "cover_point")
+                if point is None:
+                    continue
+                point_origin = self._origin(point)
+                point_name = self._identifier(point) or f"cp@{point_origin.line}"
+                cp = self._new_node(NodeKind.COVERPOINT, point_name, point)
+                expr = self._child(point, "expression")
+                if expr is not None:
+                    self._spec_refs(cp, expr, EdgeKind.COVERS)
+        finally:
+            self.scopes.pop()
+
+    def _on_constraint(self, node: TSNode) -> None:
+        name = self._identifier(node)
+        if name:
+            self._new_node(NodeKind.CONSTRAINT, name, node)
+
+    def _on_clocking(self, node: TSNode) -> None:
+        origin = self._origin(node)
+        self._count_subtree_errors(node)
+        name = self._identifier(node) or f"clocking@{origin.line}"
+        block = self._new_node(
+            NodeKind.CLOCKING_BLOCK,
+            name,
+            node,
+            is_default=(self._child(node, "default") is not None) or None,
+        )
+        event = self._child(node, "clocking_event")
+        if event is not None:
+            self._clocking_event_refs(block, event)
+
     _DISPATCH = {
         "module_declaration": _on_design_unit,
         "interface_declaration": _on_design_unit,
@@ -558,6 +1116,18 @@ class _Walker:
         "class_constructor_declaration": _on_constructor,
         "module_instantiation": _on_instantiation,
         "package_import_declaration": _on_import,
+        # M5: dataflow + clocks
+        "net_declaration": _on_net_declaration,
+        "data_declaration": _on_data_declaration,
+        "continuous_assign": _on_continuous_assign,
+        "always_construct": _on_always,
+        # M5: verification constructs
+        "property_declaration": _on_property_decl,
+        "sequence_declaration": _on_property_decl,
+        "concurrent_assertion_item": _on_assertion,
+        "covergroup_declaration": _on_covergroup,
+        "constraint_declaration": _on_constraint,
+        "clocking_declaration": _on_clocking,
     }
 
 

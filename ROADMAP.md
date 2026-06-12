@@ -204,21 +204,46 @@ survives rapid save bursts.
 
 **Goal:** insights, not just structure.
 
-- [ ] Dataflow edges: `DRIVES`/`READS` from continuous assigns, always/process
-      blocks, and instance port directions
-- [ ] `CLOCKED_BY`/`RESETS` extraction (sensitivity-list evidence = 1.0;
+- [x] Dataflow edges: `DRIVES`/`READS` from continuous assigns, always/process
+      blocks, and instance port directions — **always blocks / assigns become
+      PROCESS nodes (`always@<line>` / `assign@<line>`); refs resolve against
+      the enclosing unit's PORT/SIGNAL children, never by global name;
+      undeclared names become implicit SIGNAL stubs at ≤ 0.6; instance-level
+      flow is derived from resolved CONNECTS bindings + port directions;
+      `query drivers <signal>` pre-stages M6's `find_signal_drivers`**
+- [x] `CLOCKED_BY`/`RESETS` extraction (sensitivity-list evidence = 1.0;
       name-pattern heuristic = 0.4) → clock-domain report, reset tree, and
-      CDC-suspect crossings (signal driven in domain A, read in domain B)
-- [ ] Lint-flavored analyses: unconnected/dangling ports, undriven/unread signals,
+      CDC-suspect crossings (signal driven in domain A, read in domain B) —
+      **`query clock-domains` / `reset-tree` / `cdc`; clock nets alias-merge
+      across the hierarchy through single-identifier port connections; VHDL
+      `rising_edge()` is 1.0 evidence; combinational paths bridge one step
+      (no fixpoint); synchronizers are not recognized — these are suspects,
+      not violations (M10's SDC `set_clock_groups` is the planned suppressor)**
+- [x] Lint-flavored analyses: unconnected/dangling ports, undriven/unread signals,
       never-instantiated modules (dead code), parameter overrides equal to defaults
-- [ ] Graph metrics: module fan-in/fan-out, hub/bridge detection (betweenness),
-      community detection (Louvain via NetworkX) for subsystem discovery
-- [ ] `visualize` → self-contained D3.js HTML (hierarchy view + force-directed
-      view; filter by node kind, edge kind, clock domain)
-- [ ] SV verification constructs: `ASSERTION`/`PROPERTY`/`SEQUENCE`,
+      — **`hdl-kgraph lint [--check NAME] [--top NAME] [--json]`, always exits 0;
+      signal checks skip parse-error files and implicit-net stubs; explicitly
+      open `.x()` bindings reported separately from unconnected ports**
+- [x] Graph metrics: module fan-in/fan-out, hub/bridge detection (betweenness),
+      community detection (Louvain via NetworkX) for subsystem discovery —
+      **`hdl-kgraph metrics [--top N] [--communities]` over the module-level
+      instantiation projection (entities absorb their architectures); Louvain
+      seeded for run-to-run determinism; articulation points flag true bridges**
+- [x] `visualize` → self-contained D3.js HTML (hierarchy view + force-directed
+      view; filter by node kind, edge kind, clock domain) — **d3 v7 vendored
+      (ISC; `viz/static/LICENSE.d3`) so the artifact opens air-gapped; the
+      force view renders on canvas (SVG dies near 1k nodes) and defaults to
+      the module projection, `--full` embeds everything; < 0.8-confidence
+      edges drawn dashed**
+- [x] SV verification constructs: `ASSERTION`/`PROPERTY`/`SEQUENCE`,
       `COVERGROUP`/`COVERPOINT`, `CONSTRAINT`, `CLOCKING_BLOCK` nodes;
       `ASSERTS_ON`/`COVERS` edges; UVM topology report (`EXTENDS` chains to
-      `uvm_*` bases, `TEST_COVERS`)
+      `uvm_*` bases, `TEST_COVERS`) — **`query uvm`; `ASSERTS_ON` resolves to a
+      sibling PROPERTY/SEQUENCE before signals; `TEST_COVERS` is a 0.4
+      tb-name-pattern heuristic (tb tops → instantiated DUTs, uvm_test
+      subclasses → the same DUTs); immediate (procedural) assertions deferred.
+      Schema is v3 — pass-1 IRs changed, so the first `update` after upgrading
+      falls back to one full rebuild**
 
 **Acceptance:** the clock-domain report on a two-clock fixture identifies both
 domains and the CDC point; visualization renders a 1k-node graph without freezing;

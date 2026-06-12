@@ -5,7 +5,9 @@ M1 surface: ``build``, ``status``, ``query`` (``instances-of`` / ``modules``
 ``build``: ``-f`` filelists, ``-D`` defines, ``-I`` include dirs, and
 ``hdl-kgraph.toml`` config discovery (CLI flags win over config values).
 M4 adds ``update`` (incremental rebuild), ``detect-changes``, ``impact``,
-and ``watch``. ``visualize`` arrives in M5, ``serve`` in M6.
+and ``watch``. M5 adds the analyses — ``lint``, ``metrics``, ``visualize``,
+and ``query`` ``clock-domains``/``reset-tree``/``cdc``/``drivers``/``uvm``
+(all with ``--json``). ``serve`` arrives in M6.
 
 The database lives at ``<root>/.hdl-kgraph/graph.db``; read commands locate
 it by walking up from the current directory (git-style) unless ``--db`` is
@@ -14,10 +16,14 @@ given.
 
 from __future__ import annotations
 
+import dataclasses
+import enum
+import json
 import sys
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import click
 import networkx as nx
@@ -31,7 +37,7 @@ from hdl_kgraph.config import (
     resolve_build_options,
 )
 from hdl_kgraph.discovery import DEFAULT_MAX_FILE_SIZE_KB, SUFFIXES
-from hdl_kgraph.graph import analysis
+from hdl_kgraph.graph import analysis, clocks, lint, metrics, uvm
 from hdl_kgraph.incremental import detect_git_changes, dirty_closure
 from hdl_kgraph.pipeline import (
     BuildReport,
@@ -52,6 +58,22 @@ _db_option = click.option(
     default=None,
     help="Path to the graph database (default: nearest .hdl-kgraph/graph.db).",
 )
+
+_json_option = click.option(
+    "--json", "as_json", is_flag=True, help="Emit JSON instead of the text report."
+)
+
+
+def _json_default(value: Any) -> Any:
+    if isinstance(value, enum.Enum):
+        return value.value
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return dataclasses.asdict(value)
+    return str(value)
+
+
+def _emit_json(payload: Any) -> None:
+    click.echo(json.dumps(payload, indent=2, default=_json_default))
 
 
 def _load(db_path: Path | None) -> tuple[nx.MultiDiGraph, list, dict[str, str]]:
@@ -508,6 +530,154 @@ def status(db_path: Path | None) -> None:
         click.echo(f"unresolved: {len(stubs)}")
 
 
+@main.command("lint")
+@_db_option
+@_json_option
+@click.option(
+    "--check",
+    "checks",
+    multiple=True,
+    metavar="NAME",
+    help=f"Run only this check (repeatable). Available: {', '.join(sorted(lint.CHECKS))}.",
+)
+@click.option(
+    "--top",
+    "tops",
+    multiple=True,
+    metavar="NAME",
+    help="Treat NAME as an intended top module (repeatable; exempts it from dead-module).",
+)
+def lint_cmd(
+    db_path: Path | None, as_json: bool, checks: tuple[str, ...], tops: tuple[str, ...]
+) -> None:
+    """Report graph-level lint findings (always exits 0 — a report, not a gate).
+
+    Signal-level checks skip files with parse errors and implicit-net stubs
+    so a finding is worth reading; confidences below 1.0 mark heuristics.
+    """
+    graph, files, _ = _load(db_path)
+    error_files = frozenset(f.path for f in files if f.parse_error_count)
+    try:
+        findings = lint.run_checks(
+            graph,
+            names=checks or None,
+            tops=frozenset(tops),
+            error_files=error_files,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if as_json:
+        _emit_json(findings)
+        return
+    if not findings:
+        click.echo("no findings")
+        return
+    for f in findings:
+        location = f"{f.file}:{f.line}" if f.file else "?"
+        marker = "" if f.confidence >= 0.8 else f"  [~{f.confidence:.1f}]"
+        click.echo(f"{f.check:18} {f.name:32} {location:28} {f.message}{marker}")
+
+
+@main.command("metrics")
+@_db_option
+@_json_option
+@click.option(
+    "--top",
+    "top_n",
+    type=int,
+    default=10,
+    show_default=True,
+    metavar="N",
+    help="How many units to list (0 = all).",
+)
+@click.option(
+    "--communities",
+    "show_communities",
+    is_flag=True,
+    help="Also report Louvain communities (subsystem suggestions).",
+)
+def metrics_cmd(db_path: Path | None, as_json: bool, top_n: int, show_communities: bool) -> None:
+    """Module fan-in/fan-out, hub/bridge detection, community discovery.
+
+    Metrics are computed on the module-level instantiation projection;
+    units are listed hubs-first (descending betweenness centrality).
+    """
+    graph, _, _ = _load(db_path)
+    records = metrics.module_metrics(graph)
+    parts = metrics.communities(graph) if show_communities else []
+    if as_json:
+        payload: dict[str, Any] = {"modules": records}
+        if show_communities:
+            payload["communities"] = parts
+        _emit_json(payload)
+        return
+    if not records:
+        click.echo("no design units in the graph")
+        return
+    shown = records if top_n <= 0 else records[:top_n]
+    click.echo(f"{'unit':30} {'fan-in':>6} {'fan-out':>7} {'betweenness':>12}")
+    for m in shown:
+        markers = ""
+        if m.is_articulation:
+            markers += " [bridge]"
+        if m.unresolved:
+            markers += " [?]"
+        click.echo(f"{m.name:30} {m.fan_in:>6} {m.fan_out:>7} {m.betweenness:>12.4f}{markers}")
+    if show_communities:
+        click.echo(f"communities: {len(parts)}")
+        for i, part in enumerate(parts):
+            names = ", ".join(sorted(graph.nodes[n]["name"] for n in part))
+            click.echo(f"    [{i}] {names}")
+
+
+@main.command("visualize")
+@_db_option
+@click.option(
+    "-o",
+    "--output",
+    "output",
+    type=click.Path(path_type=Path),
+    default=Path("graph.html"),
+    show_default=True,
+    help="Output HTML file.",
+)
+@click.option(
+    "--full",
+    is_flag=True,
+    help="Embed every node and edge (default: the module-level projection, "
+    "which stays responsive on large designs).",
+)
+@click.option("--top", "top", default=None, help="Root the hierarchy view at this module.")
+@click.option("--title", default=None, help="Page title (default: the build root's name).")
+@click.option("--open", "open_browser", is_flag=True, help="Open the result in a browser.")
+def visualize(
+    db_path: Path | None,
+    output: Path,
+    full: bool,
+    top: str | None,
+    title: str | None,
+    open_browser: bool,
+) -> None:
+    """Render a self-contained interactive HTML view of the graph.
+
+    The file embeds D3 and the graph data — no network access needed to
+    open it. Two views: a collapsible hierarchy and a force-directed graph
+    with node-kind / edge-kind / clock-domain filters.
+    """
+    from hdl_kgraph.viz import render_html
+
+    graph, _, meta = _load(db_path)
+    if title is None:
+        root = meta.get("root", "")
+        title = f"hdl-kgraph: {Path(root).name}" if root else "hdl-kgraph"
+    path = render_html(graph, output, full=full, top=top, title=title)
+    click.echo(f"wrote {path}")
+    if open_browser:
+        import webbrowser
+
+        webbrowser.open(path.resolve().as_uri())
+
+
 @main.group()
 def query() -> None:
     """Query the knowledge graph."""
@@ -551,6 +721,178 @@ def modules(db_path: Path | None) -> None:
         rows.append((data["name"], marker, data["file"], data["line_span"][0], count))
     for name, marker, file, line, count in rows:
         click.echo(f"{name + marker:30} {file}:{line}  instances={count}")
+
+
+@query.command("clock-domains")
+@_db_option
+@_json_option
+def clock_domains_cmd(db_path: Path | None, as_json: bool) -> None:
+    """Report clock domains: clock nets, their processes and signals.
+
+    Domains come from CLOCKED_BY edges (sensitivity-list evidence = 1.0,
+    name heuristics = 0.4) with clock nets alias-merged across the
+    hierarchy through single-identifier port connections.
+    """
+    graph, _, _ = _load(db_path)
+    domains = clocks.clock_domains(graph)
+    if as_json:
+        _emit_json(domains)
+        return
+    if not domains:
+        click.echo("no clocked processes found")
+        return
+    for domain in domains:
+        label = graph.nodes[domain.clock_id]["qualified_name"]
+        aliases = [n for n in domain.clock_names if n != graph.nodes[domain.clock_id]["name"]]
+        if aliases:
+            label += " (= " + ", ".join(aliases) + ")"
+        marker = "" if domain.min_confidence >= 0.8 else f"  [~{domain.min_confidence:.1f}]"
+        click.echo(f"{label}{marker}")
+        click.echo(f"    processes: {len(domain.process_ids)}")
+        click.echo(f"    signals driven: {len(domain.signal_ids)}")
+
+
+@query.command("reset-tree")
+@_db_option
+@_json_option
+def reset_tree_cmd(db_path: Path | None, as_json: bool) -> None:
+    """Report reset nets and the processes they reset."""
+    graph, _, _ = _load(db_path)
+    groups = clocks.reset_tree(graph)
+    if as_json:
+        _emit_json(groups)
+        return
+    if not groups:
+        click.echo("no resets found")
+        return
+    for group in groups:
+        label = graph.nodes[group.reset_id]["qualified_name"]
+        aliases = [n for n in group.reset_names if n != graph.nodes[group.reset_id]["name"]]
+        if aliases:
+            label += " (= " + ", ".join(aliases) + ")"
+        flavor = "async" if group.is_async else "sync (name heuristic)"
+        marker = "" if group.min_confidence >= 0.8 else f"  [~{group.min_confidence:.1f}]"
+        click.echo(f"{label}  {flavor}{marker}")
+        for proc in group.process_ids:
+            click.echo(f"    resets {graph.nodes[proc]['qualified_name']}")
+
+
+@query.command("cdc")
+@_db_option
+@_json_option
+def cdc_cmd(db_path: Path | None, as_json: bool) -> None:
+    """Report clock-domain-crossing suspects.
+
+    A suspect is a signal driven in one domain and read by a process in
+    another. Synchronizers are not recognized — review each finding (this
+    is a report, not a gate; the exit code is always 0).
+    """
+    graph, _, _ = _load(db_path)
+    suspects = clocks.cdc_suspects(graph)
+    if as_json:
+        _emit_json(suspects)
+        return
+    if not suspects:
+        click.echo("no CDC suspects found")
+        return
+    for s in suspects:
+        location = f"{s.file}:{s.line}" if s.file else "?"
+        click.echo(
+            f"{s.signal_name:24} {s.driver_domain} -> {s.reader_domain}"
+            f"  read by {graph.nodes[s.reader_id]['qualified_name']}"
+            f"  {location}  confidence={s.confidence:.1f}"
+        )
+
+
+@query.command("drivers")
+@click.argument("signal")
+@_db_option
+@_json_option
+@click.option("--readers", is_flag=True, help="List readers instead of drivers.")
+def drivers_cmd(signal: str, db_path: Path | None, as_json: bool, readers: bool) -> None:
+    """List what drives (or reads) signals named SIGNAL."""
+    graph, _, _ = _load(db_path)
+    kind = EdgeKind.READS if readers else EdgeKind.DRIVES
+    records: list[dict[str, Any]] = []
+    for node_id, data in graph.nodes(data=True):
+        if data["kind"] not in (NodeKind.SIGNAL, NodeKind.PORT):
+            continue
+        wanted = signal.lower() if data["language"] is Language.VHDL else signal
+        if data["name"] != wanted:
+            continue
+        for src, _, edge in graph.in_edges(node_id, data=True):
+            if edge["kind"] is not kind:
+                continue
+            site = graph.nodes[src]
+            span = edge["attrs"].get("line_span") or site["line_span"]
+            records.append(
+                {
+                    "signal_id": node_id,
+                    "signal": data["qualified_name"],
+                    "site_id": src,
+                    "site": site["qualified_name"],
+                    "site_kind": site["kind"].value,
+                    "file": site["file"],
+                    "line": span[0] if span else 0,
+                    "confidence": edge["confidence"],
+                }
+            )
+    records.sort(key=lambda r: (r["signal"], r["file"], r["line"], r["site"]))
+    if as_json:
+        _emit_json(records)
+        return
+    if not records:
+        verb = "reads" if readers else "drives"
+        click.echo(f"nothing {verb} a signal named {signal!r}", err=True)
+        sys.exit(1)
+    for rec in records:
+        click.echo(
+            f"{rec['signal']:30} <- {rec['site_kind']} {rec['site']}"
+            f"  {rec['file']}:{rec['line']}  confidence={rec['confidence']:.1f}"
+        )
+
+
+@query.command("uvm")
+@_db_option
+@_json_option
+def uvm_cmd(db_path: Path | None, as_json: bool) -> None:
+    """Report UVM topology: components by role, plus TEST_COVERS links.
+
+    Classes are classified by walking their EXTENDS chain to the first
+    uvm_* base (usually an unresolved stub — UVM itself is rarely parsed).
+    """
+    graph, _, _ = _load(db_path)
+    components = uvm.uvm_topology(graph)
+    covers = [
+        {
+            "test_id": u,
+            "test": graph.nodes[u]["name"],
+            "dut_id": v,
+            "dut": graph.nodes[v]["name"],
+            "confidence": d["confidence"],
+        }
+        for u, v, d in graph.edges(data=True)
+        if d["kind"] is EdgeKind.TEST_COVERS
+    ]
+    covers.sort(key=lambda c: (str(c["test"]), str(c["dut"])))
+    if as_json:
+        _emit_json({"components": components, "test_covers": covers})
+        return
+    if not components and not covers:
+        click.echo("no UVM components or testbench tops found")
+        return
+    for role in uvm.ROLE_ORDER:
+        members = [c for c in components if c.role == role]
+        if not members:
+            continue
+        click.echo(f"{role}:")
+        for c in members:
+            chain = " -> ".join(c.base_chain)
+            click.echo(f"    {c.name:28} {c.file}:{c.line}  ({chain})")
+    if covers:
+        click.echo("test coverage (name-pattern heuristic, 0.4):")
+        for cover in covers:
+            click.echo(f"    {cover['test']} covers {cover['dut']}")
 
 
 @query.command("unresolved")

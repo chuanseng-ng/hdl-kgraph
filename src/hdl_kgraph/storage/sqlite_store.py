@@ -1,4 +1,4 @@
-"""SQLite persistence (M1; schema v2 since M4).
+"""SQLite persistence (M1; schema v3 since M5).
 
 Single-file, local-first storage of the knowledge graph:
 
@@ -34,7 +34,7 @@ import networkx as nx
 from hdl_kgraph import __version__
 from hdl_kgraph.schema import EdgeKind, Language, NodeKind
 
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"  # v3 (M5): pass-1 IRs gained dataflow/clock/verification refs
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (

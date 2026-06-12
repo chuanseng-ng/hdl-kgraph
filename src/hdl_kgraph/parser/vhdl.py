@@ -32,12 +32,29 @@ Implementation notes:
   ``attrs["library"]``.
 * Files with tree-sitter ERROR nodes still yield partial results; the error
   count is reported in ``FileIR.parse_error_count``.
+* M5 — dataflow and clocks: process bodies emit DRIVES refs for signal
+  assignment targets and READS for every other referenced name (root
+  identifier only; ``rec.field`` reads ``rec``; an indexed/called name
+  ``f(x)`` reads ``f`` — indexing and calls are syntactically identical in
+  VHDL, a documented approximation). Sensitivity-list names are READS with
+  ``role="sensitivity"``. ``rising_edge(x)``/``falling_edge(x)`` anywhere in
+  the body → CLOCKED_BY at 1.0 (``evidence: "edge_function"``); without one,
+  a two-name sensitivity list with a unique clk/clock-pattern name →
+  CLOCKED_BY at 0.4. Reset-pattern names (rst/reset/clr/clear) in the
+  sensitivity list or reads → RESETS at 0.4 (``evidence: "name"``).
+  Architecture-level concurrent signal assignments become PROCESS nodes
+  named ``assign@<line>`` (``style="concurrent_assignment"``) with the same
+  DRIVES/READS treatment. Process variables (``:=``) are local and carry no
+  graph dataflow (documented limitation). These refs resolve in pass 2
+  against the enclosing unit's PORT/SIGNAL children.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import tree_sitter_vhdl
 from tree_sitter import Language as TSLanguage
@@ -47,6 +64,7 @@ from tree_sitter import Parser as TSParser
 from hdl_kgraph.ids import decl_node_id, file_node_id
 from hdl_kgraph.parser.base import FileIR, UnresolvedRef
 from hdl_kgraph.schema import (
+    CONFIDENCE_HEURISTIC,
     CONFIDENCE_RESOLVED,
     Edge,
     EdgeKind,
@@ -60,6 +78,9 @@ SUFFIXES = frozenset({".vhd", ".vhdl"})
 VHDL_LANGUAGE = TSLanguage(tree_sitter_vhdl.language())
 
 DEFAULT_LIBRARY = "work"
+
+_RESET_NAME_RE = re.compile(r"rst|reset|clr|clear", re.IGNORECASE)
+_CLOCK_NAME_RE = re.compile(r"clk|clock", re.IGNORECASE)
 
 
 def _line_span(node: TSNode) -> tuple[int, int]:
@@ -171,6 +192,7 @@ class _Walker:
         src_id: str,
         target: str,
         ts_node: TSNode,
+        confidence: float = CONFIDENCE_RESOLVED,
         **attrs: object,
     ) -> None:
         self.ir.unresolved_refs.append(
@@ -180,7 +202,7 @@ class _Walker:
                 target_name=target.lower(),
                 line_span=_line_span(ts_node),
                 attrs={k: v for k, v in attrs.items() if v is not None},
-                confidence=CONFIDENCE_RESOLVED,
+                confidence=confidence,
             )
         )
 
@@ -399,7 +421,150 @@ class _Walker:
             if sens_list is not None:
                 sensitivity = [self._text(n).lower() for n in sens_list.children if n.is_named]
         proc = self._new_node(NodeKind.PROCESS, name, node, sensitivity=sensitivity)
+        body = self._child(node, "sequential_block")
+        if body is not None:
+            self._process_dataflow(proc, body, sensitivity or [])
         self._visit_in_scope(node, proc)
+
+    # -- dataflow (M5) ------------------------------------------------------------
+
+    def _collect_names(self, node: TSNode, out: list[tuple[str, TSNode]]) -> None:
+        """(root name, name node) pairs for every signal-shaped reference.
+
+        A ``name`` whose first named child is an ``identifier`` is a
+        reference; ``library_function``/``library_constant_*`` heads (e.g.
+        ``rising_edge``, ``'0'``) are not, but their argument lists still are.
+        """
+        if node.type == "name":
+            first = next((c for c in node.children if c.is_named), None)
+            if first is not None and first.type == "identifier":
+                out.append((self._text(first).lower(), node))
+            for child in node.children:
+                if child.is_named and child is not first:
+                    self._collect_names(child, out)
+            return
+        for child in node.children:
+            self._collect_names(child, out)
+
+    def _edge_function_clocks(self, body: TSNode) -> list[tuple[str, str, TSNode]]:
+        """(clock name, edge, site) for rising_edge/falling_edge calls."""
+        clocks: list[tuple[str, str, TSNode]] = []
+
+        def walk(n: TSNode) -> None:
+            if n.type == "name":
+                first = next((c for c in n.children if c.is_named), None)
+                if first is not None and first.type == "library_function":
+                    fn = self._text(first).lower()
+                    if fn in ("rising_edge", "falling_edge"):
+                        args: list[tuple[str, TSNode]] = []
+                        self._collect_names(n, args)
+                        if args:
+                            edge = "posedge" if fn == "rising_edge" else "negedge"
+                            clocks.append((args[0][0], edge, n))
+            for child in n.children:
+                walk(child)
+
+        walk(body)
+        return clocks
+
+    def _process_dataflow(self, proc: Node, body: TSNode, sensitivity: list[str]) -> None:
+        targets: list[TSNode] = []
+
+        def find_assignments(n: TSNode) -> None:
+            if n.type == "simple_waveform_assignment":
+                target = self._child(n, "name")
+                if target is not None:
+                    targets.append(target)
+            for child in n.children:
+                find_assignments(child)
+
+        find_assignments(body)
+        target_ids = {t.id for t in targets}
+        names: list[tuple[str, TSNode]] = []
+        self._collect_names(body, names)
+
+        emitted: set[tuple[EdgeKind, str]] = set()
+
+        def emit(
+            kind: EdgeKind,
+            name: str,
+            site: TSNode,
+            confidence: float = CONFIDENCE_RESOLVED,
+            **attrs: object,
+        ) -> None:
+            if not name or (kind, name) in emitted:
+                return
+            emitted.add((kind, name))
+            self._ref(kind, proc.id, name, site, confidence, **attrs)
+
+        for target in targets:
+            root = next((c for c in target.children if c.is_named), None)
+            if root is not None and root.type == "identifier":
+                emit(EdgeKind.DRIVES, self._text(root).lower(), target, role="lhs")
+        for name, site in names:
+            if site.id in target_ids:
+                continue
+            emit(EdgeKind.READS, name, site, role="rhs")
+        for name in sensitivity:
+            emit(EdgeKind.READS, name, body, role="sensitivity")
+
+        # Clocks: rising_edge/falling_edge is definitive; otherwise a unique
+        # clk-pattern name in a short sensitivity list is a 0.4 heuristic.
+        clocks = self._edge_function_clocks(body)
+        clock_names = set()
+        for name, edge, site in clocks:
+            if name not in clock_names:
+                clock_names.add(name)
+                emit(EdgeKind.CLOCKED_BY, name, site, evidence="edge_function", edge=edge)
+        if not clocks and len(sensitivity) <= 2:
+            candidates = [n for n in sensitivity if _CLOCK_NAME_RE.search(n)]
+            if len(candidates) == 1:
+                clock_names.add(candidates[0])
+                emit(
+                    EdgeKind.CLOCKED_BY,
+                    candidates[0],
+                    body,
+                    confidence=CONFIDENCE_HEURISTIC,
+                    evidence="name",
+                )
+        reads = {name for kind, name in emitted if kind is EdgeKind.READS}
+        for name in sorted(reads | set(sensitivity)):
+            if _RESET_NAME_RE.search(name) and name not in clock_names:
+                emit(
+                    EdgeKind.RESETS,
+                    name,
+                    body,
+                    confidence=CONFIDENCE_HEURISTIC,
+                    evidence="name",
+                )
+
+    def _on_concurrent_assignment(self, node: TSNode) -> None:
+        assign_op = self._child(node, "signal_assignment")
+        proc = self._new_node(
+            NodeKind.PROCESS,
+            f"assign@{node.start_point[0] + 1}",
+            node,
+            style="concurrent_assignment",
+        )
+        target: TSNode | None = None
+        for child in node.children:
+            if child.type == "name" and (
+                assign_op is None or child.end_byte <= assign_op.start_byte
+            ):
+                target = child  # last name before the <= is the target
+        if target is not None:
+            root = next((c for c in target.children if c.is_named), None)
+            if root is not None and root.type == "identifier":
+                self._ref(EdgeKind.DRIVES, proc.id, self._text(root).lower(), target, role="lhs")
+        names: list[tuple[str, TSNode]] = []
+        self._collect_names(node, names)
+        seen: set[str] = set()
+        for name, site in names:
+            if target is not None and site.id == target.id:
+                continue
+            if name not in seen:
+                seen.add(name)
+                self._ref(EdgeKind.READS, proc.id, name, site, role="rhs")
 
     def _on_subprogram(self, node: TSNode) -> None:
         spec = self._child(node, "function_specification", "procedure_specification")
@@ -487,7 +652,7 @@ class _Walker:
             # formal; a positional actual's expression is the only child.
             formal = self._child(element, "name")
             expr = self._child(element, "conditional_expression", "open")
-            attrs: dict[str, object] = {value_key: self._text(expr) if expr is not None else ""}
+            attrs: dict[str, Any] = {value_key: self._text(expr) if expr is not None else ""}
             if formal is not None:
                 attrs[name_key] = self._norm(formal)
                 attrs["position"] = None
@@ -577,6 +742,9 @@ class _Walker:
         "subprogram_declaration": _on_subprogram,
         "subprogram_definition": _on_subprogram,
         "component_instantiation_statement": _on_instantiation,
+        "concurrent_simple_signal_assignment": _on_concurrent_assignment,
+        "concurrent_conditional_signal_assignment": _on_concurrent_assignment,
+        "concurrent_selected_signal_assignment": _on_concurrent_assignment,
     }
 
 

@@ -44,15 +44,36 @@ M3 — VHDL and mixed-language linking:
   CONFIGURATION's configured entity (``attrs["via_configuration"]``).
 * CONNECTS/PARAMETERIZES port and generic names match case-insensitively
   when either side is VHDL.
+
+M5 — dataflow, clocks, and verification refs:
+
+* DRIVES/READS/CLOCKED_BY/RESETS/ASSERTS_ON/COVERS refs are **scoped**: the
+  name resolves against the referring node's *enclosing design unit's*
+  PORT/SIGNAL children (an ARCHITECTURE also searches its entity's ports),
+  never by global name. A match in scope resolves at 1.0 (× the ref's own
+  evidence confidence). Names matching a PARAMETER/ENUM_MEMBER (or any other
+  non-signal child) are dropped — constants are not dataflow. Unmatched
+  names become SIGNAL stub children of the unit at ≤ 0.6, so implicit nets
+  and typos stay visible. ASSERTS_ON prefers a sibling PROPERTY/SEQUENCE
+  (``assert property (p_handshake)``) before falling back to signals. A ref
+  with no enclosing unit (e.g. a covergroup inside a class) is dropped.
+* Resolved CONNECTS bindings additionally derive instance-level dataflow
+  from the formal port's direction: ``INSTANCE --READS--> actual`` for
+  inputs, ``--DRIVES-->`` for outputs/buffers, both (≤ 0.6) for inouts.
+  Actual-expression identifiers are re-lexed from ``expr_text`` (a regex
+  word lexer — the honest approximation); a multi-identifier actual caps at
+  0.6. Edge attrs carry ``via_port``/``derived``/``expr_text``.
 """
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from typing import Any
 
 import networkx as nx
 
+from hdl_kgraph.graph.uvm import derive_test_covers
 from hdl_kgraph.ids import file_node_id, stub_node_id
 from hdl_kgraph.parser.base import FileIR, UnresolvedRef
 from hdl_kgraph.schema import (
@@ -98,6 +119,90 @@ _STUB_KIND: dict[EdgeKind, NodeKind] = {
 
 _VHDL_DEFAULT_LIBRARY = "work"
 
+#: Refs resolved against the enclosing unit's children, not by global name.
+_SCOPED_REF_KINDS = frozenset(
+    {
+        EdgeKind.DRIVES,
+        EdgeKind.READS,
+        EdgeKind.CLOCKED_BY,
+        EdgeKind.RESETS,
+        EdgeKind.ASSERTS_ON,
+        EdgeKind.COVERS,
+    }
+)
+
+#: Unit kinds that own the port/signal namespace scoped refs resolve in.
+_SCOPED_UNIT_KINDS = frozenset(
+    {NodeKind.MODULE, NodeKind.INTERFACE, NodeKind.PROGRAM, NodeKind.ARCHITECTURE, NodeKind.ENTITY}
+)
+
+_SIGNAL_KINDS = (NodeKind.PORT, NodeKind.SIGNAL)
+_ASSERTABLE_KINDS = (NodeKind.PROPERTY, NodeKind.SEQUENCE)
+
+#: Port directions → derived instance dataflow ("buffer" is a VHDL output).
+_PORT_DIRECTION_FLOW: dict[str, tuple[EdgeKind, ...]] = {
+    "input": (EdgeKind.READS,),
+    "in": (EdgeKind.READS,),
+    "output": (EdgeKind.DRIVES,),
+    "out": (EdgeKind.DRIVES,),
+    "buffer": (EdgeKind.DRIVES,),
+    "inout": (EdgeKind.READS, EdgeKind.DRIVES),
+}
+
+_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
+#: Sized/based literals and char/bit-string literals, stripped before lexing
+#: identifiers out of an actual expression (``2'b00`` is not a read of b00).
+_LITERAL_RE = re.compile(r"'s?[bBoOdDhH][0-9a-fA-FxXzZ?_]+|'.'?|\"[^\"]*\"")
+_EXPR_KEYWORDS = frozenset(
+    {
+        # SV operators/keywords plausible inside a connection expression
+        "posedge",
+        "negedge",
+        "signed",
+        "unsigned",
+        "inside",
+        "with",
+        # VHDL expression keywords (actuals are lowercased VHDL text)
+        "open",
+        "others",
+        "null",
+        "true",
+        "false",
+        "when",
+        "else",
+        "and",
+        "or",
+        "not",
+        "xor",
+        "nand",
+        "nor",
+        "xnor",
+        "abs",
+        "mod",
+        "rem",
+        "sll",
+        "srl",
+        "sla",
+        "sra",
+        "rol",
+        "ror",
+        "downto",
+        "to",
+    }
+)
+
+
+def _lex_identifiers(expr_text: str) -> list[str]:
+    """Identifier-shaped tokens of an actual expression, in order, deduped."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for token in _IDENT_RE.findall(_LITERAL_RE.sub(" ", expr_text)):
+        if token.lower() in _EXPR_KEYWORDS or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out
+
 
 def _add_node(g: nx.MultiDiGraph, node: Node) -> None:
     g.add_node(
@@ -136,6 +241,8 @@ class _Linker:
         # The same header spliced into several compilation units duplicates
         # its refs across IRs; emitted-edge identity keeps one of each.
         self._emitted: set[tuple[str, str, EdgeKind, float, tuple[tuple[str, str], ...]]] = set()
+        # unit id -> name -> child nodes, built lazily for scoped resolution
+        self._scope_indices: dict[str, dict[str, list[Node]]] = {}
 
         seen_local: set[tuple[str, str, EdgeKind]] = set()
         for ir in file_irs:
@@ -394,9 +501,128 @@ class _Linker:
             self.node_obj[stub_id] = stub
         return stub_id
 
+    # -- scoped (dataflow) resolution --------------------------------------------
+
+    def _enclosing_unit_id(self, node_id: str) -> str | None:
+        """Climb DECLARES parents to the design unit that scopes *node_id*."""
+        seen: set[str] = set()
+        current: str | None = node_id
+        while current is not None and current not in seen:
+            seen.add(current)
+            node = self.node_obj.get(current)
+            if node is not None and node.kind in _SCOPED_UNIT_KINDS:
+                return current
+            current = self.parent.get(current)
+        return None
+
+    def _scope_index_for(self, unit_id: str) -> dict[str, list[Node]]:
+        """name -> declared children visible to scoped refs inside *unit_id*
+        (an ARCHITECTURE sees its entity's ports/generics; ENUM members are
+        flattened into the unit's namespace, as in both languages)."""
+        index = self._scope_indices.get(unit_id)
+        if index is not None:
+            return index
+        index = defaultdict(list)
+        scopes = [unit_id]
+        unit = self.node_obj[unit_id]
+        if unit.kind is NodeKind.ARCHITECTURE:
+            entity_name = unit.attrs.get("of_entity")
+            if entity_name:
+                candidates = self._filter_library(
+                    list(self.definitions.get((NodeKind.ENTITY, str(entity_name)), ())),
+                    unit.attrs.get("library"),
+                    unit_id,
+                )
+                scopes.extend(candidates)
+        for scope in scopes:
+            for child in self.children.get(scope, []):
+                index[child.name].append(child)
+                if child.kind is NodeKind.ENUM:
+                    for member in self.children.get(child.id, []):
+                        index[member.name].append(member)
+        self._scope_indices[unit_id] = dict(index)
+        return self._scope_indices[unit_id]
+
+    def _scoped_signal_target(self, unit_id: str, name: str) -> tuple[str | None, float]:
+        """(target id, confidence) for *name* in *unit_id*'s namespace.
+
+        (None, 0) means the name is a constant or some other non-signal
+        declaration — not dataflow. An undeclared name gets a SIGNAL stub
+        child (implicit nets / typos) at ≤ 0.6.
+        """
+        matches = self._scope_index_for(unit_id).get(name, [])
+        signals = [n for n in matches if n.kind in _SIGNAL_KINDS]
+        if signals:
+            return signals[0].id, CONFIDENCE_RESOLVED
+        if matches:
+            return None, 0.0
+        return self._stub_child(unit_id, NodeKind.SIGNAL, name), CONFIDENCE_AMBIGUOUS
+
+    def _resolve_scoped(self, ref: UnresolvedRef) -> None:
+        unit_id = self._enclosing_unit_id(ref.src_id)
+        if unit_id is None:
+            return  # e.g. a covergroup in a class: no design-unit namespace
+        if ref.edge_kind is EdgeKind.ASSERTS_ON:
+            matches = self._scope_index_for(unit_id).get(ref.target_name, [])
+            assertables = [n for n in matches if n.kind in _ASSERTABLE_KINDS]
+            if assertables:
+                self._emit(ref, assertables[0].id, CONFIDENCE_RESOLVED)
+                return
+        target, confidence = self._scoped_signal_target(unit_id, ref.target_name)
+        if target is not None:
+            self._emit(ref, target, confidence)
+
+    def _derive_port_dataflow(
+        self, ref: UnresolvedRef, port: Node, confidence: float, actual_text: str
+    ) -> None:
+        """Instance-level DRIVES/READS from a resolved CONNECTS binding."""
+        direction = str(port.attrs.get("direction", ""))
+        flows = _PORT_DIRECTION_FLOW.get(direction)
+        if flows is None or not actual_text or actual_text == ".*":
+            return
+        identifiers = _lex_identifiers(actual_text)
+        if not identifiers:
+            return  # a constant actual: no dataflow
+        unit_id = self._enclosing_unit_id(ref.src_id)
+        if unit_id is None:
+            return
+        base = confidence if len(identifiers) == 1 else min(confidence, CONFIDENCE_AMBIGUOUS)
+        if len(flows) > 1:  # inout: direction is a guess either way
+            base = min(base, CONFIDENCE_AMBIGUOUS)
+        vhdl = self._src_language(ref) is Language.VHDL
+        for name in identifiers:
+            target, cap = self._scoped_signal_target(unit_id, name.lower() if vhdl else name)
+            if target is None:
+                continue
+            for kind in flows:
+                self._emit_edge(
+                    ref.src_id,
+                    target,
+                    kind,
+                    min(base, cap, ref.confidence),
+                    {
+                        "via_port": port.name,
+                        "derived": "connects",
+                        "expr_text": actual_text,
+                        "line_span": ref.line_span,
+                    },
+                )
+
+    def _emit_edge(
+        self, src: str, dst: str, kind: EdgeKind, confidence: float, attrs: dict[str, Any]
+    ) -> None:
+        key = (src, dst, kind, confidence, tuple(sorted((k, str(v)) for k, v in attrs.items())))
+        if key in self._emitted:
+            return
+        self._emitted.add(key)
+        _add_edge(self.graph, Edge(src=src, dst=dst, kind=kind, confidence=confidence, attrs=attrs))
+
     # -- per-kind resolution ---------------------------------------------------
 
     def _resolve(self, ref: UnresolvedRef) -> None:
+        if ref.edge_kind in _SCOPED_REF_KINDS:
+            self._resolve_scoped(ref)
+            return
         if ref.edge_kind is EdgeKind.BINDS and ref.attrs.get("role") == "binding":
             self._record_binding(ref)
         targets, confidence, extra = self._resolve_target(ref)
@@ -430,6 +656,9 @@ class _Linker:
             if kids and not unresolved_target:
                 for kid in kids:
                     self._emit(ref, kid.id, confidence, port_name=kid.name, extra=extra)
+                    if ref.edge_kind is EdgeKind.CONNECTS:
+                        # .* binds the like-named signal of the parent scope.
+                        self._derive_port_dataflow(ref, kid, confidence, kid.name)
             else:
                 self._emit(ref, target, confidence, extra=extra)
             return
@@ -458,6 +687,15 @@ class _Linker:
             self._emit(ref, target, min(confidence, CONFIDENCE_AMBIGUOUS), extra=extra)
         else:
             self._emit(ref, dst, confidence, extra=extra)
+            port = self.node_obj.get(dst)
+            if (
+                ref.edge_kind is EdgeKind.CONNECTS
+                and port is not None
+                and (port.kind is NodeKind.PORT)
+            ):
+                self._derive_port_dataflow(
+                    ref, port, confidence, str(ref.attrs.get("expr_text") or "")
+                )
 
     def _emit(
         self,
@@ -496,4 +734,6 @@ def build_graph(file_irs: list[FileIR]) -> nx.MultiDiGraph:
     """Link per-file IRs into the global knowledge graph (pass 2)."""
     linker = _Linker(file_irs)
     linker.link(file_irs)
+    for edge in derive_test_covers(linker.graph):
+        _add_edge(linker.graph, edge)
     return linker.graph

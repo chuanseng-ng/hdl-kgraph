@@ -42,10 +42,21 @@ class UnresolvedRef:
     ``IMPORTS``       importing scope / package      ``symbol``: ``"*"`` or explicit name
     ``EXTENDS``       CLASS node / base class        ``package: str | None``,
                                                      ``param_args_text: str | None``
+    ``DRIVES``/       PROCESS (or other site) /      ``role``: ``lhs``/``rhs``/
+    ``READS``         signal name                    ``sensitivity``
+    ``CLOCKED_BY``/   PROCESS, ASSERTION, COVER-     ``evidence``, ``edge``,
+    ``RESETS``        GROUP, ... / clock or reset    ``is_async`` (RESETS)
+    ``ASSERTS_ON``/   ASSERTION/PROPERTY/SEQUENCE/   --
+    ``COVERS``        COVERPOINT / name in scope
     ================= ============================== ====================================
 
     Positional ``CONNECTS``/``PARAMETERIZES`` resolve against the target's
     PORT/PARAMETER children via their declaration-order ``attrs["index"]``.
+    The M5 dataflow kinds (the last three rows) are **scoped**: ``target_name``
+    resolves against the referring node's enclosing design unit's children,
+    never globally — see :mod:`hdl_kgraph.graph.builder`. ``confidence`` on
+    these carries the *evidence* score (1.0 sensitivity proof, 0.4 name
+    heuristic), which the linker min-combines with resolution confidence.
     """
 
     edge_kind: EdgeKind
