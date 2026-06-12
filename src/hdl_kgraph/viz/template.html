@@ -61,7 +61,6 @@
   <div id="sidebar">
     <h2>node kinds</h2><div id="kind-filters"></div>
     <h2>edge kinds</h2><div id="edge-filters"></div>
-    <h2>clock domains</h2><div id="domain-filters"></div>
     <h2>communities</h2><div id="community-filters"></div>
   </div>
   <div id="view">
@@ -102,7 +101,6 @@ const nodeKinds = [...new Set(DATA.nodes.map(n => n.kind))].sort();
 const edgeKinds = [...new Set(DATA.links.map(l => l.kind))].sort();
 const activeKinds = new Set(nodeKinds.filter(k => !DATA.full || !NOISY_KINDS.has(k)));
 const activeEdges = new Set(edgeKinds.filter(k => !DATA.full || !NOISY_EDGES.has(k)));
-const activeDomains = new Set(DATA.domains); let domainOnly = false;
 
 function checkboxes(host, items, active, swatchFor, onchange) {
   const div = document.getElementById(host);
@@ -123,12 +121,6 @@ function checkboxes(host, items, active, swatchFor, onchange) {
 }
 checkboxes("kind-filters", nodeKinds, activeKinds, color, refresh);
 checkboxes("edge-filters", edgeKinds, activeEdges, null, refresh);
-if (DATA.domains.length) {
-  checkboxes("domain-filters", DATA.domains, activeDomains, null, refresh);
-} else {
-  document.getElementById("domain-filters").textContent =
-    DATA.full ? "none detected" : "(run with --full)";
-}
 
 /* Louvain communities of the module projection (subsystem suggestions).
    Color by community defaults on in projection mode, where every node is a
@@ -197,16 +189,28 @@ const byId = new Map(nodes.map(n => [n.id, n]));
 const links = DATA.links.filter(l => byId.has(l.source) && byId.has(l.target))
                         .map(l => ({...l}));
 
+/* Weak x/y gravity keeps disconnected components (and the big --full
+   clouds) from repelling each other off to infinity; full mode also gets
+   shorter links and softer charge so the layout stays compact. */
+const gravity = DATA.full ? 0.08 : 0.03;
 const sim = d3.forceSimulation(nodes)
-  .force("link", d3.forceLink(links).id(d => d.id).distance(60).strength(0.4))
-  .force("charge", d3.forceManyBody().strength(-120))
+  .force("link", d3.forceLink(links).id(d => d.id)
+    .distance(DATA.full ? 40 : 60).strength(0.4))
+  .force("charge", d3.forceManyBody().strength(DATA.full ? -60 : -120))
   .force("center", d3.forceCenter())
+  .force("x", d3.forceX().strength(gravity))
+  .force("y", d3.forceY().strength(gravity))
   .force("collide", d3.forceCollide(10))
-  .on("tick", draw);
+  .on("tick", draw)
+  .on("end.fit", () => {
+    /* One-shot fit once the layout settles — unless the user already
+       panned or zoomed, in which case their viewpoint wins. */
+    sim.on("end.fit", null);
+    if (transform.k === 1 && transform.x === 0 && transform.y === 0) fitView();
+  });
 
 function nodeVisible(n) {
   if (!activeKinds.has(n.kind)) return false;
-  if (n.domain && DATA.domains.length && !activeDomains.has(n.domain)) return false;
   if (n.community !== "" && DATA.communities.length && !activeComms.has(n.community)) return false;
   return true;
 }
@@ -289,11 +293,24 @@ d3.select(canvas)
     .on("end", e => { if (!e.active) sim.alphaTarget(0);
                       e.subject.fx = null; e.subject.fy = null; }))
   .call(zoom);
-document.getElementById("recenter").addEventListener("click", () => {
-  /* zoom.transform syncs d3's internal zoom state and fires the "zoom"
-     handler, which resets `transform` and redraws centred on the layout. */
-  d3.select(canvas).call(zoom.transform, d3.zoomIdentity);
-});
+function fitView() {
+  /* Pan/zoom so the visible nodes fill ~90% of the viewport. Applied via
+     zoom.transform so d3's internal state stays in sync for later gestures. */
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const n of nodes) {
+    if (!nodeVisible(n)) continue;
+    if (n.x < x0) x0 = n.x; if (n.x > x1) x1 = n.x;
+    if (n.y < y0) y0 = n.y; if (n.y > y1) y1 = n.y;
+  }
+  let t = d3.zoomIdentity;
+  if (x0 <= x1 && width && height) {
+    const k = Math.max(0.05, Math.min(2,
+      0.9 * Math.min(width / Math.max(1, x1 - x0 + 40), height / Math.max(1, y1 - y0 + 40))));
+    t = d3.zoomIdentity.translate(-k * (x0 + x1) / 2, -k * (y0 + y1) / 2).scale(k);
+  }
+  d3.select(canvas).call(zoom.transform, t);
+}
+document.getElementById("recenter").addEventListener("click", fitView);
 canvas.addEventListener("mousemove", event => {
   const n = pick(event);
   if (!n) { tooltip.style.display = "none"; return; }

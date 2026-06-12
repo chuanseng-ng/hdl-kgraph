@@ -55,9 +55,9 @@ def test_full_payload_includes_signals_and_domains(graph, tmp_path: Path) -> Non
     payload = _embedded_payload(html)
     kinds = {n["kind"] for n in payload["nodes"]}
     assert "signal" in kinds and "process" in kinds
-    assert payload["domains"]  # clk_a / clk_b discovered
     domains = {n["domain"] for n in payload["nodes"] if n["domain"]}
-    assert domains  # signals/processes carry their domain for filtering
+    assert domains  # signals/processes carry their domain for the tooltip
+    assert "domain-filters" not in html  # the filter section was retired
 
 
 def test_hierarchy_tree_embedded(graph, tmp_path: Path) -> None:
@@ -106,7 +106,8 @@ def test_payload_carries_communities(graph, tmp_path: Path) -> None:
 def test_template_has_recenter_control(graph, tmp_path: Path) -> None:
     html = render_html(graph, tmp_path / "g.html").read_text()
     assert 'id="recenter"' in html
-    assert "zoom.transform, d3.zoomIdentity" in html
+    assert "function fitView" in html
+    assert "call(zoom.transform, t)" in html
 
 
 def test_payload_json_is_parseable_with_funny_names(graph, tmp_path: Path) -> None:

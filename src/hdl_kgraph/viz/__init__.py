@@ -14,9 +14,9 @@ Two payload shapes keep large designs usable:
   the template's kind filters default the noisy kinds off.
 
 Signals and processes carry their clock-domain name (alias-merged
-representative clock) so the force view can color/filter by domain.
-Design units carry their Louvain community index (module projection) so
-the force view can color/filter by subsystem.
+representative clock) so the tooltip can report it. Design units carry
+their Louvain community index (module projection) so the force view can
+color/filter by subsystem.
 """
 
 from __future__ import annotations
@@ -135,7 +135,6 @@ def _payload(g: nx.MultiDiGraph, full: bool, top: str | None, title: str) -> dic
         "nodes": nodes,
         "links": links,
         "hierarchy": hierarchy,
-        "domains": sorted({d for d in domains.values()}),
         "communities": sorted({c for c in comm_of.values()}, key=int),
     }
 
