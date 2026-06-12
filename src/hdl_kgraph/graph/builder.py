@@ -777,7 +777,9 @@ def build_graph(file_irs: list[FileIR], warnings: list[str] | None = None) -> nx
     linker = _Linker(file_irs)
     linker.link(file_irs)
     for edge in derive_test_covers(linker.graph):
-        _add_edge(linker.graph, edge)
+        # The guarded path, so a derived edge can never reintroduce the
+        # attribute-less nodes networkx auto-creates for unknown endpoints.
+        linker._emit_edge(edge.src, edge.dst, edge.kind, edge.confidence, edge.attrs)
     if warnings is not None:
         warnings.extend(linker.warnings)
     return linker.graph
