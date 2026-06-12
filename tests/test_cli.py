@@ -476,3 +476,88 @@ def test_drivers_module_filter(project: Path) -> None:
         main, ["query", "drivers", "o", "--module", "df_top", *db_args(project)]
     )
     assert empty.exit_code != 0
+
+
+# -- diagnostics: -v / status --errors ----------------------------------------
+
+
+@pytest.fixture
+def diag_project(tmp_path: Path, fixtures_dir: Path) -> Path:
+    """A project with a parse error (broken.sv) and an unresolved `include."""
+    shutil.copy(fixtures_dir / "broken.sv", tmp_path / "broken.sv")
+    (tmp_path / "top.sv").write_text('`include "missing.svh"\nmodule top;\nendmodule\n')
+    return tmp_path
+
+
+def test_build_verbose_reports_stages_and_per_file_diagnostics(diag_project: Path) -> None:
+    result = CliRunner().invoke(main, ["build", str(diag_project), "-v"])
+    assert result.exit_code == 0, result.output
+    assert "discovering source files" in result.output
+    assert "pass 0+1" in result.output
+    assert "pass 2" in result.output
+    assert "writing" in result.output
+    assert "broken.sv:" in result.output  # per-file parse-error count
+    assert 'cannot resolve `include "missing.svh"' in result.output
+    assert "`include search path: (no incdirs configured)" in result.output
+
+
+def test_build_verbose_lists_incdirs_for_unresolved_includes(diag_project: Path) -> None:
+    (diag_project / "inc").mkdir()
+    result = CliRunner().invoke(
+        main, ["build", str(diag_project), "-I", str(diag_project / "inc"), "-v"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "`include search path:" in result.output
+    assert "inc" in result.output
+
+
+def test_build_without_verbose_hints_at_details(diag_project: Path) -> None:
+    result = CliRunner().invoke(main, ["build", str(diag_project)])
+    assert result.exit_code == 0, result.output
+    assert "cannot resolve" not in result.output
+    assert "status --errors" in result.output
+
+
+def test_status_errors_lists_per_file_diagnostics(diag_project: Path) -> None:
+    build = CliRunner().invoke(main, ["build", str(diag_project)])
+    assert build.exit_code == 0, build.output
+    result = CliRunner().invoke(main, ["status", "--errors", *db_args(diag_project)])
+    assert result.exit_code == 0, result.output
+    assert "broken.sv:" in result.output
+    assert "parse error(s)" in result.output
+    assert 'cannot resolve `include "missing.svh"' in result.output
+
+
+def test_status_errors_reports_skipped_files(diag_project: Path) -> None:
+    (diag_project / "huge.sv").write_text("module huge;\nendmodule\n" + "// filler\n" * 200)
+    build = CliRunner().invoke(main, ["build", str(diag_project), "--max-file-size", "1"])
+    assert build.exit_code == 0, build.output
+    result = CliRunner().invoke(main, ["status", "--errors", *db_args(diag_project)])
+    assert result.exit_code == 0, result.output
+    assert "huge.sv: skipped (size)" in result.output
+
+
+def test_status_errors_clean_project(small_project: Path) -> None:
+    result = CliRunner().invoke(main, ["status", "--errors", *db_args(small_project)])
+    assert result.exit_code == 0, result.output
+    assert "no parse errors" in result.output
+
+
+def test_status_summary_hints_at_errors_listing(diag_project: Path) -> None:
+    build = CliRunner().invoke(main, ["build", str(diag_project)])
+    assert build.exit_code == 0, build.output
+    result = CliRunner().invoke(main, ["status", *db_args(diag_project)])
+    assert result.exit_code == 0, result.output
+    assert "preprocessor warning(s)" in result.output
+    assert "status --errors" in result.output
+
+
+def test_update_verbose_keeps_warnings_of_reused_files(diag_project: Path) -> None:
+    build = CliRunner().invoke(main, ["build", str(diag_project)])
+    assert build.exit_code == 0, build.output
+    (diag_project / "other.sv").write_text("module other;\nendmodule\n")
+    result = CliRunner().invoke(main, ["update", str(diag_project), "-v"])
+    assert result.exit_code == 0, result.output
+    assert "re-parsed: other.sv (added)" in result.output
+    # top.sv was re-linked, not re-preprocessed; its warning must survive.
+    assert 'cannot resolve `include "missing.svh"' in result.output
