@@ -26,12 +26,18 @@ config:
 |---|---|---|
 | Claude Code | `claude` CLI on PATH (or `CLAUDECODE` env) | project-scope `.mcp.json` in the current directory |
 | Claude Desktop | the platform's `Claude/` config directory exists | `claude_desktop_config.json` (with a one-time `.bak` backup) |
+| Cursor | `~/.cursor/` (or a project `.cursor/`) exists | project-scope `.cursor/mcp.json` |
+| Codex CLI | `codex` on PATH or `~/.codex/` exists | `~/.codex/config.toml` `[mcp_servers.hdl-kgraph]` (one-time `.bak`; comments preserved) |
+| Windsurf | `~/.codeium/windsurf/` exists | `~/.codeium/windsurf/mcp_config.json` (one-time `.bak`) |
+| Gemini CLI | `gemini` on PATH or `~/.gemini/` exists | `~/.gemini/settings.json` (one-time `.bak`) |
+| VS Code (Copilot) | `code` on PATH (or a project `.vscode/`) | project-scope `.vscode/mcp.json` (`servers` key, `"type": "stdio"`) |
 
 Re-running is safe: the `hdl-kgraph` entry is updated in place and every
-other key in the file is preserved. Useful flags: `--list` (report
-detection only), `--dry-run` (print the resulting JSON without writing),
-`--yes` (skip prompts), `--assistant NAME` (restrict targets), `--db PATH`
-(point at a specific database).
+other key in the file is preserved (Codex's TOML is edited textually, so
+comments survive too). Useful flags: `--list` (report detection only),
+`--dry-run` (print the resulting file content without writing), `--yes`
+(skip prompts), `--assistant NAME` (restrict targets), `--db PATH` (point
+at a specific database).
 
 ## Manual configuration
 

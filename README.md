@@ -127,8 +127,9 @@ without leaving the conversation:
 
 ```bash
 pip install 'hdl-kgraph[mcp]'
-hdl-kgraph setup                  # detect Claude Code / Claude Desktop and
-                                  #   write their MCP config (idempotent)
+hdl-kgraph setup                  # detect installed assistants (Claude Code/
+                                  #   Desktop, Cursor, Codex, Windsurf, Gemini
+                                  #   CLI, VS Code) and write their MCP config
 hdl-kgraph serve --mcp            # or run the server by hand (stdio;
                                   #   --http HOST:PORT for streamable HTTP)
 ```
