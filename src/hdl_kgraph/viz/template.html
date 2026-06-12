@@ -212,15 +212,23 @@ function draw() {
     }
   }
   ctx.restore();
-  document.getElementById("stats").textContent =
-    `${shown}/${nodes.length} nodes · ${links.length} edges`;
+  document.getElementById("stats").textContent = nodes.length
+    ? `${shown}/${nodes.length} nodes · ${links.length} edges`
+    : "no nodes in the graph payload — rebuild and re-run visualize";
 }
 function refresh() { draw(); }
 
 function resize() {
-  width = canvas.clientWidth; height = canvas.clientHeight;
-  canvas.width = width * devicePixelRatio; canvas.height = height * devicePixelRatio;
-  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  /* Embedded/iframe viewers (Safari previews, IDE webviews) can report
+     devicePixelRatio 0 or zero client sizes; any of those zeroes the
+     bitmap and the view stays dark while the DOM keeps updating. */
+  const view = document.getElementById("view");
+  width = canvas.clientWidth || view.clientWidth;
+  height = canvas.clientHeight || view.clientHeight;
+  if (!width || !height) { requestAnimationFrame(resize); return; }
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = width * dpr; canvas.height = height * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   draw();
 }
 new ResizeObserver(resize).observe(canvas);
@@ -261,11 +269,14 @@ for (const tab of document.querySelectorAll(".tab")) {
     tab.classList.add("active");
     const which = tab.dataset.tab;
     views.hier.style.display = which === "hier" ? "block" : "none";
-    canvas.style.display = which === "graph" ? "block" : "none";
+    /* visibility (not display) so the canvas always has its layout size:
+       sizing it only on first tab switch breaks in viewers with deferred
+       layout. Hidden elements get no pointer events, so #hier still works. */
+    canvas.style.visibility = which === "graph" ? "visible" : "hidden";
     if (which === "graph") resize();
   });
 }
-views.hier.style.display = "block"; canvas.style.display = "none";
+views.hier.style.display = "block"; canvas.style.visibility = "hidden";
 document.getElementById("search").addEventListener("input", e => {
   query = e.target.value.trim();
   draw();

@@ -69,6 +69,18 @@ def test_hierarchy_tree_embedded(graph, tmp_path: Path) -> None:
     assert any(child["module"] == "df_sub" for child in root["children"])
 
 
+def test_template_canvas_sizing_survives_embedded_viewers(graph, tmp_path: Path) -> None:
+    # Embedded/iframe viewers can report devicePixelRatio 0 or zero client
+    # sizes; sizing the bitmap from those values blanks the graph view while
+    # the hierarchy (plain DOM) keeps working.
+    html = render_html(graph, tmp_path / "g.html").read_text()
+    assert "window.devicePixelRatio || 1" in html
+    # The canvas must keep its layout size while hidden (visibility toggle):
+    # a display:none canvas reads 0x0 on the first switch to the graph tab.
+    assert "canvas.style.display" not in html
+    assert "canvas.style.visibility" in html
+
+
 def test_payload_json_is_parseable_with_funny_names(graph, tmp_path: Path) -> None:
     # The "</" escaping path: just make sure the embedded JSON survives.
     html = render_html(graph, tmp_path / "g.html", full=True).read_text()
