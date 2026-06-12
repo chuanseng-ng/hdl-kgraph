@@ -44,6 +44,7 @@ from hdl_kgraph.discovery import (
     DiscoveredFile,
     discover,
     discover_from_paths,
+    glob_sources,
 )
 from hdl_kgraph.graph.builder import build_graph
 from hdl_kgraph.ids import file_node_id, library_node_id
@@ -162,7 +163,7 @@ def _discover(
     if inputs.filelists or options.sources:
         paths = list(inputs.list_files)
         for pattern in options.sources:
-            paths.extend(sorted(p for p in base.glob(pattern) if p.is_file()))
+            paths.extend(glob_sources(base, pattern))
         return discover_from_paths(paths, base, exclude=options.exclude, max_file_size_kb=max_kb)
     return discover(root, exclude=options.exclude, max_file_size_kb=max_kb)
 
