@@ -265,21 +265,34 @@ def _echo_build_report(report: BuildReport, verbose: bool = False) -> None:
         click.echo("  (per-file details: re-run with -v, or `hdl-kgraph status --errors`)")
 
 
-def _echo_file_diagnostics(files: list) -> None:
+def _echo_file_diagnostics(files: list, as_json: bool = False) -> None:
     """``status --errors``: per-file parse errors, warnings, skip reasons."""
-    clean = True
-    for f in sorted(files, key=lambda f: f.path):
+    flagged = sorted(
+        (f for f in files if f.skipped_reason is not None or f.parse_error_count or f.warnings),
+        key=lambda f: f.path,
+    )
+    if as_json:
+        _emit_json(
+            [
+                {
+                    "path": f.path,
+                    "parse_errors": f.parse_error_count,
+                    "skipped_reason": f.skipped_reason,
+                    "warnings": f.warnings,
+                }
+                for f in flagged
+            ]
+        )
+        return
+    for f in flagged:
         if f.skipped_reason is not None:
             click.echo(f"{f.path}: skipped ({f.skipped_reason})")
-            clean = False
             continue
         if f.parse_error_count:
             click.echo(f"{f.path}: {f.parse_error_count} parse error(s)")
-            clean = False
         for warning in f.warnings:
             click.echo(f"{f.path}: warning: {warning}")
-            clean = False
-    if clean:
+    if not flagged:
         click.echo("no parse errors, preprocessor warnings, or skipped files")
 
 
@@ -361,6 +374,7 @@ def update(
 
 @main.command("detect-changes")
 @_input_options
+@_json_option
 @click.option(
     "--git",
     "git_ref",
@@ -387,48 +401,79 @@ def detect_changes(
     no_config: bool,
     excludes: tuple[str, ...],
     max_file_size: int | None,
+    as_json: bool,
     git_ref: str | None,
     closure: bool,
 ) -> None:
     """List build inputs that changed since the last build (or a git ref).
 
     Prints one ``M``/``A``/``D`` line per modified/added/deleted file
-    (``~`` for closure-dirtied files with --closure) and exits 1 when
-    anything changed, 0 otherwise — script- and CI-friendly.
+    (``~`` for closure-dirtied files with --closure). Exit codes follow the
+    ``git diff --exit-code`` convention so scripts can tell the cases apart:
+    0 nothing changed, 1 changes detected, 2 error (missing database, bad
+    config, ...).
     """
-    options = _resolve_options(
-        source, filelists, defines, incdirs, libs, config_path, no_config, excludes, max_file_size
-    )
-    base = source.resolve()
-    base = base.parent if base.is_file() else base
-    if git_ref is not None:
-        try:
-            changes = detect_git_changes(base, git_ref, SUFFIXES)
-        except RuntimeError as exc:
-            raise click.ClickException(str(exc)) from exc
+    # Errors must not exit 1 — scripts read 1 as "changed", per the docstring.
+    try:
+        options = _resolve_options(
+            source,
+            filelists,
+            defines,
+            incdirs,
+            libs,
+            config_path,
+            no_config,
+            excludes,
+            max_file_size,
+        )
+        base = source.resolve()
+        base = base.parent if base.is_file() else base
+        if git_ref is not None:
+            try:
+                changes = detect_git_changes(base, git_ref, SUFFIXES)
+            except RuntimeError as exc:
+                raise click.ClickException(str(exc)) from exc
+        else:
+            if db_path is None:
+                db_path = default_db_path(base)
+            if not db_path.is_file():
+                raise click.ClickException(
+                    f"no database at {db_path}; run `hdl-kgraph build` first, or use --git"
+                )
+            try:
+                changes = scan_changes(source, db_path, options)
+            except SchemaVersionError as exc:
+                raise click.ClickException(str(exc)) from exc
+        dirtied: list[dict[str, str]] = []
+        if closure and (changes.changed or changes.removed):
+            graph, _, _ = _load(db_path if db_path is not None else find_db(base))
+            seeds = {path: "" for path in (*changes.changed, *changes.removed)}
+            dirtied = [
+                {"path": path, "via": why}
+                for path, why in sorted(dirty_closure(graph, seeds).items())
+                if path not in seeds
+            ]
+    except click.ClickException as exc:
+        exc.exit_code = 2
+        raise
+    if as_json:
+        payload: dict[str, Any] = {
+            "changed": changes.changed,
+            "added": changes.added,
+            "removed": changes.removed,
+        }
+        if closure:
+            payload["closure"] = dirtied
+        _emit_json(payload)
     else:
-        if db_path is None:
-            db_path = default_db_path(base)
-        if not db_path.is_file():
-            raise click.ClickException(
-                f"no database at {db_path}; run `hdl-kgraph build` first, or use --git"
-            )
-        try:
-            changes = scan_changes(source, db_path, options)
-        except SchemaVersionError as exc:
-            raise click.ClickException(str(exc)) from exc
-    for path in changes.changed:
-        click.echo(f"M {path}")
-    for path in changes.added:
-        click.echo(f"A {path}")
-    for path in changes.removed:
-        click.echo(f"D {path}")
-    if closure and (changes.changed or changes.removed):
-        graph, _, _ = _load(db_path if db_path is not None else find_db(base))
-        seeds = {path: "" for path in (*changes.changed, *changes.removed)}
-        for path, why in sorted(dirty_closure(graph, seeds).items()):
-            if path not in seeds:
-                click.echo(f"~ {path} ({why})")
+        for path in changes.changed:
+            click.echo(f"M {path}")
+        for path in changes.added:
+            click.echo(f"A {path}")
+        for path in changes.removed:
+            click.echo(f"D {path}")
+        for entry in dirtied:
+            click.echo(f"~ {entry['path']} ({entry['via']})")
     if changes:
         sys.exit(1)
 
@@ -436,6 +481,7 @@ def detect_changes(
 @main.command()
 @click.argument("target")
 @_db_option
+@_json_option
 @click.option(
     "--max-depth",
     type=int,
@@ -448,7 +494,9 @@ def detect_changes(
     is_flag=True,
     help="List the affected files instead of design units.",
 )
-def impact(target: str, db_path: Path | None, max_depth: int, show_files: bool) -> None:
+def impact(
+    target: str, db_path: Path | None, as_json: bool, max_depth: int, show_files: bool
+) -> None:
     """Show what a change to TARGET (a file path or design unit) affects.
 
     Walks reverse INSTANTIATES/IMPORTS/INCLUDES/EXTENDS (plus VHDL
@@ -461,12 +509,19 @@ def impact(target: str, db_path: Path | None, max_depth: int, show_files: bool) 
     if not seeds:
         raise click.ClickException(f"{target!r} matches no file or design unit in the graph")
     records = analysis.impact_radius(graph, seeds, max_depth=max_depth)
+    if show_files:
+        affected = sorted({r.file for r in records if r.file})
+        if as_json:
+            _emit_json(affected)
+            return
+        for path in affected:
+            click.echo(path)
+        return
+    if as_json:
+        _emit_json(records)
+        return
     if not records:
         click.echo("no dependents found")
-        return
-    if show_files:
-        for path in sorted({r.file for r in records if r.file}):
-            click.echo(path)
         return
     for r in records:
         location = f"{r.file}:{r.line}" if r.file and r.line else r.file
@@ -529,6 +584,9 @@ def watch(
             for warning in report.build.preproc_warnings:
                 click.echo(f"    warning: {warning}")
 
+    def on_error(exc: BaseException) -> None:
+        click.echo(f"update failed: {exc} (still watching)", err=True)
+
     click.echo(f"watching {source.resolve()} (Ctrl-C to stop)")
     try:
         run_watch(
@@ -538,6 +596,7 @@ def watch(
             quiet_s=debounce / 1000,
             on_report=on_report,
             progress=_progress(verbose),
+            on_error=on_error,
         )
     except WatchUnavailableError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -547,6 +606,7 @@ def watch(
 
 @main.command()
 @_db_option
+@_json_option
 @click.option(
     "--errors",
     "show_errors",
@@ -554,15 +614,12 @@ def watch(
     help="List files with parse errors, preprocessor warnings, and skipped "
     "files (with reasons) instead of the statistics.",
 )
-def status(db_path: Path | None, show_errors: bool) -> None:
+def status(db_path: Path | None, as_json: bool, show_errors: bool) -> None:
     """Show graph statistics for the current build."""
     graph, files, meta = _load(db_path)
     if show_errors:
-        _echo_file_diagnostics(files)
+        _echo_file_diagnostics(files, as_json)
         return
-    click.echo(f"root:     {meta.get('root', '?')}")
-    click.echo(f"built at: {meta.get('built_at', '?')} (hdl-kgraph {meta.get('tool_version')})")
-
     # Filelists are recorded for M4 incremental rebuilds but are not parsed
     # HDL sources; report them on their own line.
     parsed = [f for f in files if f.skipped_reason is None and f.language is not Language.UNKNOWN]
@@ -570,28 +627,49 @@ def status(db_path: Path | None, show_errors: bool) -> None:
     skipped = Counter(f.skipped_reason for f in files if f.skipped_reason is not None)
     error_files = [f for f in parsed if f.parse_error_count]
     warning_count = sum(len(f.warnings) for f in files)
+    total_errors = sum(f.parse_error_count for f in error_files)
+    node_kinds = Counter(data["kind"].value for _, data in graph.nodes(data=True))
+    edge_kinds = Counter(data["kind"].value for _, _, data in graph.edges(data=True))
+    stubs = analysis.unresolved_stubs(graph)
+    if as_json:
+        _emit_json(
+            {
+                "root": meta.get("root"),
+                "built_at": meta.get("built_at"),
+                "tool_version": meta.get("tool_version"),
+                "files": {
+                    "parsed": len(parsed),
+                    "filelists": len(filelists),
+                    "skipped": dict(skipped),
+                    "parse_errors": total_errors,
+                    "error_files": len(error_files),
+                    "preproc_warnings": warning_count,
+                },
+                "nodes": {"total": graph.number_of_nodes(), "kinds": dict(node_kinds)},
+                "edges": {"total": graph.number_of_edges(), "kinds": dict(edge_kinds)},
+                "unresolved": len(stubs),
+            }
+        )
+        return
+    click.echo(f"root:     {meta.get('root', '?')}")
+    click.echo(f"built at: {meta.get('built_at', '?')} (hdl-kgraph {meta.get('tool_version')})")
     click.echo(f"files:    {len(parsed)} parsed")
     if filelists:
         click.echo(f"          {len(filelists)} filelist(s)")
     for reason, count in sorted(skipped.items()):
         click.echo(f"          {count} skipped ({reason})")
-    total_errors = sum(f.parse_error_count for f in error_files)
     if error_files:
         click.echo(f"          {total_errors} parse error(s) in {len(error_files)} file(s)")
     if warning_count:
         click.echo(f"          {warning_count} preprocessor warning(s)")
     if error_files or warning_count:
         click.echo("          (`hdl-kgraph status --errors` lists them per file)")
-
-    node_kinds = Counter(data["kind"].value for _, data in graph.nodes(data=True))
-    edge_kinds = Counter(data["kind"].value for _, _, data in graph.edges(data=True))
     click.echo(f"nodes:    {graph.number_of_nodes()}")
     for kind, count in node_kinds.most_common():
         click.echo(f"          {count:6} {kind}")
     click.echo(f"edges:    {graph.number_of_edges()}")
     for kind, count in edge_kinds.most_common():
         click.echo(f"          {count:6} {kind}")
-    stubs = analysis.unresolved_stubs(graph)
     if stubs:
         click.echo(f"unresolved: {len(stubs)}")
 
@@ -647,8 +725,11 @@ def lint_cmd(
 @main.command("metrics")
 @_db_option
 @_json_option
+# --limit, not --top: --top means "top module" in lint/visualize, and this is
+# a row count. Renamed before 1.0 freezes the surface (issue #22).
 @click.option(
-    "--top",
+    "-n",
+    "--limit",
     "top_n",
     type=int,
     default=10,
@@ -736,7 +817,10 @@ def visualize(
     if title is None:
         root = meta.get("root", "")
         title = f"hdl-kgraph: {Path(root).name}" if root else "hdl-kgraph"
-    path = render_html(graph, output, full=full, top=top, title=title)
+    try:
+        path = render_html(graph, output, full=full, top=top, title=title)
+    except ValueError as exc:  # --top names nothing: error out, like `tree`
+        raise click.ClickException(str(exc)) from exc
     click.echo(f"wrote {path}")
     if open_browser:
         import webbrowser
@@ -752,10 +836,16 @@ def query() -> None:
 @query.command("instances-of")
 @click.argument("name")
 @_db_option
-def instances_of(name: str, db_path: Path | None) -> None:
+@_json_option
+def instances_of(name: str, db_path: Path | None, as_json: bool) -> None:
     """List all instantiation sites of design units named NAME."""
     graph, _, _ = _load(db_path)
     records = analysis.instances_of(graph, name)
+    if as_json:
+        _emit_json(records)
+        if not records:
+            sys.exit(1)
+        return
     if not records:
         click.echo(f"no instances of {name!r} found", err=True)
         sys.exit(1)
@@ -769,7 +859,8 @@ def instances_of(name: str, db_path: Path | None) -> None:
 
 @query.command("modules")
 @_db_option
-def modules(db_path: Path | None) -> None:
+@_json_option
+def modules(db_path: Path | None, as_json: bool) -> None:
     """List all modules and entities with their instantiation counts."""
     graph, _, _ = _load(db_path)
     rows = []
@@ -783,10 +874,23 @@ def modules(db_path: Path | None) -> None:
             for _, _, edge in graph.in_edges(node_id, data=True)
             if edge["kind"] is EdgeKind.INSTANTIATES
         )
-        marker = " [vhdl]" if data["kind"] is NodeKind.ENTITY else ""
-        rows.append((data["name"], marker, data["file"], data["line_span"][0], count))
-    for name, marker, file, line, count in rows:
-        click.echo(f"{name + marker:30} {file}:{line}  instances={count}")
+        rows.append(
+            {
+                "name": data["name"],
+                "kind": data["kind"],
+                "file": data["file"],
+                "line": data["line_span"][0],
+                "instances": count,
+            }
+        )
+    if as_json:
+        _emit_json(rows)
+        return
+    for row in rows:
+        marker = " [vhdl]" if row["kind"] is NodeKind.ENTITY else ""
+        click.echo(
+            f"{row['name'] + marker:30} {row['file']}:{row['line']}  instances={row['instances']}"
+        )
 
 
 @query.command("clock-domains")
@@ -930,10 +1034,14 @@ def uvm_cmd(db_path: Path | None, as_json: bool) -> None:
 
 @query.command("unresolved")
 @_db_option
-def unresolved(db_path: Path | None) -> None:
+@_json_option
+def unresolved(db_path: Path | None, as_json: bool) -> None:
     """List unresolved stub nodes and who references them."""
     graph, _, _ = _load(db_path)
     stubs = analysis.unresolved_stubs(graph)
+    if as_json:
+        _emit_json(stubs)
+        return
     if not stubs:
         click.echo("no unresolved references")
         return
@@ -947,7 +1055,8 @@ def unresolved(db_path: Path | None) -> None:
 @click.argument("top", required=False)
 @click.option("--depth", type=int, default=64, show_default=True, help="Maximum tree depth.")
 @_db_option
-def tree(top: str | None, depth: int, db_path: Path | None) -> None:
+@_json_option
+def tree(top: str | None, depth: int, db_path: Path | None, as_json: bool) -> None:
     """Print the design hierarchy from TOP (default: every top module)."""
     graph, _, _ = _load(db_path)
     if top is not None:
@@ -966,30 +1075,41 @@ def tree(top: str | None, depth: int, db_path: Path | None) -> None:
         if not roots:
             raise click.ClickException("no top modules found")
 
-    for root in roots:
-        _print_tree(analysis.hierarchy_tree(graph, root, max_depth=depth), prefix="", is_last=True)
+    trees = [analysis.hierarchy_tree(graph, root, max_depth=depth) for root in roots]
+    if as_json:
+        _emit_json(trees)
+        return
+    for hierarchy in trees:
+        _print_tree(hierarchy, prefix="", is_last=True)
 
 
 @main.command()
-@click.option("--mcp", "mcp_mode", is_flag=True, help="Run the MCP server (the only mode so far).")
+@click.option(
+    "--mcp",
+    "mcp_mode",
+    is_flag=True,
+    help="Run the MCP server (the default and only mode; kept for compatibility).",
+)
 @_db_option
 @click.option(
     "--http",
     "http_addr",
     metavar="HOST:PORT",
     default=None,
-    help="Serve over streamable HTTP instead of stdio.",
+    help="Serve over streamable HTTP instead of stdio. No authentication — "
+    "the graph exposes your design's structure, so bind 127.0.0.1 unless "
+    "every host on the network is trusted.",
 )
 def serve(mcp_mode: bool, db_path: Path | None, http_addr: str | None) -> None:
     """Serve the knowledge graph to AI assistants over MCP (read-only).
 
     Speaks MCP on stdio by default (the transport assistant configs use);
-    ``--http`` exposes the same tools over streamable HTTP instead. The
+    ``--http`` exposes the same tools over streamable HTTP instead — with
+    no authentication, so keep it bound to loopback (see docs/mcp.md). The
     server only ever reads the database — rebuild with ``build``/``update``
     (a running server picks up the new database automatically).
     """
-    if not mcp_mode:
-        raise click.ClickException("only MCP serving exists today; pass --mcp")
+    del mcp_mode  # MCP is the default and only mode; the flag is a no-op
     if db_path is None:
         db_path = find_db(Path.cwd())
         if db_path is None:
@@ -1016,6 +1136,13 @@ def serve(mcp_mode: bool, db_path: Path | None, http_addr: str | None) -> None:
     host, _, port_text = http_addr.rpartition(":")
     if not host or not port_text.isdigit():
         raise click.ClickException(f"--http expects HOST:PORT, got {http_addr!r}")
+    if host not in ("127.0.0.1", "localhost", "::1", "[::1]"):
+        click.echo(
+            f"warning: serving on {host} exposes your design's structure to the "
+            "network with no authentication; bind 127.0.0.1 unless every host "
+            "is trusted (see docs/mcp.md)",
+            err=True,
+        )
     server.run(transport="http", host=host, port=int(port_text))
 
 
