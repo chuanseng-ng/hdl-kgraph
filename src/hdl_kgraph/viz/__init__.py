@@ -14,7 +14,9 @@ Two payload shapes keep large designs usable:
   the template's kind filters default the noisy kinds off.
 
 Signals and processes carry their clock-domain name (alias-merged
-representative clock) so the force view can color/filter by domain.
+representative clock) so the tooltip can report it. Design units carry
+their Louvain community index (module projection) so the force view can
+color/filter by subsystem.
 """
 
 from __future__ import annotations
@@ -59,6 +61,12 @@ def _domain_map(g: nx.MultiDiGraph) -> dict[str, str]:
 
 def _payload(g: nx.MultiDiGraph, full: bool, top: str | None, title: str) -> dict[str, Any]:
     domains = _domain_map(g)
+    # Louvain communities of the module projection: design-unit nodes carry
+    # their community index so the force view can color/filter by subsystem.
+    comm_of: dict[str, str] = {}
+    for i, part in enumerate(metrics.communities(g)):
+        for node_id in part:
+            comm_of[node_id] = str(i)
     if full:
         nodes = [
             {
@@ -68,6 +76,7 @@ def _payload(g: nx.MultiDiGraph, full: bool, top: str | None, title: str) -> dic
                 "file": data["file"],
                 "line": data["line_span"][0],
                 "domain": domains.get(node_id, ""),
+                "community": comm_of.get(node_id, ""),
                 "unresolved": bool(data["attrs"].get("unresolved")),
             }
             for node_id, data in g.nodes(data=True)
@@ -91,6 +100,7 @@ def _payload(g: nx.MultiDiGraph, full: bool, top: str | None, title: str) -> dic
                 "file": data["file"],
                 "line": 0,
                 "domain": "",
+                "community": comm_of.get(node_id, ""),
                 "unresolved": data["unresolved"],
             }
             for node_id, data in proj.nodes(data=True)
@@ -125,7 +135,7 @@ def _payload(g: nx.MultiDiGraph, full: bool, top: str | None, title: str) -> dic
         "nodes": nodes,
         "links": links,
         "hierarchy": hierarchy,
-        "domains": sorted({d for d in domains.values()}),
+        "communities": sorted({c for c in comm_of.values()}, key=int),
     }
 
 

@@ -55,9 +55,9 @@ def test_full_payload_includes_signals_and_domains(graph, tmp_path: Path) -> Non
     payload = _embedded_payload(html)
     kinds = {n["kind"] for n in payload["nodes"]}
     assert "signal" in kinds and "process" in kinds
-    assert payload["domains"]  # clk_a / clk_b discovered
     domains = {n["domain"] for n in payload["nodes"] if n["domain"]}
-    assert domains  # signals/processes carry their domain for filtering
+    assert domains  # signals/processes carry their domain for the tooltip
+    assert "domain-filters" not in html  # the filter section was retired
 
 
 def test_hierarchy_tree_embedded(graph, tmp_path: Path) -> None:
@@ -67,6 +67,51 @@ def test_hierarchy_tree_embedded(graph, tmp_path: Path) -> None:
     root = payload["hierarchy"][0]
     assert root["module"] == "df_top"
     assert any(child["module"] == "df_sub" for child in root["children"])
+
+
+def test_template_canvas_sizing_survives_embedded_viewers(graph, tmp_path: Path) -> None:
+    # Embedded/iframe viewers can report devicePixelRatio 0 or zero client
+    # sizes; sizing the bitmap from those values blanks the graph view while
+    # the hierarchy (plain DOM) keeps working.
+    html = render_html(graph, tmp_path / "g.html").read_text()
+    assert "window.devicePixelRatio || 1" in html
+    # The canvas must keep its layout size while hidden (visibility toggle):
+    # a display:none canvas reads 0x0 on the first switch to the graph tab.
+    assert "canvas.style.display" not in html
+    assert "canvas.style.visibility" in html
+    # The bitmap must be sized from (and the ResizeObserver attached to) the
+    # #view container, never the canvas itself: in engines where the canvas's
+    # layout follows its bitmap (e.g. no `inset` support), measuring the
+    # canvas feeds back into the bitmap and grows it ~1.5x per observer round
+    # until the renderer crashes.
+    assert "inset:" not in html.split("</style>")[0]
+    assert '.observe(document.getElementById("view"))' in html
+    assert ".observe(canvas)" not in html
+    assert "canvas.clientWidth" not in html
+    # Deferred-layout viewers read 0x0 at first: the retry must exist and be
+    # bounded so a permanently hidden viewer can't spin an rAF chain forever.
+    assert "requestAnimationFrame(resize)" in html
+    assert "resizeRetries++ < 120" in html
+
+
+def test_payload_carries_communities(graph, tmp_path: Path) -> None:
+    # The two fixture files are disconnected subsystems, so Louvain yields
+    # at least two communities; connected units share one.
+    html = render_html(graph, tmp_path / "g.html").read_text()
+    payload = _embedded_payload(html)
+    assert len(payload["communities"]) >= 2
+    community = {n["name"]: n["community"] for n in payload["nodes"]}
+    assert community["df_top"] == community["df_sub"]
+    assert community["two_clock_top"] == community["cdc_child"]
+    assert community["df_top"] != community["two_clock_top"]
+    assert all(n["community"] in payload["communities"] for n in payload["nodes"])
+
+
+def test_template_has_recenter_control(graph, tmp_path: Path) -> None:
+    html = render_html(graph, tmp_path / "g.html").read_text()
+    assert 'id="recenter"' in html
+    assert "function fitView" in html
+    assert "call(zoom.transform, t)" in html
 
 
 def test_payload_json_is_parseable_with_funny_names(graph, tmp_path: Path) -> None:

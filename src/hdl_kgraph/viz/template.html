@@ -26,8 +26,12 @@
   #sidebar label { display:flex; gap:6px; align-items:center; padding:1px 0; cursor:pointer; }
   #sidebar .swatch { width:9px; height:9px; border-radius:2px; display:inline-block; }
   #view { flex:1; position:relative; overflow:hidden; }
-  #canvas { position:absolute; inset:0; }
-  #hier { position:absolute; inset:0; overflow:auto; padding:14px 18px; display:none; }
+  /* No `inset` shorthand: older engines ignore it, and an absolute canvas
+     with auto offsets sizes itself from its bitmap — which feeds back into
+     the bitmap on resize and grows it without bound. */
+  #canvas { position:absolute; top:0; left:0; width:100%; height:100%; }
+  #hier { position:absolute; top:0; left:0; width:100%; height:100%;
+          overflow:auto; padding:14px 18px; display:none; }
   #hier ul { list-style:none; margin:0; padding-left:18px; border-left:1px solid var(--line); }
   #hier > ul { border-left:none; padding-left:0; }
   #hier li { padding:1px 0; }
@@ -40,6 +44,10 @@
              padding:6px 9px; border-radius:4px; font-size:12px; display:none;
              max-width:380px; border:1px solid var(--line); }
   #stats { position:absolute; right:10px; bottom:8px; color:var(--dim); font-size:11px; }
+  #recenter { position:absolute; right:10px; top:10px; display:none; cursor:pointer;
+              background:var(--panel); color:var(--dim); border:1px solid var(--line);
+              border-radius:4px; padding:4px 10px; font:inherit; user-select:none; }
+  #recenter:hover { color:var(--ink); background:#243044; }
 </style>
 </head>
 <body>
@@ -53,13 +61,14 @@
   <div id="sidebar">
     <h2>node kinds</h2><div id="kind-filters"></div>
     <h2>edge kinds</h2><div id="edge-filters"></div>
-    <h2>clock domains</h2><div id="domain-filters"></div>
+    <h2>communities</h2><div id="community-filters"></div>
   </div>
   <div id="view">
     <div id="hier"></div>
     <canvas id="canvas"></canvas>
     <div id="tooltip"></div>
     <div id="stats"></div>
+    <button id="recenter" title="Reset pan and zoom">re-centre</button>
   </div>
 </main>
 <script>/*__D3__*/</script>
@@ -92,7 +101,6 @@ const nodeKinds = [...new Set(DATA.nodes.map(n => n.kind))].sort();
 const edgeKinds = [...new Set(DATA.links.map(l => l.kind))].sort();
 const activeKinds = new Set(nodeKinds.filter(k => !DATA.full || !NOISY_KINDS.has(k)));
 const activeEdges = new Set(edgeKinds.filter(k => !DATA.full || !NOISY_EDGES.has(k)));
-const activeDomains = new Set(DATA.domains); let domainOnly = false;
 
 function checkboxes(host, items, active, swatchFor, onchange) {
   const div = document.getElementById(host);
@@ -113,11 +121,27 @@ function checkboxes(host, items, active, swatchFor, onchange) {
 }
 checkboxes("kind-filters", nodeKinds, activeKinds, color, refresh);
 checkboxes("edge-filters", edgeKinds, activeEdges, null, refresh);
-if (DATA.domains.length) {
-  checkboxes("domain-filters", DATA.domains, activeDomains, null, refresh);
+
+/* Louvain communities of the module projection (subsystem suggestions).
+   Color by community defaults on in projection mode, where every node is a
+   design unit and kind-based coloring is uniform anyway. */
+const activeComms = new Set(DATA.communities);
+let colorByCommunity = !DATA.full && DATA.communities.length > 1;
+const COMM_COLORS = ["#88c0d0","#a3be8c","#ebcb8b","#d08770","#b48ead",
+                     "#81a1c1","#bf616a","#8fbcbb","#d699b6","#5e81ac"];
+const commColor = c => COMM_COLORS[+c % COMM_COLORS.length];
+if (DATA.communities.length) {
+  const host = document.getElementById("community-filters");
+  const label = document.createElement("label");
+  const box = document.createElement("input");
+  box.type = "checkbox"; box.checked = colorByCommunity;
+  box.addEventListener("change", () => { colorByCommunity = box.checked; refresh(); });
+  label.appendChild(box);
+  label.appendChild(document.createTextNode("colour by community"));
+  host.appendChild(label);
+  checkboxes("community-filters", DATA.communities, activeComms, commColor, refresh);
 } else {
-  document.getElementById("domain-filters").textContent =
-    DATA.full ? "none detected" : "(run with --full)";
+  document.getElementById("community-filters").textContent = "none detected";
 }
 
 /* ---------- hierarchy view ---------- */
@@ -165,16 +189,29 @@ const byId = new Map(nodes.map(n => [n.id, n]));
 const links = DATA.links.filter(l => byId.has(l.source) && byId.has(l.target))
                         .map(l => ({...l}));
 
+/* Weak x/y gravity keeps disconnected components (and the big --full
+   clouds) from repelling each other off to infinity; full mode also gets
+   shorter links and softer charge so the layout stays compact. */
+const gravity = DATA.full ? 0.08 : 0.03;
 const sim = d3.forceSimulation(nodes)
-  .force("link", d3.forceLink(links).id(d => d.id).distance(60).strength(0.4))
-  .force("charge", d3.forceManyBody().strength(-120))
+  .force("link", d3.forceLink(links).id(d => d.id)
+    .distance(DATA.full ? 40 : 60).strength(0.4))
+  .force("charge", d3.forceManyBody().strength(DATA.full ? -60 : -120))
   .force("center", d3.forceCenter())
+  .force("x", d3.forceX().strength(gravity))
+  .force("y", d3.forceY().strength(gravity))
   .force("collide", d3.forceCollide(10))
-  .on("tick", draw);
+  .on("tick", draw)
+  .on("end.fit", () => {
+    /* One-shot fit once the layout settles — unless the user already
+       panned or zoomed, in which case their viewpoint wins. */
+    sim.on("end.fit", null);
+    if (transform.k === 1 && transform.x === 0 && transform.y === 0) fitView();
+  });
 
 function nodeVisible(n) {
   if (!activeKinds.has(n.kind)) return false;
-  if (n.domain && DATA.domains.length && !activeDomains.has(n.domain)) return false;
+  if (n.community !== "" && DATA.communities.length && !activeComms.has(n.community)) return false;
   return true;
 }
 function draw() {
@@ -202,7 +239,9 @@ function draw() {
     const r = hit ? 8 : 5;
     ctx.beginPath();
     ctx.arc(n.x, n.y, r, 0, 2 * Math.PI);
-    ctx.fillStyle = q && !hit ? "#3b4657" : color(n.kind);
+    ctx.fillStyle = q && !hit ? "#3b4657"
+      : colorByCommunity && n.community !== "" ? commColor(n.community)
+      : color(n.kind);
     ctx.fill();
     if (n.unresolved) { ctx.strokeStyle = "#bf616a"; ctx.lineWidth = 1.4; ctx.stroke(); }
     if (transform.k > 0.9 || hit) {
@@ -212,18 +251,37 @@ function draw() {
     }
   }
   ctx.restore();
-  document.getElementById("stats").textContent =
-    `${shown}/${nodes.length} nodes · ${links.length} edges`;
+  document.getElementById("stats").textContent = nodes.length
+    ? `${shown}/${nodes.length} nodes · ${links.length} edges`
+    : "no nodes in the graph payload — rebuild and re-run visualize";
 }
 function refresh() { draw(); }
 
+let resizeRetries = 0;
 function resize() {
-  width = canvas.clientWidth; height = canvas.clientHeight;
-  canvas.width = width * devicePixelRatio; canvas.height = height * devicePixelRatio;
-  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  /* Size from the container, never from the canvas: where the canvas's own
+     layout follows its bitmap, measuring the canvas feeds the result back
+     into the bitmap and grows it 1.5x per ResizeObserver round until the
+     renderer dies. Guard devicePixelRatio too — embedded viewers report 0. */
+  const view = document.getElementById("view");
+  const w = view.clientWidth, h = view.clientHeight;
+  if (!w || !h) {
+    /* Deferred-layout retry, bounded so a permanently 0x0 viewer doesn't
+       keep an rAF chain alive forever; the ResizeObserver (and tab clicks)
+       restart the wait whenever layout actually changes. */
+    if (resizeRetries++ < 120) requestAnimationFrame(resize);
+    return;
+  }
+  resizeRetries = 0;
+  const dpr = window.devicePixelRatio || 1;
+  if (w === width && h === height && canvas.width === Math.round(w * dpr)) return;
+  width = w; height = h;
+  canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   draw();
 }
-new ResizeObserver(resize).observe(canvas);
+new ResizeObserver(resize).observe(document.getElementById("view"));
+resize();
 
 function pick(event) {
   const [px, py] = d3.pointer(event.sourceEvent || event, canvas);
@@ -232,6 +290,8 @@ function pick(event) {
   const n = sim.find(x, y, 12 / transform.k);
   return n && nodeVisible(n) ? n : null;
 }
+const zoom = d3.zoom().scaleExtent([0.05, 8])
+  .on("zoom", e => { transform = e.transform; draw(); });
 d3.select(canvas)
   .call(d3.drag()
     .subject(pick)
@@ -240,8 +300,25 @@ d3.select(canvas)
     .on("drag", e => { e.subject.fx = e.x; e.subject.fy = e.y; })
     .on("end", e => { if (!e.active) sim.alphaTarget(0);
                       e.subject.fx = null; e.subject.fy = null; }))
-  .call(d3.zoom().scaleExtent([0.05, 8])
-    .on("zoom", e => { transform = e.transform; draw(); }));
+  .call(zoom);
+function fitView() {
+  /* Pan/zoom so the visible nodes fill ~90% of the viewport. Applied via
+     zoom.transform so d3's internal state stays in sync for later gestures. */
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const n of nodes) {
+    if (!nodeVisible(n)) continue;
+    if (n.x < x0) x0 = n.x; if (n.x > x1) x1 = n.x;
+    if (n.y < y0) y0 = n.y; if (n.y > y1) y1 = n.y;
+  }
+  let t = d3.zoomIdentity;
+  if (x0 <= x1 && width && height) {
+    const k = Math.max(0.05, Math.min(2,
+      0.9 * Math.min(width / Math.max(1, x1 - x0 + 40), height / Math.max(1, y1 - y0 + 40))));
+    t = d3.zoomIdentity.translate(-k * (x0 + x1) / 2, -k * (y0 + y1) / 2).scale(k);
+  }
+  d3.select(canvas).call(zoom.transform, t);
+}
+document.getElementById("recenter").addEventListener("click", fitView);
 canvas.addEventListener("mousemove", event => {
   const n = pick(event);
   if (!n) { tooltip.style.display = "none"; return; }
@@ -250,6 +327,7 @@ canvas.addEventListener("mousemove", event => {
   tooltip.style.top = (event.offsetY + 14) + "px";
   tooltip.innerHTML = `<b>${esc(n.name)}</b><br>${esc(n.kind)}`
     + (n.domain ? `<br>domain: ${esc(n.domain)}` : "")
+    + (n.community !== "" ? `<br>community: ${esc(n.community)}` : "")
     + (n.file ? `<br>${esc(n.file)}${n.line ? ":" + n.line : ""}` : "");
 });
 
@@ -261,11 +339,15 @@ for (const tab of document.querySelectorAll(".tab")) {
     tab.classList.add("active");
     const which = tab.dataset.tab;
     views.hier.style.display = which === "hier" ? "block" : "none";
-    canvas.style.display = which === "graph" ? "block" : "none";
+    /* visibility (not display) so the canvas always has its layout size:
+       sizing it only on first tab switch breaks in viewers with deferred
+       layout. Hidden elements get no pointer events, so #hier still works. */
+    canvas.style.visibility = which === "graph" ? "visible" : "hidden";
+    document.getElementById("recenter").style.display = which === "graph" ? "block" : "none";
     if (which === "graph") resize();
   });
 }
-views.hier.style.display = "block"; canvas.style.display = "none";
+views.hier.style.display = "block"; canvas.style.visibility = "hidden";
 document.getElementById("search").addEventListener("input", e => {
   query = e.target.value.trim();
   draw();
