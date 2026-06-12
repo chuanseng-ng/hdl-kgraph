@@ -90,6 +90,12 @@ def test_template_canvas_sizing_survives_embedded_viewers(graph, tmp_path: Path)
     assert "canvas.clientWidth" not in html
 
 
+def test_template_has_recenter_control(graph, tmp_path: Path) -> None:
+    html = render_html(graph, tmp_path / "g.html").read_text()
+    assert 'id="recenter"' in html
+    assert "zoom.transform, d3.zoomIdentity" in html
+
+
 def test_payload_json_is_parseable_with_funny_names(graph, tmp_path: Path) -> None:
     # The "</" escaping path: just make sure the embedded JSON survives.
     html = render_html(graph, tmp_path / "g.html", full=True).read_text()

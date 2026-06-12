@@ -44,6 +44,10 @@
              padding:6px 9px; border-radius:4px; font-size:12px; display:none;
              max-width:380px; border:1px solid var(--line); }
   #stats { position:absolute; right:10px; bottom:8px; color:var(--dim); font-size:11px; }
+  #recenter { position:absolute; right:10px; top:10px; display:none; cursor:pointer;
+              background:var(--panel); color:var(--dim); border:1px solid var(--line);
+              border-radius:4px; padding:4px 10px; font:inherit; user-select:none; }
+  #recenter:hover { color:var(--ink); background:#243044; }
 </style>
 </head>
 <body>
@@ -64,6 +68,7 @@
     <canvas id="canvas"></canvas>
     <div id="tooltip"></div>
     <div id="stats"></div>
+    <button id="recenter" title="Reset pan and zoom">re-centre</button>
   </div>
 </main>
 <script>/*__D3__*/</script>
@@ -247,6 +252,8 @@ function pick(event) {
   const n = sim.find(x, y, 12 / transform.k);
   return n && nodeVisible(n) ? n : null;
 }
+const zoom = d3.zoom().scaleExtent([0.05, 8])
+  .on("zoom", e => { transform = e.transform; draw(); });
 d3.select(canvas)
   .call(d3.drag()
     .subject(pick)
@@ -255,8 +262,12 @@ d3.select(canvas)
     .on("drag", e => { e.subject.fx = e.x; e.subject.fy = e.y; })
     .on("end", e => { if (!e.active) sim.alphaTarget(0);
                       e.subject.fx = null; e.subject.fy = null; }))
-  .call(d3.zoom().scaleExtent([0.05, 8])
-    .on("zoom", e => { transform = e.transform; draw(); }));
+  .call(zoom);
+document.getElementById("recenter").addEventListener("click", () => {
+  /* zoom.transform syncs d3's internal zoom state and fires the "zoom"
+     handler, which resets `transform` and redraws centred on the layout. */
+  d3.select(canvas).call(zoom.transform, d3.zoomIdentity);
+});
 canvas.addEventListener("mousemove", event => {
   const n = pick(event);
   if (!n) { tooltip.style.display = "none"; return; }
@@ -280,6 +291,7 @@ for (const tab of document.querySelectorAll(".tab")) {
        sizing it only on first tab switch breaks in viewers with deferred
        layout. Hidden elements get no pointer events, so #hier still works. */
     canvas.style.visibility = which === "graph" ? "visible" : "hidden";
+    document.getElementById("recenter").style.display = which === "graph" ? "block" : "none";
     if (which === "graph") resize();
   });
 }
