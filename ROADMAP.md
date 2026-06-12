@@ -264,6 +264,10 @@ a UVM example testbench yields a component-tree report.
 **Acceptance:** from a cold checkout, an AI assistant can answer "what drives
 signal X in module Y" and "what breaks if I change this port" using MCP tools only.
 
+**Parked post-M6 (does not gate MVP or v0.6):** visualization scalability for
+very large designs — tiered precomputed-layout / aggregation / export strategy;
+analysis and phased plan in [docs/viz-scalability.md](docs/viz-scalability.md).
+
 ## M7 — v0.7: Semantic enrichment via native frontends (stretch)
 
 **Goal:** elaboration-accurate facts where native parsers are available;
