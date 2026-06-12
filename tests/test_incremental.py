@@ -169,8 +169,10 @@ def test_schema_version_mismatch_falls_back_to_full_rebuild(project: Path) -> No
     import sqlite3
 
     db = project / ".hdl-kgraph" / "graph.db"
-    with sqlite3.connect(db) as conn:
+    conn = sqlite3.connect(db)
+    with conn:
         conn.execute("UPDATE meta SET value = '1' WHERE key = 'schema_version'")
+    conn.close()  # an open handle blocks the rebuild's atomic swap on Windows
     report = run_update(project)
     assert report.full_rebuild_reason is not None
     assert "schema version" in report.full_rebuild_reason

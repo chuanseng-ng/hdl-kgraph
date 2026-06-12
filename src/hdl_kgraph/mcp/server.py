@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import sqlite3
 from collections import Counter, deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -61,6 +62,11 @@ class GraphContext:
                 self._loaded = SqliteStore(self.db_path).load()
             except SchemaVersionError as exc:
                 raise RuntimeError(str(exc)) from exc
+            except sqlite3.OperationalError as exc:
+                # A concurrent `update`/`watch` may be rebuilding the database.
+                raise RuntimeError(
+                    f"graph database is busy ({exc}); a rebuild may be in progress — retry shortly"
+                ) from exc
             self._signature = signature
         return self._loaded
 

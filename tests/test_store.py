@@ -1,7 +1,9 @@
 """SQLite round-trip tests."""
 
 import json
+import os
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
@@ -93,6 +95,58 @@ def test_save_is_a_full_rewrite(store) -> None:
     loaded, loaded_files, _ = sqlite_store.load()
     assert loaded.number_of_edges() == graph.number_of_edges()
     assert len(loaded_files) == len(files)
+
+
+def test_save_leaves_no_temp_file(store) -> None:
+    sqlite_store, _, _ = store
+    assert list(sqlite_store.db_path.parent.glob("*.tmp")) == []
+
+
+def test_save_overwrites_stale_temp_file(store) -> None:
+    sqlite_store, graph, files = store
+    tmp = sqlite_store.db_path.with_name(sqlite_store.db_path.name + ".tmp")
+    tmp.write_text("garbage left by a crashed build")
+    sqlite_store.save(graph, files, root=Path("."))
+    assert not tmp.exists()
+    loaded, _, _ = sqlite_store.load()
+    assert loaded.number_of_edges() == graph.number_of_edges()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="open handles block os.replace on Windows")
+def test_save_succeeds_while_reader_holds_a_transaction(store) -> None:
+    """A rewrite must not raise 'database is locked' under a concurrent
+    reader (the MCP server reloading mid-`update`): the swap leaves the
+    reader's snapshot untouched and the next load sees the new write."""
+    sqlite_store, graph, files = store
+    reader = sqlite3.connect(sqlite_store.db_path)
+    try:
+        reader.execute("BEGIN")
+        before = reader.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+        sqlite_store.save(graph, files, root=Path("."), options_hash="during-read")
+        assert reader.execute("SELECT COUNT(*) FROM nodes").fetchone()[0] == before
+    finally:
+        reader.close()
+    _, _, meta = sqlite_store.load()
+    assert meta["options_hash"] == "during-read"
+
+
+def test_save_retries_swap_on_permission_error(store, monkeypatch) -> None:
+    """The Windows case: os.replace fails while a reader holds the file open."""
+    sqlite_store, graph, files = store
+    real_replace, calls = os.replace, []
+
+    def flaky(src: object, dst: object) -> None:
+        calls.append((src, dst))
+        if len(calls) < 3:
+            raise PermissionError("file held open by a reader")
+        real_replace(src, dst)
+
+    monkeypatch.setattr("hdl_kgraph.storage.sqlite_store.os.replace", flaky)
+    monkeypatch.setattr("hdl_kgraph.storage.sqlite_store.time.sleep", lambda _s: None)
+    sqlite_store.save(graph, files, root=Path("."), options_hash="retried")
+    assert len(calls) == 3
+    _, _, meta = sqlite_store.load()
+    assert meta["options_hash"] == "retried"
 
 
 def test_schema_version_mismatch_raises(store) -> None:
