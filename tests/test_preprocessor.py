@@ -57,6 +57,30 @@ def test_function_macro_with_defaults(tmp_path: Path) -> None:
     assert out_lines(pp) == ["", "assign x = (2 + 1);", "assign y = (2 + 3);"]
 
 
+def test_function_macro_arg_colliding_with_later_param(tmp_path: Path) -> None:
+    # An argument value that names a later parameter must not be re-substituted.
+    pp = preprocess(tmp_path, "`define M(a, b) a + b\nwire x = `M(b, 2);\n")
+    assert out_lines(pp)[1] == "wire x = b + 2;"
+
+
+def test_function_macro_swapped_args(tmp_path: Path) -> None:
+    pp = preprocess(tmp_path, "`define M(a, b) a + b\nwire x = `M(b, a);\n")
+    assert out_lines(pp)[1] == "wire x = b + a;"
+
+
+def test_function_macro_arg_with_backslash(tmp_path: Path) -> None:
+    # Backslashes in argument values (e.g. escaped identifiers) pass through
+    # literally; \1 must not be read as a regex group reference.
+    pp = preprocess(tmp_path, "`define ID(x) x\nwire `ID(\\foo$bar );\nwire `ID(\\1 );\n")
+    assert out_lines(pp)[1] == "wire \\foo$bar;"
+    assert out_lines(pp)[2] == "wire \\1;"
+
+
+def test_function_macro_no_params(tmp_path: Path) -> None:
+    pp = preprocess(tmp_path, "`define F() 1\nx = `F();\n")
+    assert out_lines(pp)[1] == "x = 1;"
+
+
 def test_nested_expansion_and_recursion_guard(tmp_path: Path) -> None:
     pp = preprocess(tmp_path, "`define A `B\n`define B `A\nx = `A;\n")
     # Self-recursion stops; the inner use is left verbatim for tree-sitter.
