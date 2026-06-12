@@ -90,6 +90,19 @@ def test_template_canvas_sizing_survives_embedded_viewers(graph, tmp_path: Path)
     assert "canvas.clientWidth" not in html
 
 
+def test_payload_carries_communities(graph, tmp_path: Path) -> None:
+    # The two fixture files are disconnected subsystems, so Louvain yields
+    # at least two communities; connected units share one.
+    html = render_html(graph, tmp_path / "g.html").read_text()
+    payload = _embedded_payload(html)
+    assert len(payload["communities"]) >= 2
+    community = {n["name"]: n["community"] for n in payload["nodes"]}
+    assert community["df_top"] == community["df_sub"]
+    assert community["two_clock_top"] == community["cdc_child"]
+    assert community["df_top"] != community["two_clock_top"]
+    assert all(n["community"] in payload["communities"] for n in payload["nodes"])
+
+
 def test_template_has_recenter_control(graph, tmp_path: Path) -> None:
     html = render_html(graph, tmp_path / "g.html").read_text()
     assert 'id="recenter"' in html

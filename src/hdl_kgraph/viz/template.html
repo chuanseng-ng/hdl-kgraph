@@ -62,6 +62,7 @@
     <h2>node kinds</h2><div id="kind-filters"></div>
     <h2>edge kinds</h2><div id="edge-filters"></div>
     <h2>clock domains</h2><div id="domain-filters"></div>
+    <h2>communities</h2><div id="community-filters"></div>
   </div>
   <div id="view">
     <div id="hier"></div>
@@ -129,6 +130,28 @@ if (DATA.domains.length) {
     DATA.full ? "none detected" : "(run with --full)";
 }
 
+/* Louvain communities of the module projection (subsystem suggestions).
+   Color by community defaults on in projection mode, where every node is a
+   design unit and kind-based coloring is uniform anyway. */
+const activeComms = new Set(DATA.communities);
+let colorByCommunity = !DATA.full && DATA.communities.length > 1;
+const COMM_COLORS = ["#88c0d0","#a3be8c","#ebcb8b","#d08770","#b48ead",
+                     "#81a1c1","#bf616a","#8fbcbb","#d699b6","#5e81ac"];
+const commColor = c => COMM_COLORS[+c % COMM_COLORS.length];
+if (DATA.communities.length) {
+  const host = document.getElementById("community-filters");
+  const label = document.createElement("label");
+  const box = document.createElement("input");
+  box.type = "checkbox"; box.checked = colorByCommunity;
+  box.addEventListener("change", () => { colorByCommunity = box.checked; refresh(); });
+  label.appendChild(box);
+  label.appendChild(document.createTextNode("colour by community"));
+  host.appendChild(label);
+  checkboxes("community-filters", DATA.communities, activeComms, commColor, refresh);
+} else {
+  document.getElementById("community-filters").textContent = "none detected";
+}
+
 /* ---------- hierarchy view ---------- */
 function hierNode(n) {
   const li = document.createElement("li");
@@ -184,6 +207,7 @@ const sim = d3.forceSimulation(nodes)
 function nodeVisible(n) {
   if (!activeKinds.has(n.kind)) return false;
   if (n.domain && DATA.domains.length && !activeDomains.has(n.domain)) return false;
+  if (n.community !== "" && DATA.communities.length && !activeComms.has(n.community)) return false;
   return true;
 }
 function draw() {
@@ -211,7 +235,9 @@ function draw() {
     const r = hit ? 8 : 5;
     ctx.beginPath();
     ctx.arc(n.x, n.y, r, 0, 2 * Math.PI);
-    ctx.fillStyle = q && !hit ? "#3b4657" : color(n.kind);
+    ctx.fillStyle = q && !hit ? "#3b4657"
+      : colorByCommunity && n.community !== "" ? commColor(n.community)
+      : color(n.kind);
     ctx.fill();
     if (n.unresolved) { ctx.strokeStyle = "#bf616a"; ctx.lineWidth = 1.4; ctx.stroke(); }
     if (transform.k > 0.9 || hit) {
@@ -276,6 +302,7 @@ canvas.addEventListener("mousemove", event => {
   tooltip.style.top = (event.offsetY + 14) + "px";
   tooltip.innerHTML = `<b>${esc(n.name)}</b><br>${esc(n.kind)}`
     + (n.domain ? `<br>domain: ${esc(n.domain)}` : "")
+    + (n.community !== "" ? `<br>community: ${esc(n.community)}` : "")
     + (n.file ? `<br>${esc(n.file)}${n.line ? ":" + n.line : ""}` : "");
 });
 
