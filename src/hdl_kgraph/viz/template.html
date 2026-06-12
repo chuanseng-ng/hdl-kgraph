@@ -257,6 +257,7 @@ function draw() {
 }
 function refresh() { draw(); }
 
+let resizeRetries = 0;
 function resize() {
   /* Size from the container, never from the canvas: where the canvas's own
      layout follows its bitmap, measuring the canvas feeds the result back
@@ -264,7 +265,14 @@ function resize() {
      renderer dies. Guard devicePixelRatio too — embedded viewers report 0. */
   const view = document.getElementById("view");
   const w = view.clientWidth, h = view.clientHeight;
-  if (!w || !h) { requestAnimationFrame(resize); return; }
+  if (!w || !h) {
+    /* Deferred-layout retry, bounded so a permanently 0x0 viewer doesn't
+       keep an rAF chain alive forever; the ResizeObserver (and tab clicks)
+       restart the wait whenever layout actually changes. */
+    if (resizeRetries++ < 120) requestAnimationFrame(resize);
+    return;
+  }
+  resizeRetries = 0;
   const dpr = window.devicePixelRatio || 1;
   if (w === width && h === height && canvas.width === Math.round(w * dpr)) return;
   width = w; height = h;

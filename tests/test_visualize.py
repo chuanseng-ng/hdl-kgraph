@@ -88,6 +88,10 @@ def test_template_canvas_sizing_survives_embedded_viewers(graph, tmp_path: Path)
     assert '.observe(document.getElementById("view"))' in html
     assert ".observe(canvas)" not in html
     assert "canvas.clientWidth" not in html
+    # Deferred-layout viewers read 0x0 at first: the retry must exist and be
+    # bounded so a permanently hidden viewer can't spin an rAF chain forever.
+    assert "requestAnimationFrame(resize)" in html
+    assert "resizeRetries++ < 120" in html
 
 
 def test_payload_carries_communities(graph, tmp_path: Path) -> None:
