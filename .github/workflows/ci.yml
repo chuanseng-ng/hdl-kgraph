@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly canary against the latest tree-sitter releases (see the canary
+    # job): early warning that the pyproject upper bounds need raising.
+    - cron: "17 6 * * 1"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -14,6 +19,7 @@ permissions:
 
 jobs:
   lint:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -29,6 +35,7 @@ jobs:
       - run: mypy
 
   test:
+    if: github.event_name != 'schedule'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -47,7 +54,29 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      # [mcp] here, not in lint: the lint job proves the package imports and
-      # type-checks without the optional extra installed.
-      - run: pip install -e .[dev,mcp]
-      - run: pytest --cov=hdl_kgraph
+      # [mcp]/[watch] here, not in lint: the lint job proves the package
+      # imports and type-checks without the optional extras installed.
+      # Without [watch], the only real-observer test (tests/test_watch.py)
+      # silently skips on every run.
+      - run: pip install -e .[dev,mcp,watch]
+      - run: pytest --cov=hdl_kgraph --cov-fail-under=85
+
+  # Early-warning canary (ROADMAP Risks #1/#5): the tree-sitter stack is
+  # upper-bounded in pyproject.toml, so a new upstream release can't break
+  # users' fresh installs — but we still want to know the moment the latest
+  # releases stop working, before raising the caps.
+  canary:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - run: pip install -e .[dev,mcp,watch]
+      - name: Upgrade the tree-sitter stack past the pyproject caps
+        run: pip install --upgrade tree-sitter tree-sitter-systemverilog tree-sitter-vhdl
+      - run: pip list | grep tree
+      - run: pytest
