@@ -7,7 +7,8 @@ M1 surface: ``build``, ``status``, ``query`` (``instances-of`` / ``modules``
 M4 adds ``update`` (incremental rebuild), ``detect-changes``, ``impact``,
 and ``watch``. M5 adds the analyses — ``lint``, ``metrics``, ``visualize``,
 and ``query`` ``clock-domains``/``reset-tree``/``cdc``/``drivers``/``uvm``
-(all with ``--json``). ``serve`` arrives in M6.
+(all with ``--json``). M6 adds ``serve --mcp`` (AI assistants query the
+graph over MCP) and ``setup`` (auto-configure detected assistants).
 
 The database lives at ``<root>/.hdl-kgraph/graph.db``; read commands locate
 it by walking up from the current directory (git-style) unless ``--db`` is
@@ -403,7 +404,7 @@ def impact(target: str, db_path: Path | None, max_depth: int, show_files: bool) 
     change to TARGET can break.
     """
     graph, files, _ = _load(db_path)
-    seeds = _impact_seeds(graph, files, target)
+    seeds = analysis.impact_seeds(graph, files, target)
     if not seeds:
         raise click.ClickException(f"{target!r} matches no file or design unit in the graph")
     records = analysis.impact_radius(graph, seeds, max_depth=max_depth)
@@ -419,22 +420,6 @@ def impact(target: str, db_path: Path | None, max_depth: int, show_files: bool) 
         click.echo(
             f"{r.kind.value:13} {r.name:30} {location:30} <- {r.via.value} (depth {r.depth})"
         )
-
-
-def _impact_seeds(graph: nx.MultiDiGraph, files: list, target: str) -> list[str]:
-    """Resolve an ``impact`` TARGET to seed node ids (file path first)."""
-    known_paths = {f.path for f in files}
-    candidate = target.replace("\\", "/").lstrip("./")
-    if candidate in known_paths or "/" in candidate or Path(candidate).suffix in SUFFIXES:
-        matches = [p for p in known_paths if p == candidate or p.endswith("/" + candidate)]
-        return [f"file:{p}" for p in matches if f"file:{p}" in graph]
-    return [
-        node_id
-        for node_id, data in graph.nodes(data=True)
-        if data["kind"] in analysis.IMPACT_UNIT_KINDS
-        and data["name"] == (target.lower() if data["language"] is Language.VHDL else target)
-        and not data["attrs"].get("unresolved")
-    ]
 
 
 @main.command()
@@ -809,35 +794,13 @@ def cdc_cmd(db_path: Path | None, as_json: bool) -> None:
 @_db_option
 @_json_option
 @click.option("--readers", is_flag=True, help="List readers instead of drivers.")
-def drivers_cmd(signal: str, db_path: Path | None, as_json: bool, readers: bool) -> None:
+@click.option("--module", default=None, help="Only signals inside this design unit.")
+def drivers_cmd(
+    signal: str, db_path: Path | None, as_json: bool, readers: bool, module: str | None
+) -> None:
     """List what drives (or reads) signals named SIGNAL."""
     graph, _, _ = _load(db_path)
-    kind = EdgeKind.READS if readers else EdgeKind.DRIVES
-    records: list[dict[str, Any]] = []
-    for node_id, data in graph.nodes(data=True):
-        if data["kind"] not in (NodeKind.SIGNAL, NodeKind.PORT):
-            continue
-        wanted = signal.lower() if data["language"] is Language.VHDL else signal
-        if data["name"] != wanted:
-            continue
-        for src, _, edge in graph.in_edges(node_id, data=True):
-            if edge["kind"] is not kind:
-                continue
-            site = graph.nodes[src]
-            span = edge["attrs"].get("line_span") or site["line_span"]
-            records.append(
-                {
-                    "signal_id": node_id,
-                    "signal": data["qualified_name"],
-                    "site_id": src,
-                    "site": site["qualified_name"],
-                    "site_kind": site["kind"].value,
-                    "file": site["file"],
-                    "line": span[0] if span else 0,
-                    "confidence": edge["confidence"],
-                }
-            )
-    records.sort(key=lambda r: (r["signal"], r["file"], r["line"], r["site"]))
+    records = analysis.signal_drivers(graph, signal, module=module, readers=readers)
     if as_json:
         _emit_json(records)
         return
@@ -863,18 +826,7 @@ def uvm_cmd(db_path: Path | None, as_json: bool) -> None:
     """
     graph, _, _ = _load(db_path)
     components = uvm.uvm_topology(graph)
-    covers = [
-        {
-            "test_id": u,
-            "test": graph.nodes[u]["name"],
-            "dut_id": v,
-            "dut": graph.nodes[v]["name"],
-            "confidence": d["confidence"],
-        }
-        for u, v, d in graph.edges(data=True)
-        if d["kind"] is EdgeKind.TEST_COVERS
-    ]
-    covers.sort(key=lambda c: (str(c["test"]), str(c["dut"])))
+    covers = uvm.test_covers(graph)
     if as_json:
         _emit_json({"components": components, "test_covers": covers})
         return
@@ -935,6 +887,134 @@ def tree(top: str | None, depth: int, db_path: Path | None) -> None:
 
     for root in roots:
         _print_tree(analysis.hierarchy_tree(graph, root, max_depth=depth), prefix="", is_last=True)
+
+
+@main.command()
+@click.option("--mcp", "mcp_mode", is_flag=True, help="Run the MCP server (the only mode so far).")
+@_db_option
+@click.option(
+    "--http",
+    "http_addr",
+    metavar="HOST:PORT",
+    default=None,
+    help="Serve over streamable HTTP instead of stdio.",
+)
+def serve(mcp_mode: bool, db_path: Path | None, http_addr: str | None) -> None:
+    """Serve the knowledge graph to AI assistants over MCP (read-only).
+
+    Speaks MCP on stdio by default (the transport assistant configs use);
+    ``--http`` exposes the same tools over streamable HTTP instead. The
+    server only ever reads the database — rebuild with ``build``/``update``
+    (a running server picks up the new database automatically).
+    """
+    if not mcp_mode:
+        raise click.ClickException("only MCP serving exists today; pass --mcp")
+    if db_path is None:
+        db_path = find_db(Path.cwd())
+        if db_path is None:
+            raise click.ClickException(
+                "no .hdl-kgraph/graph.db found here or in any parent directory; "
+                "run `hdl-kgraph build` first or pass --db"
+            )
+    if not db_path.is_file():
+        raise click.ClickException(f"database not found: {db_path}")
+    try:
+        SqliteStore(db_path).load_meta()  # schema check before the MCP handshake
+    except SchemaVersionError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    from hdl_kgraph.mcp import McpUnavailableError, create_server
+
+    try:
+        server = create_server(db_path)
+    except McpUnavailableError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if http_addr is None:
+        server.run()
+        return
+    host, _, port_text = http_addr.rpartition(":")
+    if not host or not port_text.isdigit():
+        raise click.ClickException(f"--http expects HOST:PORT, got {http_addr!r}")
+    server.run(transport="http", host=host, port=int(port_text))
+
+
+@main.command()
+@_db_option
+@click.option(
+    "--assistant",
+    "assistants",
+    multiple=True,
+    help="Only configure these assistants (repeatable; default: all detected).",
+)
+@click.option("--list", "list_only", is_flag=True, help="Only report what is detected.")
+@click.option("--dry-run", is_flag=True, help="Show what would be written without writing.")
+@click.option("--yes", "assume_yes", is_flag=True, help="Configure without confirmation prompts.")
+def setup(
+    db_path: Path | None,
+    assistants: tuple[str, ...],
+    list_only: bool,
+    dry_run: bool,
+    assume_yes: bool,
+) -> None:
+    """Detect installed AI assistants and configure them to use this graph.
+
+    Writes (or updates) the ``hdl-kgraph`` MCP server entry in each detected
+    assistant's config — project-scope ``.mcp.json`` for Claude Code, the
+    desktop config file for Claude Desktop. Re-running is safe: the entry is
+    updated in place and everything else in the file is preserved.
+    """
+    from hdl_kgraph.mcp.setup import detect_targets, plan_entry, write_config
+
+    targets = detect_targets()
+    if assistants:
+        known = {t.name for t in targets}
+        unknown = [a for a in assistants if a not in known]
+        if unknown:
+            raise click.ClickException(
+                f"unknown assistant(s) {', '.join(unknown)}; known: {', '.join(sorted(known))}"
+            )
+        targets = [t for t in targets if t.name in assistants]
+    detected = [t for t in targets if t.detected]
+    for target in targets:
+        state = "detected" if target.detected else "not detected"
+        click.echo(f"{target.name:15} {state}  ({target.config_path})")
+    if list_only:
+        return
+    if not detected:
+        raise click.ClickException(
+            "no supported AI assistant detected; see docs/mcp.md for manual setup"
+        )
+
+    if db_path is None:
+        db_path = find_db(Path.cwd())
+        if db_path is None:
+            raise click.ClickException(
+                "no .hdl-kgraph/graph.db found here or in any parent directory; "
+                "run `hdl-kgraph build` first or pass --db"
+            )
+    entry = plan_entry(db_path.resolve())
+
+    try:
+        import fastmcp  # noqa: F401
+    except ImportError:
+        click.echo(
+            "warning: fastmcp is not installed — the configured server will not "
+            "start until you `pip install 'hdl-kgraph[mcp]'`",
+            err=True,
+        )
+
+    for target in detected:
+        if dry_run:
+            click.echo(f"would write {target.config_path}:")
+            click.echo(json.dumps(target.merged_config(entry), indent=2))
+            continue
+        if not assume_yes and not click.confirm(f"configure {target.name}?", default=True):
+            continue
+        try:
+            changed = write_config(target, entry)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(f"{target.config_path}: {'updated' if changed else 'already up to date'}")
 
 
 def _print_tree(node: analysis.HierarchyNode, prefix: str, is_last: bool) -> None:

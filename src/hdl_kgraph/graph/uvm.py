@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Any
 
 import networkx as nx
 
@@ -101,6 +102,22 @@ def uvm_topology(g: nx.MultiDiGraph) -> list[UvmComponent]:
             )
         )
     return sorted(components, key=lambda c: (ROLE_ORDER.index(c.role), c.name))
+
+
+def test_covers(g: nx.MultiDiGraph) -> list[dict[str, Any]]:
+    """TEST_COVERS edges already in the graph, as report records."""
+    covers = [
+        {
+            "test_id": u,
+            "test": g.nodes[u]["name"],
+            "dut_id": v,
+            "dut": g.nodes[v]["name"],
+            "confidence": d["confidence"],
+        }
+        for u, v, d in g.edges(data=True)
+        if d["kind"] is EdgeKind.TEST_COVERS
+    ]
+    return sorted(covers, key=lambda c: (str(c["test"]), str(c["dut"])))
 
 
 def derive_test_covers(g: nx.MultiDiGraph) -> list[Edge]:

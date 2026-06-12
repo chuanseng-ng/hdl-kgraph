@@ -87,6 +87,7 @@ module = [
   "networkx.*",
   "tomli.*",
   "watchdog.*",
+  "fastmcp.*",
 ]
 ignore_missing_imports = true
 

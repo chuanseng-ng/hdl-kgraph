@@ -253,13 +253,30 @@ a UVM example testbench yields a component-tree report.
 
 **Goal:** AI assistants can query the design directly.
 
-- [ ] fastmcp server (`hdl-kgraph serve --mcp`), shipped as the `[mcp]` extra
-- [ ] Tools: `find_module`, `get_hierarchy`, `who_instantiates`, `port_map`,
+- [x] fastmcp server (`hdl-kgraph serve --mcp`), shipped as the `[mcp]` extra —
+      **lazy import with a clear install hint; the CI lint job intentionally
+      runs without the extra so the core never grows a hard fastmcp dependency**
+- [x] Tools: `find_module`, `get_hierarchy`, `who_instantiates`, `port_map`,
       `impact_of_change`, `clock_domains`, `find_signal_drivers`, `uvm_topology`,
-      `search_nodes`
-- [ ] Read-only stdio and HTTP modes; responses sized for LLM context windows
-      (pagination, summaries)
-- [ ] Docs: Claude Code / Claude Desktop configuration snippets
+      `search_nodes` — **thin wrappers over `graph/analysis.py` (the drivers
+      query and impact-seed resolution moved out of the CLI; `port_map` and
+      `search_nodes` are new analysis functions the CLI can reuse);
+      `find_signal_drivers` takes the module scope the acceptance question
+      needs, with VHDL architectures answering for their entities**
+- [x] Read-only stdio and HTTP modes; responses sized for LLM context windows
+      (pagination, summaries) — **stdio default, `--http HOST:PORT` for
+      streamable HTTP; every list tool returns a
+      `{total, offset, count, truncated, items}` envelope (limit clamped to
+      500), hierarchy defaults to depth 3 with a 500-node cap, impact leads
+      with a summary so truncated pages still answer "what breaks"; the server
+      stats the database per call and reloads when `update`/`watch` rewrite it**
+- [x] Docs: Claude Code / Claude Desktop configuration snippets — **docs/mcp.md:
+      tool reference, transports, cold-checkout walkthrough**
+- [x] `hdl-kgraph setup`: detect installed assistants and write their MCP
+      config — **Claude Code via project-scope `.mcp.json`, Claude Desktop via
+      its platform config file; idempotent merge that preserves other servers,
+      one-time `.bak` backups for user-level files, `--list`/`--dry-run`/
+      `--yes`; extensible one-entry-per-assistant registry in `mcp/setup.py`**
 
 **Acceptance:** from a cold checkout, an AI assistant can answer "what drives
 signal X in module Y" and "what breaks if I change this port" using MCP tools only.

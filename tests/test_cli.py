@@ -433,3 +433,46 @@ def test_impact_top_has_no_dependents(small_project: Path) -> None:
     result = CliRunner().invoke(main, ["impact", "top", *db])
     assert result.exit_code == 0, result.output
     assert "no dependents found" in result.output
+
+
+def test_serve_requires_mcp_flag(project: Path) -> None:
+    result = CliRunner().invoke(main, ["serve", *db_args(project)])
+    assert result.exit_code != 0
+    assert "pass --mcp" in result.output
+
+
+def test_serve_missing_db(tmp_path: Path) -> None:
+    result = CliRunner().invoke(main, ["serve", "--mcp", "--db", str(tmp_path / "nope.db")])
+    assert result.exit_code != 0
+    assert "database not found" in result.output
+
+
+def test_serve_bad_http_address(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("fastmcp")
+    result = CliRunner().invoke(
+        main, ["serve", "--mcp", "--http", "not-an-address", *db_args(project)]
+    )
+    assert result.exit_code != 0
+    assert "HOST:PORT" in result.output
+
+
+def test_serve_without_fastmcp(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    monkeypatch.setitem(sys.modules, "fastmcp", None)  # forces ImportError
+    result = CliRunner().invoke(main, ["serve", "--mcp", *db_args(project)])
+    assert result.exit_code != 0
+    assert "hdl-kgraph[mcp]" in result.output
+
+
+def test_drivers_module_filter(project: Path) -> None:
+    scoped = CliRunner().invoke(
+        main, ["query", "drivers", "o", "--module", "df_sub", *db_args(project)]
+    )
+    assert scoped.exit_code == 0, scoped.output
+    assert "df_sub" in scoped.output
+
+    empty = CliRunner().invoke(
+        main, ["query", "drivers", "o", "--module", "df_top", *db_args(project)]
+    )
+    assert empty.exit_code != 0
