@@ -47,5 +47,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - run: pip install -e .[dev]
+      # [mcp] here, not in lint: the lint job proves the package imports and
+      # type-checks without the optional extra installed.
+      - run: pip install -e .[dev,mcp]
       - run: pytest --cov=hdl_kgraph

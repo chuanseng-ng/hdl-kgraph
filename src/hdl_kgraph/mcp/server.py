@@ -348,8 +348,8 @@ def create_server(db_path: Path) -> FastMCP:
         limit: int = 50,
         offset: int = 0,
     ) -> dict[str, Any]:
-        """Search graph nodes by name glob, node kind (e.g. MODULE, SIGNAL,
-        CLASS), and/or file glob."""
+        """Search graph nodes by name glob, node kind (e.g. module, signal,
+        class), and/or file glob."""
         g, _, _ = ctx.graph()
         return _search_impl(g, name, kinds, file, limit, offset)
 
