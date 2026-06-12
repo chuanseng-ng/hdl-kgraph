@@ -200,7 +200,7 @@ def test_visualize_writes_html(project: Path, tmp_path: Path) -> None:
 
 
 def test_metrics_lists_hubs(project: Path) -> None:
-    result = CliRunner().invoke(main, ["metrics", "--top", "0", *db_args(project)])
+    result = CliRunner().invoke(main, ["metrics", "--limit", "0", *db_args(project)])
     assert result.exit_code == 0, result.output
     assert "fan-in" in result.output
     assert "alu" in result.output
@@ -381,10 +381,12 @@ def test_detect_changes_reports_deletions(small_project: Path) -> None:
     assert "D leaf.sv" in result.output
 
 
-def test_detect_changes_without_db_fails(tmp_path: Path) -> None:
+def test_detect_changes_without_db_exits_2(tmp_path: Path) -> None:
+    # git diff --exit-code convention: 0 clean, 1 dirty, 2 error — scripts
+    # must be able to tell "changed" from "broken".
     (tmp_path / "a.sv").write_text("module a;\nendmodule\n")
     result = CliRunner().invoke(main, ["detect-changes", str(tmp_path)])
-    assert result.exit_code != 0
+    assert result.exit_code == 2, result.output
     assert "hdl-kgraph build" in result.output
 
 
@@ -435,10 +437,13 @@ def test_impact_top_has_no_dependents(small_project: Path) -> None:
     assert "no dependents found" in result.output
 
 
-def test_serve_requires_mcp_flag(project: Path) -> None:
-    result = CliRunner().invoke(main, ["serve", *db_args(project)])
+def test_serve_defaults_to_mcp(tmp_path: Path) -> None:
+    # MCP is the default mode: without --mcp the command proceeds far enough
+    # to notice the missing database instead of demanding the flag.
+    result = CliRunner().invoke(main, ["serve", "--db", str(tmp_path / "nope.db")])
     assert result.exit_code != 0
-    assert "pass --mcp" in result.output
+    assert "pass --mcp" not in result.output
+    assert "database not found" in result.output
 
 
 def test_serve_missing_db(tmp_path: Path) -> None:
@@ -561,3 +566,124 @@ def test_update_verbose_keeps_warnings_of_reused_files(diag_project: Path) -> No
     assert "re-parsed: other.sv (added)" in result.output
     # top.sv was re-linked, not re-preprocessed; its warning must survive.
     assert 'cannot resolve `include "missing.svh"' in result.output
+
+
+# -- issue #22: --json coverage, exit codes, serve/visualize polish -----------
+
+
+def _json_out(result) -> object:
+    import json as json_mod
+
+    assert result.exit_code in (0, 1), result.output
+    return json_mod.loads(result.output)
+
+
+def test_status_json(project: Path) -> None:
+    payload = _json_out(CliRunner().invoke(main, ["status", "--json", *db_args(project)]))
+    assert payload["files"]["parsed"] > 0
+    assert payload["files"]["parse_errors"] > 0  # broken.sv
+    assert payload["nodes"]["kinds"]["module"] > 0
+    assert payload["edges"]["total"] > 0
+    assert payload["unresolved"] > 0
+
+
+def test_status_errors_json(project: Path) -> None:
+    payload = _json_out(
+        CliRunner().invoke(main, ["status", "--errors", "--json", *db_args(project)])
+    )
+    assert any(f["path"] == "broken.sv" and f["parse_errors"] > 0 for f in payload)
+
+
+def test_tree_json(project: Path) -> None:
+    result = CliRunner().invoke(main, ["tree", "mixed_sv_top", "--json", *db_args(project)])
+    payload = _json_out(result)
+    assert payload[0]["module_name"] == "mixed_sv_top"
+    assert payload[0]["children"]
+
+
+def test_impact_json(small_project: Path) -> None:
+    db = ["--db", str(small_project / ".hdl-kgraph" / "graph.db")]
+    payload = _json_out(CliRunner().invoke(main, ["impact", "leaf", "--json", *db]))
+    assert any(r["name"] == "top" and r["depth"] == 1 for r in payload)
+
+    files = _json_out(CliRunner().invoke(main, ["impact", "leaf", "--files", "--json", *db]))
+    assert files == ["top.sv"]
+
+
+def test_detect_changes_json_keeps_exit_codes(small_project: Path) -> None:
+    clean = CliRunner().invoke(main, ["detect-changes", str(small_project), "--json"])
+    assert clean.exit_code == 0, clean.output
+    assert _json_out(clean) == {"changed": [], "added": [], "removed": []}
+
+    (small_project / "leaf.sv").write_text("module leaf;\nendmodule\n")
+    dirty = CliRunner().invoke(main, ["detect-changes", str(small_project), "--json"])
+    assert dirty.exit_code == 1
+    assert _json_out(dirty)["changed"] == ["leaf.sv"]
+
+
+def test_query_modules_json(project: Path) -> None:
+    payload = _json_out(CliRunner().invoke(main, ["query", "modules", "--json", *db_args(project)]))
+    by_name = {m["name"]: m for m in payload}
+    assert by_name["simple_counter"]["instances"] >= 1
+    assert by_name["alu"]["kind"] == "entity"
+
+
+def test_query_instances_of_json(project: Path) -> None:
+    payload = _json_out(
+        CliRunner().invoke(
+            main, ["query", "instances-of", "simple_counter", "--json", *db_args(project)]
+        )
+    )
+    assert payload and all("confidence" in rec for rec in payload)
+
+    empty = CliRunner().invoke(
+        main, ["query", "instances-of", "no_such_unit", "--json", *db_args(project)]
+    )
+    assert empty.exit_code == 1
+    assert _json_out(empty) == []
+
+
+def test_query_unresolved_json(project: Path) -> None:
+    payload = _json_out(
+        CliRunner().invoke(main, ["query", "unresolved", "--json", *db_args(project)])
+    )
+    assert any(stub["referrers"] for stub in payload)
+
+
+def test_metrics_limit_short_flag(project: Path) -> None:
+    result = CliRunner().invoke(main, ["metrics", "-n", "1", *db_args(project)])
+    assert result.exit_code == 0, result.output
+    assert len([line for line in result.output.splitlines() if line]) == 2  # header + 1 row
+
+
+def test_visualize_unknown_top_fails(project: Path, tmp_path: Path) -> None:
+    out = tmp_path / "graph.html"
+    result = CliRunner().invoke(
+        main, ["visualize", "--top", "no_such_module", "-o", str(out), *db_args(project)]
+    )
+    assert result.exit_code != 0
+    assert "module or entity 'no_such_module' not found" in result.output
+    assert not out.exists()  # no silently empty page
+
+
+def test_serve_http_warns_on_non_loopback_bind(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[dict] = []
+
+    class DummyServer:
+        def run(self, **kwargs: object) -> None:
+            calls.append(dict(kwargs))
+
+    import hdl_kgraph.mcp
+
+    monkeypatch.setattr(hdl_kgraph.mcp, "create_server", lambda db_path: DummyServer())
+
+    public = CliRunner().invoke(main, ["serve", "--http", "0.0.0.0:8123", *db_args(project)])
+    assert public.exit_code == 0, public.output
+    assert "no authentication" in public.output
+    assert calls[-1]["host"] == "0.0.0.0"
+
+    loopback = CliRunner().invoke(main, ["serve", "--http", "127.0.0.1:8123", *db_args(project)])
+    assert loopback.exit_code == 0, loopback.output
+    assert "no authentication" not in loopback.output

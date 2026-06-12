@@ -103,3 +103,44 @@ def test_watch_loop_real_observer_smoke(tmp_path) -> None:
     assert len(reports) >= 2
     assert reports[0].up_to_date  # initial sync right after build
     assert reports[1].reparsed == {"a.sv": "changed"}
+
+
+def test_watch_loop_reports_errors_and_keeps_watching() -> None:
+    """A failing update batch must not kill the watcher (issue #22)."""
+    events: queue.Queue = queue.Queue()
+    events.put("a.sv")
+    seen: list[set[str]] = []
+    errors: list[BaseException] = []
+
+    def flaky_batch(batch: set[str]) -> None:
+        seen.append(batch)
+        if len(seen) == 1:
+            # Trigger a second batch, then die: the loop must survive to it.
+            events.put("b.sv")
+            raise OSError("file vanished between discovery and read")
+
+    clock = count(step=0.2)
+    batches = watch_loop(
+        events,
+        flaky_batch,
+        quiet_s=0.3,
+        clock=lambda: next(clock) * 1.0,
+        max_batches=2,
+        on_error=errors.append,
+    )
+    assert batches == 2
+    assert seen == [{"a.sv"}, {"b.sv"}]
+    assert len(errors) == 1
+    assert isinstance(errors[0], OSError)
+
+
+def test_watch_loop_without_on_error_propagates() -> None:
+    events: queue.Queue = queue.Queue()
+    events.put("a.sv")
+
+    def boom(batch: set[str]) -> None:
+        raise RuntimeError("boom")
+
+    clock = count(step=0.2)
+    with pytest.raises(RuntimeError, match="boom"):
+        watch_loop(events, boom, quiet_s=0.3, clock=lambda: next(clock) * 1.0, max_batches=1)

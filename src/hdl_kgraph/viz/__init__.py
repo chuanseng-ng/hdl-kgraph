@@ -125,6 +125,8 @@ def _payload(g: nx.MultiDiGraph, full: bool, top: str | None, title: str) -> dic
             and data["name"] == (top.lower() if data["language"] is Language.VHDL else top)
             and not data["attrs"].get("unresolved")
         ]
+        if not roots:  # a typo would otherwise render an empty page
+            raise ValueError(f"module or entity {top!r} not found in the graph")
     else:
         roots = analysis.find_top_modules(g)
     hierarchy = [_tree_to_dict(analysis.hierarchy_tree(g, root)) for root in roots]
@@ -147,7 +149,10 @@ def render_html(
     top: str | None = None,
     title: str = "hdl-kgraph",
 ) -> Path:
-    """Render the graph to a single self-contained HTML file."""
+    """Render the graph to a single self-contained HTML file.
+
+    Raises :class:`ValueError` when *top* names no module or entity.
+    """
     package = resources.files("hdl_kgraph.viz")
     template = (package / "template.html").read_text(encoding="utf-8")
     d3 = (package / "static" / "d3.v7.min.js").read_text(encoding="utf-8")

@@ -226,7 +226,7 @@ survives rapid save bursts.
       open `.x()` bindings reported separately from unconnected ports**
 - [x] Graph metrics: module fan-in/fan-out, hub/bridge detection (betweenness),
       community detection (Louvain via NetworkX) for subsystem discovery —
-      **`hdl-kgraph metrics [--top N] [--communities]` over the module-level
+      **`hdl-kgraph metrics [--limit N] [--communities]` over the module-level
       instantiation projection (entities absorb their architectures); Louvain
       seeded for run-to-run determinism; articulation points flag true bridges**
 - [x] `visualize` → self-contained D3.js HTML (hierarchy view + force-directed

@@ -93,7 +93,7 @@ the migration.
 
 ```bash
 hdl-kgraph update                  # re-parse only what changed, re-link, save
-hdl-kgraph detect-changes          # M/A/D lines vs the last build; exit 1 if dirty
+hdl-kgraph detect-changes          # M/A/D lines vs the last build; exit: 0 clean, 1 dirty, 2 error
 hdl-kgraph detect-changes --git    # ...or vs git HEAD (any ref works)
 hdl-kgraph impact rtl/uart_tx.sv   # what does my change affect?
 hdl-kgraph impact fifo --files     # affected files instead of design units
