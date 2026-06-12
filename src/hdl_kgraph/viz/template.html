@@ -26,8 +26,12 @@
   #sidebar label { display:flex; gap:6px; align-items:center; padding:1px 0; cursor:pointer; }
   #sidebar .swatch { width:9px; height:9px; border-radius:2px; display:inline-block; }
   #view { flex:1; position:relative; overflow:hidden; }
-  #canvas { position:absolute; inset:0; }
-  #hier { position:absolute; inset:0; overflow:auto; padding:14px 18px; display:none; }
+  /* No `inset` shorthand: older engines ignore it, and an absolute canvas
+     with auto offsets sizes itself from its bitmap — which feeds back into
+     the bitmap on resize and grows it without bound. */
+  #canvas { position:absolute; top:0; left:0; width:100%; height:100%; }
+  #hier { position:absolute; top:0; left:0; width:100%; height:100%;
+          overflow:auto; padding:14px 18px; display:none; }
   #hier ul { list-style:none; margin:0; padding-left:18px; border-left:1px solid var(--line); }
   #hier > ul { border-left:none; padding-left:0; }
   #hier li { padding:1px 0; }
@@ -219,19 +223,22 @@ function draw() {
 function refresh() { draw(); }
 
 function resize() {
-  /* Embedded/iframe viewers (Safari previews, IDE webviews) can report
-     devicePixelRatio 0 or zero client sizes; any of those zeroes the
-     bitmap and the view stays dark while the DOM keeps updating. */
+  /* Size from the container, never from the canvas: where the canvas's own
+     layout follows its bitmap, measuring the canvas feeds the result back
+     into the bitmap and grows it 1.5x per ResizeObserver round until the
+     renderer dies. Guard devicePixelRatio too — embedded viewers report 0. */
   const view = document.getElementById("view");
-  width = canvas.clientWidth || view.clientWidth;
-  height = canvas.clientHeight || view.clientHeight;
-  if (!width || !height) { requestAnimationFrame(resize); return; }
+  const w = view.clientWidth, h = view.clientHeight;
+  if (!w || !h) { requestAnimationFrame(resize); return; }
   const dpr = window.devicePixelRatio || 1;
-  canvas.width = width * dpr; canvas.height = height * dpr;
+  if (w === width && h === height && canvas.width === Math.round(w * dpr)) return;
+  width = w; height = h;
+  canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   draw();
 }
-new ResizeObserver(resize).observe(canvas);
+new ResizeObserver(resize).observe(document.getElementById("view"));
+resize();
 
 function pick(event) {
   const [px, py] = d3.pointer(event.sourceEvent || event, canvas);

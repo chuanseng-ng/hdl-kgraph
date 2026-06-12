@@ -79,6 +79,15 @@ def test_template_canvas_sizing_survives_embedded_viewers(graph, tmp_path: Path)
     # a display:none canvas reads 0x0 on the first switch to the graph tab.
     assert "canvas.style.display" not in html
     assert "canvas.style.visibility" in html
+    # The bitmap must be sized from (and the ResizeObserver attached to) the
+    # #view container, never the canvas itself: in engines where the canvas's
+    # layout follows its bitmap (e.g. no `inset` support), measuring the
+    # canvas feeds back into the bitmap and grows it ~1.5x per observer round
+    # until the renderer crashes.
+    assert "inset:" not in html.split("</style>")[0]
+    assert '.observe(document.getElementById("view"))' in html
+    assert ".observe(canvas)" not in html
+    assert "canvas.clientWidth" not in html
 
 
 def test_payload_json_is_parseable_with_funny_names(graph, tmp_path: Path) -> None:
