@@ -9,6 +9,9 @@ and ``watch``. M5 adds the analyses — ``lint``, ``metrics``, ``visualize``,
 and ``query`` ``clock-domains``/``reset-tree``/``cdc``/``drivers``/``uvm``
 (all with ``--json``). M6 adds ``serve --mcp`` (AI assistants query the
 graph over MCP) and ``setup`` (auto-configure detected assistants).
+Diagnostics: ``build``/``update``/``watch`` take ``-v/--verbose`` (stage
+progress plus per-file parse errors and preprocessor warnings), and
+``status --errors`` lists the same per-file diagnostics after the fact.
 
 The database lives at ``<root>/.hdl-kgraph/graph.db``; read commands locate
 it by walking up from the current directory (git-style) unless ``--db`` is
@@ -63,6 +66,21 @@ _db_option = click.option(
 _json_option = click.option(
     "--json", "as_json", is_flag=True, help="Emit JSON instead of the text report."
 )
+
+_verbose_option = click.option(
+    "-v",
+    "--verbose",
+    is_flag=True,
+    help="Report pipeline stages as they run, plus per-file parse errors, "
+    "preprocessor warnings, and unresolved includes.",
+)
+
+
+def _progress(verbose: bool) -> Callable[[str], None] | None:
+    """Stage-progress callback for ``-v`` (stderr, so reports stay clean)."""
+    if not verbose:
+        return None
+    return lambda line: click.echo(line, err=True)
 
 
 def _json_default(value: Any) -> Any:
@@ -203,7 +221,7 @@ def _resolve_options(
         raise click.ClickException(str(exc)) from exc
 
 
-def _echo_build_report(report: BuildReport) -> None:
+def _echo_build_report(report: BuildReport, verbose: bool = False) -> None:
     for warning in report.warnings:
         click.echo(f"warning: {warning}", err=True)
     if report.parsed_files == 0:
@@ -220,6 +238,9 @@ def _echo_build_report(report: BuildReport) -> None:
         click.echo(f"  skipped ({reason}): {count}")
     if report.error_files:
         click.echo(f"  parse errors:   {report.parse_error_count} in {report.error_files} file(s)")
+        if verbose:
+            for path, count in sorted(report.file_errors.items()):
+                click.echo(f"      {path}: {count} error(s)")
     if report.macros_defined:
         click.echo(f"  macros defined: {report.macros_defined}")
     if report.includes_resolved or report.includes_unresolved:
@@ -227,17 +248,44 @@ def _echo_build_report(report: BuildReport) -> None:
         if report.includes_unresolved:
             includes += f", {report.includes_unresolved} unresolved"
         click.echo(includes)
+        if verbose and report.includes_unresolved:
+            search = ", ".join(report.incdirs) if report.incdirs else "(no incdirs configured)"
+            click.echo(f"      `include search path: {search}")
     if report.preproc_warning_count:
         click.echo(f"  preprocessor warnings: {report.preproc_warning_count}")
+        if verbose:
+            for warning in report.preproc_warnings:
+                click.echo(f"      {warning}")
     if report.both_branches:
         click.echo("  both-branches mode: no defines given; `ifdef alternatives kept at 0.6")
     click.echo(f"  nodes: {report.node_count}  edges: {report.edge_count}")
     if report.unresolved_count:
         click.echo(f"  unresolved: {report.unresolved_count}")
+    if not verbose and (report.error_files or report.preproc_warning_count):
+        click.echo("  (per-file details: re-run with -v, or `hdl-kgraph status --errors`)")
+
+
+def _echo_file_diagnostics(files: list) -> None:
+    """``status --errors``: per-file parse errors, warnings, skip reasons."""
+    clean = True
+    for f in sorted(files, key=lambda f: f.path):
+        if f.skipped_reason is not None:
+            click.echo(f"{f.path}: skipped ({f.skipped_reason})")
+            clean = False
+            continue
+        if f.parse_error_count:
+            click.echo(f"{f.path}: {f.parse_error_count} parse error(s)")
+            clean = False
+        for warning in f.warnings:
+            click.echo(f"{f.path}: warning: {warning}")
+            clean = False
+    if clean:
+        click.echo("no parse errors, preprocessor warnings, or skipped files")
 
 
 @main.command()
 @_input_options
+@_verbose_option
 def build(
     source: Path,
     db_path: Path | None,
@@ -249,16 +297,17 @@ def build(
     no_config: bool,
     excludes: tuple[str, ...],
     max_file_size: int | None,
+    verbose: bool,
 ) -> None:
     """Build the knowledge graph from HDL sources under SOURCE."""
     options = _resolve_options(
         source, filelists, defines, incdirs, libs, config_path, no_config, excludes, max_file_size
     )
-    report = run_build(source, db_path=db_path, options=options)
-    _echo_build_report(report)
+    report = run_build(source, db_path=db_path, options=options, progress=_progress(verbose))
+    _echo_build_report(report, verbose=verbose)
 
 
-def _echo_update_report(report: UpdateReport) -> None:
+def _echo_update_report(report: UpdateReport, verbose: bool = False) -> None:
     if report.up_to_date:
         click.echo(f"up to date ({report.elapsed_s:.2f}s)")
         return
@@ -272,12 +321,13 @@ def _echo_update_report(report: UpdateReport) -> None:
         if not report.reparsed:
             click.echo("  no files re-parsed (re-linked only)")
     assert report.build is not None
-    _echo_build_report(report.build)
+    _echo_build_report(report.build, verbose=verbose)
     click.echo(f"  updated in {report.elapsed_s:.2f}s")
 
 
 @main.command()
 @_input_options
+@_verbose_option
 @click.option("--full", is_flag=True, help="Force a full rebuild.")
 def update(
     source: Path,
@@ -290,6 +340,7 @@ def update(
     no_config: bool,
     excludes: tuple[str, ...],
     max_file_size: int | None,
+    verbose: bool,
     full: bool,
 ) -> None:
     """Incrementally update the graph: re-parse only changed files.
@@ -302,8 +353,10 @@ def update(
     options = _resolve_options(
         source, filelists, defines, incdirs, libs, config_path, no_config, excludes, max_file_size
     )
-    report = run_update(source, db_path=db_path, options=options, full=full)
-    _echo_update_report(report)
+    report = run_update(
+        source, db_path=db_path, options=options, full=full, progress=_progress(verbose)
+    )
+    _echo_update_report(report, verbose=verbose)
 
 
 @main.command("detect-changes")
@@ -424,6 +477,7 @@ def impact(target: str, db_path: Path | None, max_depth: int, show_files: bool) 
 
 @main.command()
 @_input_options
+@_verbose_option
 @click.option(
     "--debounce",
     type=int,
@@ -443,6 +497,7 @@ def watch(
     no_config: bool,
     excludes: tuple[str, ...],
     max_file_size: int | None,
+    verbose: bool,
     debounce: int,
 ) -> None:
     """Watch SOURCE and incrementally update the graph on every save burst."""
@@ -455,7 +510,8 @@ def watch(
     def on_report(report: UpdateReport) -> None:
         if report.up_to_date or report.build is None:
             click.echo(f"up to date ({report.elapsed_s:.2f}s)")
-        elif report.full_rebuild_reason is not None:
+            return
+        if report.full_rebuild_reason is not None:
             click.echo(
                 f"full rebuild ({report.full_rebuild_reason}): "
                 f"{report.build.parsed_files} file(s), {report.build.node_count} nodes "
@@ -467,11 +523,21 @@ def watch(
                 f"{report.build.node_count} nodes, {report.build.edge_count} edges "
                 f"({report.elapsed_s:.2f}s)"
             )
+        if verbose:
+            for path, count in sorted(report.build.file_errors.items()):
+                click.echo(f"    parse errors: {path}: {count}")
+            for warning in report.build.preproc_warnings:
+                click.echo(f"    warning: {warning}")
 
     click.echo(f"watching {source.resolve()} (Ctrl-C to stop)")
     try:
         run_watch(
-            source, db_path=db_path, options=options, quiet_s=debounce / 1000, on_report=on_report
+            source,
+            db_path=db_path,
+            options=options,
+            quiet_s=debounce / 1000,
+            on_report=on_report,
+            progress=_progress(verbose),
         )
     except WatchUnavailableError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -481,9 +547,19 @@ def watch(
 
 @main.command()
 @_db_option
-def status(db_path: Path | None) -> None:
+@click.option(
+    "--errors",
+    "show_errors",
+    is_flag=True,
+    help="List files with parse errors, preprocessor warnings, and skipped "
+    "files (with reasons) instead of the statistics.",
+)
+def status(db_path: Path | None, show_errors: bool) -> None:
     """Show graph statistics for the current build."""
     graph, files, meta = _load(db_path)
+    if show_errors:
+        _echo_file_diagnostics(files)
+        return
     click.echo(f"root:     {meta.get('root', '?')}")
     click.echo(f"built at: {meta.get('built_at', '?')} (hdl-kgraph {meta.get('tool_version')})")
 
@@ -493,6 +569,7 @@ def status(db_path: Path | None) -> None:
     filelists = [f for f in files if f.skipped_reason is None and f.language is Language.UNKNOWN]
     skipped = Counter(f.skipped_reason for f in files if f.skipped_reason is not None)
     error_files = [f for f in parsed if f.parse_error_count]
+    warning_count = sum(len(f.warnings) for f in files)
     click.echo(f"files:    {len(parsed)} parsed")
     if filelists:
         click.echo(f"          {len(filelists)} filelist(s)")
@@ -501,6 +578,10 @@ def status(db_path: Path | None) -> None:
     total_errors = sum(f.parse_error_count for f in error_files)
     if error_files:
         click.echo(f"          {total_errors} parse error(s) in {len(error_files)} file(s)")
+    if warning_count:
+        click.echo(f"          {warning_count} preprocessor warning(s)")
+    if error_files or warning_count:
+        click.echo("          (`hdl-kgraph status --errors` lists them per file)")
 
     node_kinds = Counter(data["kind"].value for _, data in graph.nodes(data=True))
     edge_kinds = Counter(data["kind"].value for _, _, data in graph.edges(data=True))

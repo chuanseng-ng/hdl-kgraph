@@ -35,6 +35,7 @@ import hashlib
 import json
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -79,6 +80,10 @@ from hdl_kgraph.storage.sqlite_store import (
 DB_DIRNAME = ".hdl-kgraph"
 DB_FILENAME = "graph.db"
 
+#: Stage-progress callback (``build -v``): called with one human-readable
+#: line per pipeline stage as it starts.
+ProgressFn = Callable[[str], None]
+
 
 @dataclass
 class BuildReport:
@@ -102,6 +107,10 @@ class BuildReport:
     both_branches: bool = False  # no defines given: ifdef alternatives at 0.6
     preproc_warning_count: int = 0
     warnings: list[str] = field(default_factory=list)  # config + filelist warnings
+    # Diagnostics surfaced by `build -v` and persisted for `status --errors`:
+    file_errors: dict[str, int] = field(default_factory=dict)  # relpath -> error count
+    preproc_warnings: list[str] = field(default_factory=list)  # full warning text
+    incdirs: list[str] = field(default_factory=list)  # effective `include search path
 
 
 @dataclass
@@ -197,8 +206,11 @@ def run_build(
     root: Path,
     db_path: Path | None = None,
     options: BuildOptions | None = None,
+    progress: ProgressFn | None = None,
 ) -> BuildReport:
-    return _execute(root, db_path, options if options is not None else BuildOptions())
+    return _execute(
+        root, db_path, options if options is not None else BuildOptions(), progress=progress
+    )
 
 
 def _execute(
@@ -208,8 +220,15 @@ def _execute(
     inputs: _Inputs | None = None,
     reuse: dict[str, StoredUnit] | None = None,
     discovered: list[DiscoveredFile] | None = None,
+    prior_warnings: dict[str, list[str]] | None = None,
+    progress: ProgressFn | None = None,
 ) -> BuildReport:
-    """One pipeline run; units named in *reuse* re-link from their stored IR."""
+    """One pipeline run; units named in *reuse* re-link from their stored IR.
+
+    *prior_warnings* carries the previous build's per-file preprocessor
+    warnings for reused units (their preprocessor never re-runs).
+    """
+    progress = progress if progress is not None else lambda _line: None
     root = root.resolve()
     base = root.parent if root.is_file() else root
     db_path = db_path if db_path is not None else default_db_path(base)
@@ -224,12 +243,15 @@ def _execute(
 
     # -- inputs: filelists, defines, include dirs -----------------------------
     if inputs is None:
+        progress("resolving build inputs (filelists, defines, incdirs)")
         inputs = _resolve_inputs(options)
     report.warnings.extend(inputs.warnings)
     report.filelists_read = inputs.filelists_read
+    report.incdirs = [str(d) for d in inputs.incdirs]
 
     # -- file set --------------------------------------------------------------
     if discovered is None:
+        progress(f"discovering source files under {root}")
         discovered = _discover(root, base, options, inputs, max_kb)
 
     # -- pass 0 + pass 1, in compile order --------------------------------------
@@ -250,6 +272,7 @@ def _execute(
     consumed: set[str] = set()  # spliced into an earlier unit -> skip standalone
     vhdl_file_libs: dict[str, str] = {}  # relpath -> library name
 
+    progress(f"pass 0+1: preprocessing and parsing {len(discovered)} file(s)")
     for found in discovered:
         skipped_reason = found.skipped_reason
         if skipped_reason is None and found.relpath in consumed:
@@ -266,9 +289,13 @@ def _execute(
                 )
             )
             continue
+        file_warnings: list[str] = []
         ir = _reuse_unit(found, reuse, preprocessor, processed, consumed)
         if ir is not None:
             report.reused_files += 1
+            # The preprocessor does not re-run for reused units; carry their
+            # previous build's warnings forward.
+            file_warnings = list((prior_warnings or {}).get(found.relpath, []))
             if found.language is Language.VHDL:
                 vhdl_file_libs[found.relpath] = _library_for(found.path, options.vhdl_libraries)
                 report.vhdl_files += 1
@@ -293,7 +320,7 @@ def _execute(
             PreprocEmitter().emit(pp, ir)
             report.includes_resolved += sum(1 for ev in pp.includes if ev.resolved is not None)
             report.includes_unresolved += sum(1 for ev in pp.includes if ev.resolved is None)
-            report.preproc_warning_count += len(pp.warnings)
+            file_warnings = list(pp.warnings)
             macro_keys |= {(d.file, d.name, d.line) for d in pp.macro_defs}
             units[found.relpath] = StoredUnit(
                 ir=ir_codec.ir_to_json(ir),
@@ -305,6 +332,9 @@ def _execute(
         if ir.parse_error_count:
             report.error_files += 1
             report.parse_error_count += ir.parse_error_count
+            report.file_errors[found.relpath] = ir.parse_error_count
+        report.preproc_warnings.extend(file_warnings)
+        report.preproc_warning_count += len(file_warnings)
         files_meta.append(
             FileMeta(
                 path=found.relpath,
@@ -312,6 +342,7 @@ def _execute(
                 content_hash=found.content_hash,
                 size_bytes=found.size_bytes,
                 parse_error_count=ir.parse_error_count,
+                warnings=file_warnings,
             )
         )
     report.macros_defined = len(macro_keys)
@@ -331,6 +362,7 @@ def _execute(
     if vhdl_file_libs:
         irs.append(_library_ir(vhdl_file_libs, options.vhdl_libraries))
 
+    progress(f"pass 2: linking {len(irs)} unit(s) into the graph")
     graph = build_graph(irs, warnings=report.warnings)
     report.node_count = graph.number_of_nodes()
     report.edge_count = graph.number_of_edges()
@@ -338,6 +370,7 @@ def _execute(
         1 for _, data in graph.nodes(data=True) if data["attrs"].get("unresolved")
     )
 
+    progress(f"writing {db_path}")
     SqliteStore(db_path).save(
         graph,
         files_meta,
@@ -382,6 +415,7 @@ def run_update(
     db_path: Path | None = None,
     options: BuildOptions | None = None,
     full: bool = False,
+    progress: ProgressFn | None = None,
 ) -> UpdateReport:
     """Incrementally refresh the database after source edits.
 
@@ -405,7 +439,7 @@ def run_update(
 
     def full_rebuild(reason: str) -> UpdateReport:
         report.full_rebuild_reason = reason
-        report.build = run_build(root, db_path, options)
+        report.build = run_build(root, db_path, options, progress=progress)
         report.elapsed_s = time.perf_counter() - started
         return report
 
@@ -426,6 +460,8 @@ def run_update(
     if meta.get("options_hash") != options_hash(base, options, inputs):
         return full_rebuild("build options changed (defines/incdirs/sources/libraries)")
 
+    if progress is not None:
+        progress("scanning for changed files")
     discovered = _discover(root, base, options, inputs, max_kb)
     current = _current_hashes(base, inputs, discovered)
     changes = diff_hashes(stored_hashes, current)
@@ -449,7 +485,14 @@ def run_update(
 
     reuse = {path: unit for path, unit in stored_units.items() if path not in dirty}
     report.build = _execute(
-        root, db_path, options, inputs=inputs, reuse=reuse, discovered=discovered
+        root,
+        db_path,
+        options,
+        inputs=inputs,
+        reuse=reuse,
+        discovered=discovered,
+        prior_warnings=store.load_file_warnings(),
+        progress=progress,
     )
     report.elapsed_s = time.perf_counter() - started
     return report

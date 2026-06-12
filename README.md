@@ -48,6 +48,13 @@ still yield partial results; `status` reports the parse-error count.
 Unresolved instance targets render as `[?]` in `tree` and ambiguous matches as
 `[~0.6]` — see the confidence convention in [ROADMAP.md](ROADMAP.md).
 
+To judge whether the graph is trustworthy on real RTL, `build`/`update`/`watch`
+take `-v/--verbose`: pipeline stages as they run, per-file parse-error counts,
+the full preprocessor warnings (unresolved `` `include``s with the search path,
+malformed `` `define``s, ...). The same diagnostics are persisted with the
+build, so `hdl-kgraph status --errors` lists them per file after the fact —
+including files that were skipped, with reasons.
+
 Filelists support `+incdir+`/`+define+`, nested `-f`, `-y`/`-v` library
 dirs, and `$VAR` expansion. When no defines are given at all, conditionals
 on undefined names emit *both* branches: the side a define-less compile

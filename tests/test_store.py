@@ -157,13 +157,14 @@ def test_schema_version_mismatch_raises(store) -> None:
         sqlite_store.load()
 
 
-def test_v2_database_is_refused(store) -> None:
-    """The M5 IR changes bumped the schema to v3: an M4 (v2) database must be
-    refused with the rebuild message — rebuild *is* the migration."""
-    assert SCHEMA_VERSION == "3"
+def test_old_database_is_refused(store) -> None:
+    """The per-file warnings column bumped the schema to v4: an M5/M6 (v3)
+    database must be refused with the rebuild message — rebuild *is* the
+    migration."""
+    assert SCHEMA_VERSION == "4"
     sqlite_store, _, _ = store
     with sqlite3.connect(sqlite_store.db_path) as conn:
-        conn.execute("UPDATE meta SET value = '2' WHERE key = 'schema_version'")
+        conn.execute("UPDATE meta SET value = '3' WHERE key = 'schema_version'")
     with pytest.raises(SchemaVersionError, match="hdl-kgraph build"):
         sqlite_store.load()
 
@@ -206,3 +207,36 @@ def test_kinds_rehydrate_as_enums(store) -> None:
     edge_kinds = {d["kind"] for _, _, d in loaded.edges(data=True)}
     assert EdgeKind.DECLARES in edge_kinds
     assert EdgeKind.INSTANTIATES in edge_kinds
+
+
+def test_file_warnings_round_trip(store) -> None:
+    sqlite_store, graph, files = store
+    files = [
+        FileMeta(
+            path=f.path,
+            language=f.language,
+            content_hash=f.content_hash,
+            size_bytes=f.size_bytes,
+            parse_error_count=f.parse_error_count,
+            warnings=['top.sv:1: cannot resolve `include "missing.svh"']
+            if f.path == "broken.sv"
+            else [],
+        )
+        for f in files
+    ]
+    sqlite_store.save(graph, files, root=Path("."))
+    _, loaded_files, _ = sqlite_store.load()
+    by_path = {f.path: f for f in loaded_files}
+    assert by_path["broken.sv"].warnings == ['top.sv:1: cannot resolve `include "missing.svh"']
+    assert by_path["adder.v"].warnings == []
+    assert sqlite_store.load_file_warnings() == {
+        "broken.sv": ['top.sv:1: cannot resolve `include "missing.svh"']
+    }
+
+
+def test_load_file_warnings_checks_schema_version(store) -> None:
+    sqlite_store, _, _ = store
+    with sqlite3.connect(sqlite_store.db_path) as conn:
+        conn.execute("UPDATE meta SET value = '1' WHERE key = 'schema_version'")
+    with pytest.raises(SchemaVersionError, match="'1'"):
+        sqlite_store.load_file_warnings()

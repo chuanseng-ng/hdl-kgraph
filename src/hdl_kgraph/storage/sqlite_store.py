@@ -6,7 +6,9 @@ Single-file, local-first storage of the knowledge graph:
   options_hash (fingerprint of the effective build inputs; an options change
   invalidates incremental updates)
 * ``files`` — path, language, content_hash (drives M4 incremental rebuilds),
-  size_bytes, parse_error_count, skipped_reason
+  size_bytes, parse_error_count, skipped_reason, warnings (JSON array of
+  preprocessor diagnostics, so ``status --errors`` can report them after
+  the fact)
 * ``nodes`` — id, kind, name, qualified_name, file, line span, language,
   attrs (JSON)
 * ``edges`` — src, dst, kind, confidence, attrs (JSON)
@@ -32,7 +34,7 @@ import os
 import sqlite3
 import time
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -41,7 +43,7 @@ import networkx as nx
 from hdl_kgraph import __version__
 from hdl_kgraph.schema import EdgeKind, Language, NodeKind
 
-SCHEMA_VERSION = "3"  # v3 (M5): pass-1 IRs gained dataflow/clock/verification refs
+SCHEMA_VERSION = "4"  # v4: files table gained per-file preprocessor warnings
 
 # How long a reader waits on a residual write lock before giving up.
 _BUSY_TIMEOUT_MS = 5_000
@@ -57,7 +59,8 @@ CREATE TABLE IF NOT EXISTS files (
   content_hash      TEXT NOT NULL,
   size_bytes        INTEGER NOT NULL,
   parse_error_count INTEGER NOT NULL DEFAULT 0,
-  skipped_reason    TEXT
+  skipped_reason    TEXT,
+  warnings          TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS nodes (
   id             TEXT PRIMARY KEY,
@@ -117,6 +120,7 @@ class FileMeta:
     size_bytes: int
     parse_error_count: int = 0
     skipped_reason: str | None = None  # None | 'size' | 'pragma_protect' | 'exclude'
+    warnings: list[str] = field(default_factory=list)  # preprocessor diagnostics
 
 
 class SqliteStore:
@@ -163,7 +167,7 @@ class SqliteStore:
                 ],
             )
             conn.executemany(
-                "INSERT INTO files VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO files VALUES (?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         f.path,
@@ -172,6 +176,7 @@ class SqliteStore:
                         f.size_bytes,
                         f.parse_error_count,
                         f.skipped_reason,
+                        json.dumps(f.warnings),
                     )
                     for f in files
                 ],
@@ -250,6 +255,21 @@ class SqliteStore:
             self._check_version(conn)
             return dict(conn.execute("SELECT path, content_hash FROM files"))
 
+    def load_file_warnings(self) -> dict[str, list[str]]:
+        """path -> preprocessor warnings, for files that have any.
+
+        ``update`` carries these forward for units re-linked from stored IRs
+        without re-running the preprocessor.
+        """
+        with self._connect() as conn:
+            self._check_version(conn)
+            return {
+                path: json.loads(warnings)
+                for path, warnings in conn.execute(
+                    "SELECT path, warnings FROM files WHERE warnings != '[]'"
+                )
+            }
+
     def load_dependency_graph(self) -> nx.MultiDiGraph:
         """The preprocessor-dependency subgraph (M4 dirty closure).
 
@@ -298,6 +318,7 @@ class SqliteStore:
                     size_bytes=row[3],
                     parse_error_count=row[4],
                     skipped_reason=row[5],
+                    warnings=json.loads(row[6]),
                 )
                 for row in conn.execute("SELECT * FROM files")
             ]
