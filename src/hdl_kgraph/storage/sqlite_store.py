@@ -14,7 +14,10 @@ Single-file, local-first storage of the knowledge graph:
   list (JSON via :mod:`hdl_kgraph.storage.ir_codec`); only units parsed
   standalone get rows. ``update`` re-links unchanged units from here.
 
-``save()`` is a transactional full rewrite; ``update`` reuses stored IRs
+``save()`` is a full rewrite, written to a temp file and atomically swapped
+into place with ``os.replace`` — concurrent readers (CLI queries, the MCP
+server) never block on or observe a half-written database, and a crashed
+build leaves the previous database intact. ``update`` reuses stored IRs
 for unchanged files and rewrites the (re-linked) result. Migration policy:
 the database is a derived cache, so there is no in-place migration —
 ``load()`` raises :class:`SchemaVersionError` on a version mismatch and
@@ -23,8 +26,12 @@ the database is a derived cache, so there is no in-place migration —
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import sqlite3
+import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,6 +42,9 @@ from hdl_kgraph import __version__
 from hdl_kgraph.schema import EdgeKind, Language, NodeKind
 
 SCHEMA_VERSION = "3"  # v3 (M5): pass-1 IRs gained dataflow/clock/verification refs
+
+# How long a reader waits on a residual write lock before giving up.
+_BUSY_TIMEOUT_MS = 5_000
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -123,14 +133,18 @@ class SqliteStore:
         units: dict[str, StoredUnit] | None = None,
         options_hash: str = "",
     ) -> None:
+        """Write the full graph to a sibling temp file, then swap it into place.
+
+        The live database is never written directly: readers see either the
+        old or the new complete database, and a crashed build leaves the
+        previous one intact (plus a harmless ``.tmp`` leftover).
+        """
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.db_path) as conn:
+        tmp_path = self.db_path.with_name(self.db_path.name + ".tmp")
+        tmp_path.unlink(missing_ok=True)  # leftover from a crashed build
+        conn = sqlite3.connect(tmp_path)
+        try:
             conn.executescript(_SCHEMA)
-            conn.execute("DELETE FROM meta")
-            conn.execute("DELETE FROM files")
-            conn.execute("DELETE FROM nodes")
-            conn.execute("DELETE FROM edges")
-            conn.execute("DELETE FROM file_irs")
             conn.executemany(
                 "INSERT INTO meta (key, value) VALUES (?, ?)",
                 [
@@ -192,11 +206,30 @@ class SqliteStore:
                     for src, dst, data in graph.edges(data=True)
                 ],
             )
+            conn.commit()
+        finally:
+            conn.close()
+        _replace_into_place(tmp_path, self.db_path)
+
+    @contextlib.contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """A read connection that waits out a concurrent writer and is closed
+        deterministically (an open handle blocks the ``save()`` swap on
+        Windows)."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
+            yield conn
+        finally:
+            conn.close()
 
     def _check_version(self, conn: sqlite3.Connection) -> dict[str, str]:
         try:
             meta = dict(conn.execute("SELECT key, value FROM meta"))
-        except sqlite3.OperationalError as exc:  # pre-schema or foreign database
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise  # e.g. 'database is locked' — not a schema problem
+            # pre-schema or foreign database
             raise SchemaVersionError(f"{self.db_path} is not an hdl-kgraph database") from exc
         version = meta.get("schema_version")
         if version != SCHEMA_VERSION:
@@ -208,12 +241,12 @@ class SqliteStore:
 
     def load_meta(self) -> dict[str, str]:
         """Load the meta key/values (checking the schema version)."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             return self._check_version(conn)
 
     def load_file_hashes(self) -> dict[str, str]:
         """path -> content_hash for every stored file record."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             self._check_version(conn)
             return dict(conn.execute("SELECT path, content_hash FROM files"))
 
@@ -224,7 +257,7 @@ class SqliteStore:
         INCLUDE_FILE nodes — a fraction of the full graph, so ``update``
         skips rehydrating everything else.
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             self._check_version(conn)
             graph = nx.MultiDiGraph()
             for node_id, kind, name, attrs in conn.execute(
@@ -246,7 +279,7 @@ class SqliteStore:
 
     def load_units(self) -> dict[str, StoredUnit]:
         """Load the per-unit pass-1 IRs persisted for incremental updates."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             self._check_version(conn)
             return {
                 path: StoredUnit(ir=ir, macro_events=events, included=included)
@@ -255,7 +288,7 @@ class SqliteStore:
 
     def load(self) -> tuple[nx.MultiDiGraph, list[FileMeta], dict[str, str]]:
         """Load (graph, file metadata, meta key/values) from the database."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             meta = self._check_version(conn)
             files = [
                 FileMeta(
@@ -288,3 +321,21 @@ class SqliteStore:
                     src, dst, kind=EdgeKind(kind), confidence=confidence, attrs=json.loads(attrs)
                 )
             return graph, files, meta
+
+
+def _replace_into_place(tmp_path: Path, db_path: Path) -> None:
+    """``os.replace`` with retries.
+
+    Atomic and lock-free on POSIX; on Windows the swap fails with
+    ``PermissionError`` while a reader briefly holds the destination open,
+    so back off and retry (~6 s total) before giving up.
+    """
+    delay = 0.05
+    for _ in range(7):
+        try:
+            os.replace(tmp_path, db_path)
+            return
+        except PermissionError:
+            time.sleep(delay)
+            delay *= 2
+    os.replace(tmp_path, db_path)

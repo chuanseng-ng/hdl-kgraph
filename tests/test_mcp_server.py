@@ -6,6 +6,7 @@ underlying analysis functions have their own fastmcp-free tests.
 
 import asyncio
 import shutil
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ from fastmcp import Client  # noqa: E402
 
 from hdl_kgraph.mcp import create_server  # noqa: E402
 from hdl_kgraph.pipeline import run_build  # noqa: E402
+from hdl_kgraph.storage import sqlite_store as sqlite_store_module  # noqa: E402
 
 EXPECTED_TOOLS = {
     "find_module",
@@ -162,3 +164,26 @@ def test_stale_database_reloads(tmp_path: Path, fixtures_dir: Path) -> None:
     (root / "late_arrival.sv").write_text("module late_arrival; endmodule\n")
     run_build(root)  # rewrites the database under the running server
     assert _call(server, "find_module", {"name": "late_arrival"})["total"] == 1
+
+
+def test_locked_database_is_a_clear_retriable_error(
+    tmp_path: Path, fixtures_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tool call racing a concurrent writer must surface a retriable
+    message, not a raw sqlite3.OperationalError — and the next call after
+    the writer finishes must succeed (the failure is not cached)."""
+    root = tmp_path / "proj"
+    root.mkdir()
+    shutil.copy(fixtures_dir / "simple_counter.sv", root / "simple_counter.sv")
+    run_build(root)
+    monkeypatch.setattr(sqlite_store_module, "_BUSY_TIMEOUT_MS", 100)
+    server = create_server(root / ".hdl-kgraph" / "graph.db")
+    blocker = sqlite3.connect(root / ".hdl-kgraph" / "graph.db")
+    try:
+        blocker.execute("BEGIN EXCLUSIVE")
+        with pytest.raises(Exception, match="retry shortly"):
+            _call(server, "find_module", {"name": "simple_counter"})
+    finally:
+        blocker.rollback()
+        blocker.close()
+    assert _call(server, "find_module", {"name": "simple_counter"})["total"] == 1
