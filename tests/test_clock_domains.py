@@ -47,19 +47,13 @@ def test_async_reset_from_sensitivity_at_full_confidence(graph) -> None:
 
 
 def test_vhdl_rising_edge_is_definitive_clock(graph) -> None:
-    edge = next(
-        d
-        for u, v, d in _edges(graph, EdgeKind.CLOCKED_BY)
-        if u.endswith("rtl.reg_p")
-    )
+    edge = next(d for u, v, d in _edges(graph, EdgeKind.CLOCKED_BY) if u.endswith("rtl.reg_p"))
     assert edge["confidence"] == 1.0
     assert edge["attrs"]["evidence"] == "edge_function"
 
 
 def test_vhdl_reset_name_heuristic(graph) -> None:
-    edge = next(
-        d for u, v, d in _edges(graph, EdgeKind.RESETS) if u.endswith("rtl.reg_p")
-    )
+    edge = next(d for u, v, d in _edges(graph, EdgeKind.RESETS) if u.endswith("rtl.reg_p"))
     assert edge["confidence"] == 0.4
     assert edge["attrs"]["evidence"] == "name"
 
@@ -75,11 +69,7 @@ def test_child_clock_port_aliases_with_top_clock(graph) -> None:
 
 
 def test_two_domains_and_exactly_one_cdc_suspect(graph) -> None:
-    suspects = [
-        s
-        for s in clocks.cdc_suspects(graph)
-        if s.signal_name == "data_a"
-    ]
+    suspects = [s for s in clocks.cdc_suspects(graph) if s.signal_name == "data_a"]
     assert len(suspects) == 1
     suspect = suspects[0]
     assert suspect.driver_domain == "clk_a"

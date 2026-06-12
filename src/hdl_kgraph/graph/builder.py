@@ -156,11 +156,38 @@ _LITERAL_RE = re.compile(r"'s?[bBoOdDhH][0-9a-fA-FxXzZ?_]+|'.'?|\"[^\"]*\"")
 _EXPR_KEYWORDS = frozenset(
     {
         # SV operators/keywords plausible inside a connection expression
-        "posedge", "negedge", "signed", "unsigned", "inside", "with",
+        "posedge",
+        "negedge",
+        "signed",
+        "unsigned",
+        "inside",
+        "with",
         # VHDL expression keywords (actuals are lowercased VHDL text)
-        "open", "others", "null", "true", "false", "when", "else", "and",
-        "or", "not", "xor", "nand", "nor", "xnor", "abs", "mod", "rem",
-        "sll", "srl", "sla", "sra", "rol", "ror", "downto", "to",
+        "open",
+        "others",
+        "null",
+        "true",
+        "false",
+        "when",
+        "else",
+        "and",
+        "or",
+        "not",
+        "xor",
+        "nand",
+        "nor",
+        "xnor",
+        "abs",
+        "mod",
+        "rem",
+        "sll",
+        "srl",
+        "sla",
+        "sra",
+        "rol",
+        "ror",
+        "downto",
+        "to",
     }
 )
 
@@ -661,8 +688,10 @@ class _Linker:
         else:
             self._emit(ref, dst, confidence, extra=extra)
             port = self.node_obj.get(dst)
-            if ref.edge_kind is EdgeKind.CONNECTS and port is not None and (
-                port.kind is NodeKind.PORT
+            if (
+                ref.edge_kind is EdgeKind.CONNECTS
+                and port is not None
+                and (port.kind is NodeKind.PORT)
             ):
                 self._derive_port_dataflow(
                     ref, port, confidence, str(ref.attrs.get("expr_text") or "")

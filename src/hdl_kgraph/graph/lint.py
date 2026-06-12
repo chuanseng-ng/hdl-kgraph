@@ -132,9 +132,9 @@ def open_ports(g: nx.MultiDiGraph) -> list[LintFinding]:
     return findings
 
 
-def undriven_signals(g: nx.MultiDiGraph, error_files: frozenset[str] = frozenset()) -> (
-    list[LintFinding]
-):
+def undriven_signals(
+    g: nx.MultiDiGraph, error_files: frozenset[str] = frozenset()
+) -> list[LintFinding]:
     findings: list[LintFinding] = []
     for node_id, data in g.nodes(data=True):
         kind = data["kind"]
@@ -170,9 +170,9 @@ def undriven_signals(g: nx.MultiDiGraph, error_files: frozenset[str] = frozenset
     return findings
 
 
-def unread_signals(g: nx.MultiDiGraph, error_files: frozenset[str] = frozenset()) -> (
-    list[LintFinding]
-):
+def unread_signals(
+    g: nx.MultiDiGraph, error_files: frozenset[str] = frozenset()
+) -> list[LintFinding]:
     findings: list[LintFinding] = []
     for node_id, data in g.nodes(data=True):
         if data["kind"] is not NodeKind.SIGNAL or _is_stub(g, node_id):

@@ -538,8 +538,7 @@ def status(db_path: Path | None) -> None:
     "checks",
     multiple=True,
     metavar="NAME",
-    help="Run only this check (repeatable). "
-    f"Available: {', '.join(sorted(lint.CHECKS))}.",
+    help=f"Run only this check (repeatable). Available: {', '.join(sorted(lint.CHECKS))}.",
 )
 @click.option(
     "--top",
@@ -597,9 +596,7 @@ def lint_cmd(
     is_flag=True,
     help="Also report Louvain communities (subsystem suggestions).",
 )
-def metrics_cmd(
-    db_path: Path | None, as_json: bool, top_n: int, show_communities: bool
-) -> None:
+def metrics_cmd(db_path: Path | None, as_json: bool, top_n: int, show_communities: bool) -> None:
     """Module fan-in/fan-out, hub/bridge detection, community discovery.
 
     Metrics are computed on the module-level instantiation projection;

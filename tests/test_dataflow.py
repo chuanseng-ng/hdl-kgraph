@@ -107,8 +107,7 @@ def test_instance_ports_derive_dataflow(graph) -> None:
 
 def test_class_properties_are_not_signals(graph) -> None:
     assert not any(
-        d["kind"] is NodeKind.SIGNAL and "base_item" in n
-        for n, d in graph.nodes(data=True)
+        d["kind"] is NodeKind.SIGNAL and "base_item" in n for n, d in graph.nodes(data=True)
     )
 
 

@@ -80,8 +80,10 @@ def test_covergroup_and_coverpoints(graph) -> None:
         if d["kind"] is EdgeKind.COVERS and u.endswith("cg_bus.cp_data")
     ]
     assert covers == [
-        ("verif_constructs.sv::coverpoint:verif_dut.cg_bus.cp_data",
-         "verif_constructs.sv::port:verif_dut.data")
+        (
+            "verif_constructs.sv::coverpoint:verif_dut.cg_bus.cp_data",
+            "verif_constructs.sv::port:verif_dut.data",
+        )
     ]
 
 

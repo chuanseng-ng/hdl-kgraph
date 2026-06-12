@@ -25,9 +25,7 @@ import networkx as nx
 from hdl_kgraph.schema import EdgeKind, NodeKind
 
 #: Design-unit kinds that appear in the projection.
-_UNIT_KINDS = frozenset(
-    {NodeKind.MODULE, NodeKind.INTERFACE, NodeKind.PROGRAM, NodeKind.ENTITY}
-)
+_UNIT_KINDS = frozenset({NodeKind.MODULE, NodeKind.INTERFACE, NodeKind.PROGRAM, NodeKind.ENTITY})
 
 
 @dataclass

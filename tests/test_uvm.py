@@ -15,9 +15,7 @@ def graph(fixtures_dir: Path):
     sv = SystemVerilogParser()
     irs = [
         sv.parse(Path("uvm_tb.sv"), (fixtures_dir / "uvm_tb.sv").read_text()),
-        sv.parse(
-            Path("verif_constructs.sv"), (fixtures_dir / "verif_constructs.sv").read_text()
-        ),
+        sv.parse(Path("verif_constructs.sv"), (fixtures_dir / "verif_constructs.sv").read_text()),
     ]
     return build_graph(irs)
 
@@ -45,14 +43,8 @@ def test_non_uvm_classes_are_not_components(graph) -> None:
 
 
 def test_tb_top_test_covers_the_dut(graph) -> None:
-    covers = {
-        (u, v): d
-        for u, v, d in graph.edges(data=True)
-        if d["kind"] is EdgeKind.TEST_COVERS
-    }
-    tb_edge = covers[
-        ("uvm_tb.sv::module:tb_verif_top", "verif_constructs.sv::module:verif_dut")
-    ]
+    covers = {(u, v): d for u, v, d in graph.edges(data=True) if d["kind"] is EdgeKind.TEST_COVERS}
+    tb_edge = covers[("uvm_tb.sv::module:tb_verif_top", "verif_constructs.sv::module:verif_dut")]
     assert tb_edge["confidence"] == 0.4
     assert tb_edge["attrs"]["evidence"] == "name_pattern"
 

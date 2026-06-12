@@ -102,9 +102,7 @@ _IDENTIFIER_TYPES = ("simple_identifier", "escaped_identifier")
 _DATAFLOW_SCOPE_KINDS = frozenset({NodeKind.MODULE, NodeKind.INTERFACE, NodeKind.PROGRAM})
 
 #: Procedural/continuous assignment node types (lvalue child + RHS).
-_ASSIGNMENT_TYPES = frozenset(
-    {"nonblocking_assignment", "operator_assignment", "net_assignment"}
-)
+_ASSIGNMENT_TYPES = frozenset({"nonblocking_assignment", "operator_assignment", "net_assignment"})
 
 _RESET_NAME_RE = re.compile(r"rst|reset|clr|clear", re.IGNORECASE)
 
@@ -742,8 +740,10 @@ class _Walker:
             self._dataflow_ref(kind, proc.id, name, site, role=role)
 
         for node in drive_nodes:
-            name = self._hier_root(node) if node.type == "hierarchical_identifier" else (
-                self._text(node)
+            name = (
+                self._hier_root(node)
+                if node.type == "hierarchical_identifier"
+                else (self._text(node))
             )
             emit(EdgeKind.DRIVES, name, node, "lhs")
         for node in idents:

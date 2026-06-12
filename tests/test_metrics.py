@@ -26,9 +26,7 @@ def graph(fixtures_dir: Path):
 
 def test_projection_has_instantiation_edges(graph) -> None:
     proj = metrics.module_projection(graph)
-    assert proj.has_edge(
-        "top.v::module:top", "simple_counter.sv::module:simple_counter"
-    )
+    assert proj.has_edge("top.v::module:top", "simple_counter.sv::module:simple_counter")
     assert proj["top.v::module:top"]["simple_counter.sv::module:simple_counter"]["weight"] == 1
 
 
@@ -73,7 +71,4 @@ def test_communities_group_connected_units(graph) -> None:
     parts = metrics.communities(graph)
     by_member = {m: i for i, part in enumerate(parts) for m in part}
     # top and its counter belong to the same community.
-    assert (
-        by_member["top.v::module:top"]
-        == by_member["simple_counter.sv::module:simple_counter"]
-    )
+    assert by_member["top.v::module:top"] == by_member["simple_counter.sv::module:simple_counter"]

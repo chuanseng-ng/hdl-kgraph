@@ -486,7 +486,10 @@ class _Walker:
         emitted: set[tuple[EdgeKind, str]] = set()
 
         def emit(
-            kind: EdgeKind, name: str, site: TSNode, confidence: float = CONFIDENCE_RESOLVED,
+            kind: EdgeKind,
+            name: str,
+            site: TSNode,
+            confidence: float = CONFIDENCE_RESOLVED,
             **attrs: object,
         ) -> None:
             if not name or (kind, name) in emitted:

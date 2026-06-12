@@ -170,9 +170,7 @@ def test_lint_reports_planted_findings(project: Path) -> None:
 def test_lint_check_filter_and_json(project: Path) -> None:
     import json as json_mod
 
-    result = CliRunner().invoke(
-        main, ["lint", "--check", "open-port", "--json", *db_args(project)]
-    )
+    result = CliRunner().invoke(main, ["lint", "--check", "open-port", "--json", *db_args(project)])
     assert result.exit_code == 0, result.output
     payload = json_mod.loads(result.output)
     assert payload and all(item["check"] == "open-port" for item in payload)
@@ -211,9 +209,7 @@ def test_metrics_lists_hubs(project: Path) -> None:
 def test_metrics_communities_json(project: Path) -> None:
     import json as json_mod
 
-    result = CliRunner().invoke(
-        main, ["metrics", "--communities", "--json", *db_args(project)]
-    )
+    result = CliRunner().invoke(main, ["metrics", "--communities", "--json", *db_args(project)])
     assert result.exit_code == 0, result.output
     payload = json_mod.loads(result.output)
     assert payload["modules"]
