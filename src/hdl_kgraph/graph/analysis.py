@@ -382,9 +382,7 @@ INSTANTIABLE_KINDS = frozenset(
 
 def _match_name(data: dict[str, Any], wanted: str) -> bool:
     """Node-name equality with the project's VHDL case-insensitivity rule."""
-    return bool(
-        data["name"] == (wanted.lower() if data["language"] is Language.VHDL else wanted)
-    )
+    return bool(data["name"] == (wanted.lower() if data["language"] is Language.VHDL else wanted))
 
 
 def _declaration_order(record: dict[str, Any]) -> tuple[bool, Any, int, str]:

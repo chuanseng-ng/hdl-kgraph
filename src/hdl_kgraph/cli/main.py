@@ -7,7 +7,8 @@ M1 surface: ``build``, ``status``, ``query`` (``instances-of`` / ``modules``
 M4 adds ``update`` (incremental rebuild), ``detect-changes``, ``impact``,
 and ``watch``. M5 adds the analyses — ``lint``, ``metrics``, ``visualize``,
 and ``query`` ``clock-domains``/``reset-tree``/``cdc``/``drivers``/``uvm``
-(all with ``--json``). ``serve`` arrives in M6.
+(all with ``--json``). M6 adds ``serve --mcp`` (AI assistants query the
+graph over MCP) and ``setup`` (auto-configure detected assistants).
 
 The database lives at ``<root>/.hdl-kgraph/graph.db``; read commands locate
 it by walking up from the current directory (git-style) unless ``--db`` is
@@ -886,6 +887,134 @@ def tree(top: str | None, depth: int, db_path: Path | None) -> None:
 
     for root in roots:
         _print_tree(analysis.hierarchy_tree(graph, root, max_depth=depth), prefix="", is_last=True)
+
+
+@main.command()
+@click.option("--mcp", "mcp_mode", is_flag=True, help="Run the MCP server (the only mode so far).")
+@_db_option
+@click.option(
+    "--http",
+    "http_addr",
+    metavar="HOST:PORT",
+    default=None,
+    help="Serve over streamable HTTP instead of stdio.",
+)
+def serve(mcp_mode: bool, db_path: Path | None, http_addr: str | None) -> None:
+    """Serve the knowledge graph to AI assistants over MCP (read-only).
+
+    Speaks MCP on stdio by default (the transport assistant configs use);
+    ``--http`` exposes the same tools over streamable HTTP instead. The
+    server only ever reads the database — rebuild with ``build``/``update``
+    (a running server picks up the new database automatically).
+    """
+    if not mcp_mode:
+        raise click.ClickException("only MCP serving exists today; pass --mcp")
+    if db_path is None:
+        db_path = find_db(Path.cwd())
+        if db_path is None:
+            raise click.ClickException(
+                "no .hdl-kgraph/graph.db found here or in any parent directory; "
+                "run `hdl-kgraph build` first or pass --db"
+            )
+    if not db_path.is_file():
+        raise click.ClickException(f"database not found: {db_path}")
+    try:
+        SqliteStore(db_path).load_meta()  # schema check before the MCP handshake
+    except SchemaVersionError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    from hdl_kgraph.mcp import McpUnavailableError, create_server
+
+    try:
+        server = create_server(db_path)
+    except McpUnavailableError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if http_addr is None:
+        server.run()
+        return
+    host, _, port_text = http_addr.rpartition(":")
+    if not host or not port_text.isdigit():
+        raise click.ClickException(f"--http expects HOST:PORT, got {http_addr!r}")
+    server.run(transport="http", host=host, port=int(port_text))
+
+
+@main.command()
+@_db_option
+@click.option(
+    "--assistant",
+    "assistants",
+    multiple=True,
+    help="Only configure these assistants (repeatable; default: all detected).",
+)
+@click.option("--list", "list_only", is_flag=True, help="Only report what is detected.")
+@click.option("--dry-run", is_flag=True, help="Show what would be written without writing.")
+@click.option("--yes", "assume_yes", is_flag=True, help="Configure without confirmation prompts.")
+def setup(
+    db_path: Path | None,
+    assistants: tuple[str, ...],
+    list_only: bool,
+    dry_run: bool,
+    assume_yes: bool,
+) -> None:
+    """Detect installed AI assistants and configure them to use this graph.
+
+    Writes (or updates) the ``hdl-kgraph`` MCP server entry in each detected
+    assistant's config — project-scope ``.mcp.json`` for Claude Code, the
+    desktop config file for Claude Desktop. Re-running is safe: the entry is
+    updated in place and everything else in the file is preserved.
+    """
+    from hdl_kgraph.mcp.setup import detect_targets, plan_entry, write_config
+
+    targets = detect_targets()
+    if assistants:
+        known = {t.name for t in targets}
+        unknown = [a for a in assistants if a not in known]
+        if unknown:
+            raise click.ClickException(
+                f"unknown assistant(s) {', '.join(unknown)}; known: {', '.join(sorted(known))}"
+            )
+        targets = [t for t in targets if t.name in assistants]
+    detected = [t for t in targets if t.detected]
+    for target in targets:
+        state = "detected" if target.detected else "not detected"
+        click.echo(f"{target.name:15} {state}  ({target.config_path})")
+    if list_only:
+        return
+    if not detected:
+        raise click.ClickException(
+            "no supported AI assistant detected; see docs/mcp.md for manual setup"
+        )
+
+    if db_path is None:
+        db_path = find_db(Path.cwd())
+        if db_path is None:
+            raise click.ClickException(
+                "no .hdl-kgraph/graph.db found here or in any parent directory; "
+                "run `hdl-kgraph build` first or pass --db"
+            )
+    entry = plan_entry(db_path.resolve())
+
+    try:
+        import fastmcp  # noqa: F401
+    except ImportError:
+        click.echo(
+            "warning: fastmcp is not installed — the configured server will not "
+            "start until you `pip install 'hdl-kgraph[mcp]'`",
+            err=True,
+        )
+
+    for target in detected:
+        if dry_run:
+            click.echo(f"would write {target.config_path}:")
+            click.echo(json.dumps(target.merged_config(entry), indent=2))
+            continue
+        if not assume_yes and not click.confirm(f"configure {target.name}?", default=True):
+            continue
+        try:
+            changed = write_config(target, entry)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(f"{target.config_path}: {'updated' if changed else 'already up to date'}")
 
 
 def _print_tree(node: analysis.HierarchyNode, prefix: str, is_last: bool) -> None:
