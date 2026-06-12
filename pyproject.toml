@@ -32,12 +32,17 @@ classifiers = [
   "Topic :: Software Development :: Compilers",
 ]
 # Grammar choices: see docs/grammar-bakeoff.md (ROADMAP.md "Risks" #1 and #2).
+# The tree-sitter stack is upper-bounded: its API churn is the project's #1
+# documented risk (the 0.21 -> 0.23 transition already broke the `Language`
+# constructor once), and an uncapped pin would let a future release break
+# fresh installs. CI's scheduled `canary` job tests the latest releases and
+# gives early warning before the caps are raised.
 dependencies = [
   "click>=8.1",
   "networkx>=3.0",
-  "tree-sitter>=0.23",
-  "tree-sitter-systemverilog>=0.3.1",
-  "tree-sitter-vhdl>=1.5",
+  "tree-sitter>=0.23,<0.26",
+  "tree-sitter-systemverilog>=0.3.1,<0.4",
+  "tree-sitter-vhdl>=1.5,<2",
   'tomli>=2.0; python_version < "3.11"',
 ]
 
