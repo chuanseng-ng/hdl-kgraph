@@ -460,9 +460,11 @@ class Preprocessor:
                         f"{origin.file}:{origin.line}: missing argument {pname!r} for `{macro.name}"
                     )
                     bindings[pname] = ""
-            for pname, value in bindings.items():
-                # Escape backslashes so re.sub treats the value literally.
-                body = re.sub(rf"\b{re.escape(pname)}\b", value.replace("\\", r"\\"), body)
+            if bindings:
+                # Substitute all parameters in one pass so an argument value that
+                # happens to contain another parameter's name is never re-expanded.
+                pattern = re.compile("|".join(rf"\b{re.escape(p)}\b" for p in bindings))
+                body = pattern.sub(lambda m: bindings[m.group(0)], body)
         # Best-effort macro operators: stringification and token pasting.
         body = body.replace('`\\`"', '\\"').replace('`"', '"').replace("``", "")
         self._pp.macro_uses.append(
