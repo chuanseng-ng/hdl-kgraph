@@ -84,13 +84,13 @@ def check_file(
     return found
 
 
-def _walk_sources(root: Path) -> Iterator[Path]:
-    """Yield files with parser suffixes under *root*, following dir symlinks.
+def _walk_files(root: Path) -> Iterator[Path]:
+    """Yield every file under *root*, following directory symlinks.
 
-    ``Path.rglob`` does not descend into symlinked directories (until the
-    Python 3.13 ``recurse_symlinks`` flag), so vendor/IP trees linked into
-    the build root were silently missed. Visited real paths are tracked to
-    break symlink loops.
+    ``Path.rglob``/``Path.glob`` do not descend into symlinked directories
+    (until the Python 3.13 ``recurse_symlinks`` flag), so vendor/IP trees
+    linked into the build root were silently missed. Visited real paths are
+    tracked to break symlink loops.
     """
     visited = {root.resolve()}
     for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
@@ -103,8 +103,41 @@ def _walk_sources(root: Path) -> Iterator[Path]:
         dirnames[:] = kept  # prune already-visited (loop) dirs in place
         for name in filenames:
             path = Path(dirpath) / name
-            if path.suffix in SUFFIXES and path.is_file():
+            if path.is_file():
                 yield path
+
+
+def _walk_sources(root: Path) -> Iterator[Path]:
+    """Yield files with parser suffixes under *root*, following dir symlinks."""
+    return (path for path in _walk_files(root) if path.suffix in SUFFIXES)
+
+
+def _match_glob(rel_parts: tuple[str, ...], pat_parts: tuple[str, ...]) -> bool:
+    """``Path.glob``-style match: ``**`` spans segments, ``*``/``?`` do not."""
+    if not pat_parts:
+        return not rel_parts
+    head, rest = pat_parts[0], pat_parts[1:]
+    if head == "**":
+        return any(_match_glob(rel_parts[i:], rest) for i in range(len(rel_parts) + 1))
+    return (
+        bool(rel_parts)
+        and fnmatch.fnmatchcase(rel_parts[0], head)
+        and _match_glob(rel_parts[1:], rest)
+    )
+
+
+def glob_sources(base: Path, pattern: str) -> list[Path]:
+    """Files under *base* matching the relative glob *pattern*, sorted.
+
+    Replacement for ``base.glob(pattern)`` that follows directory symlinks
+    (with loop protection): the config ``sources`` globs are matched against
+    the symlink-following walk instead of pathlib's traversal.
+    """
+    pat_parts = tuple(part for part in pattern.split("/") if part)
+    matches = (
+        path for path in _walk_files(base) if _match_glob(path.relative_to(base).parts, pat_parts)
+    )
+    return sorted(matches)
 
 
 def discover(

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from hdl_kgraph.discovery import discover
+from hdl_kgraph.discovery import discover, glob_sources
 from hdl_kgraph.schema import Language
 
 needs_symlinks = pytest.mark.skipif(
@@ -105,3 +105,27 @@ def test_symlinked_file_alias_is_deduped(tmp_path: Path) -> None:
     os.symlink(root / "a.sv", root / "alias.sv")
     (found,) = discover(root)
     assert found.relpath == "a.sv"
+
+
+def test_glob_sources_keeps_glob_semantics(tmp_path: Path) -> None:
+    make(tmp_path / "rtl" / "top.sv")
+    make(tmp_path / "rtl" / "core" / "alu.sv")
+    make(tmp_path / "rtl" / "core.txt")
+    assert glob_sources(tmp_path, "rtl/*.sv") == [tmp_path / "rtl" / "top.sv"]
+    assert glob_sources(tmp_path, "rtl/**/*.sv") == [
+        tmp_path / "rtl" / "core" / "alu.sv",
+        tmp_path / "rtl" / "top.sv",
+    ]
+    assert glob_sources(tmp_path, "rtl/c?re/alu.sv") == [tmp_path / "rtl" / "core" / "alu.sv"]
+
+
+@needs_symlinks
+def test_glob_sources_through_symlinked_directory(tmp_path: Path) -> None:
+    make(tmp_path / "external" / "ip.sv")
+    root = tmp_path / "root"
+    make(root / "rtl" / "top.sv")
+    os.symlink(tmp_path / "external", root / "rtl" / "vendor")
+    assert glob_sources(root, "rtl/**/*.sv") == [
+        root / "rtl" / "top.sv",
+        root / "rtl" / "vendor" / "ip.sv",
+    ]
