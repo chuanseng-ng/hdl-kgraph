@@ -59,3 +59,26 @@ def test_uvm_tests_cover_the_dut_too(graph) -> None:
     assert "uvm_tb.sv::class:verif_smoke_test" in test_edges
     # ...but non-test components do not.
     assert "uvm_tb.sv::class:verif_env" not in test_edges
+
+
+def test_build_graph_survives_dangling_edge_endpoint() -> None:
+    """Regression: a dangling edge src used to leave an attribute-less node in
+    the graph, and derive_test_covers crashed on it with KeyError 'kind'."""
+    from hdl_kgraph.parser.base import FileIR
+    from hdl_kgraph.schema import Edge, Node, NodeKind
+
+    ir = FileIR(path="tb.sv")
+    ir.nodes.append(
+        Node(
+            id="tb.sv::module:tb_top",
+            kind=NodeKind.MODULE,
+            name="tb_top",
+            qualified_name="tb_top",
+            file="tb.sv",
+        )
+    )
+    ir.local_edges.append(
+        Edge(src="file:gone.svh", dst="tb.sv::module:tb_top", kind=EdgeKind.DECLARES)
+    )
+    g = build_graph([ir])  # crashed inside derive_test_covers before the fix
+    assert uvm.derive_test_covers(g) == []

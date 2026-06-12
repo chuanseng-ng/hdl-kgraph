@@ -152,6 +152,7 @@ class _Walker:
         self.line_map = line_map
         self.scopes: list[_Scope] = []
         self._used_ids: set[str] = set()
+        self._header_file_ids: set[str] = set()
 
     # -- small helpers -------------------------------------------------------
 
@@ -232,10 +233,25 @@ class _Walker:
         )
         self.ir.nodes.append(node)
         # A file-scope declaration spliced from a header belongs to the
-        # header's FILE node, not the including unit's.
+        # header's FILE node, not the including unit's. Emit a minimal FILE
+        # node for the header so the IR stands alone even when the
+        # preprocessor's include-event stub is absent; the linker keeps the
+        # richer node by first occurrence.
         src = self.scope.node_id
         if len(self.scopes) == 1 and origin.file != self.relpath:
             src = file_node_id(origin.file)
+            if src not in self._header_file_ids:
+                self._header_file_ids.add(src)
+                self.ir.nodes.append(
+                    Node(
+                        id=src,
+                        kind=NodeKind.FILE,
+                        name=origin.file.rsplit("/", 1)[-1],
+                        qualified_name=origin.file,
+                        file=origin.file,
+                        language=self.language,
+                    )
+                )
         self.ir.local_edges.append(
             Edge(
                 src=src,

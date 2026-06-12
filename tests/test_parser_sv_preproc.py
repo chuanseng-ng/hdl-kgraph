@@ -113,3 +113,18 @@ def test_parse_without_line_map_unchanged(tmp_path: Path) -> None:
     module = next(n for n in ir.nodes if n.kind is NodeKind.MODULE)
     assert module.line_span == (1, 3)
     assert module.file == "m.sv"
+
+
+def test_header_spliced_declaration_emits_header_file_node(tmp_path: Path) -> None:
+    """The IR must stand alone: the DECLARES edge from the header's FILE node
+    (file-scope declaration spliced via `include) needs that node in the same
+    IR, or the linker would see a dangling endpoint."""
+    (tmp_path / "extra.svh").write_text("module from_header;\nendmodule\n")
+    (tmp_path / "m.sv").write_text('`include "extra.svh"\nmodule m;\nendmodule\n')
+    ir, _ = parse(tmp_path, "m.sv")
+
+    header = next(n for n in ir.nodes if n.id == file_node_id("extra.svh"))
+    assert header.kind is NodeKind.FILE
+    assert header.file == "extra.svh"
+    declares = next(e for e in ir.local_edges if e.dst.endswith("module:from_header"))
+    assert declares.src == header.id

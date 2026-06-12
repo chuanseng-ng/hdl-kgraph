@@ -44,3 +44,43 @@ def decl_node_id(relpath: str, kind: NodeKind, scope_path: str) -> str:
 def stub_node_id(kind: NodeKind, name: str) -> str:
     """Id of an unresolved-stub node; shared by all referrers of *name*."""
     return f"unresolved:{kind.value}:{name}"
+
+
+def parse_node_id(node_id: str) -> tuple[NodeKind, str] | None:
+    """Recover (kind, name) from a node id, or None for an unknown shape.
+
+    The linker uses this to materialize a typed stub for an edge endpoint
+    that no parser ever emitted as a node, so the graph never carries the
+    attribute-less nodes networkx would otherwise auto-create.
+    """
+    if "::" in node_id:  # declaration: {relpath}::{kind}:{dotted_scope}[@line[.row]]
+        _, _, rest = node_id.partition("::")
+        kind_text, sep, scope = rest.partition(":")
+        if not sep:
+            return None
+        try:
+            kind = NodeKind(kind_text)
+        except ValueError:
+            return None
+        name = scope.split("@", 1)[0].rsplit(".", 1)[-1]
+        return kind, name
+    prefix, sep, rest = node_id.partition(":")
+    if not sep:
+        return None
+    if prefix == "file":
+        return NodeKind.FILE, rest.rsplit("/", 1)[-1]
+    if prefix == "filelist":
+        return NodeKind.FILELIST, rest.rsplit("/", 1)[-1]
+    if prefix == "library":
+        return NodeKind.LIBRARY, rest
+    if prefix == "macro":
+        return NodeKind.MACRO, rest.split("@", 1)[0]
+    if prefix == "unresolved":
+        kind_text, sep, name = rest.partition(":")
+        if not sep:
+            return None
+        try:
+            return NodeKind(kind_text), name
+        except ValueError:
+            return None
+    return None

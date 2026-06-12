@@ -7,10 +7,10 @@ import pytest
 
 from hdl_kgraph.graph.analysis import find_top_modules, hierarchy_tree, instances_of
 from hdl_kgraph.graph.builder import build_graph
-from hdl_kgraph.ids import stub_node_id
+from hdl_kgraph.ids import file_node_id, stub_node_id
 from hdl_kgraph.parser.base import FileIR
 from hdl_kgraph.parser.systemverilog import SystemVerilogParser
-from hdl_kgraph.schema import EdgeKind, NodeKind
+from hdl_kgraph.schema import Edge, EdgeKind, Node, NodeKind
 
 
 @pytest.fixture(scope="module")
@@ -230,3 +230,50 @@ def test_duplicate_refs_emit_one_edge() -> None:
         g, "hdr.svh::instance:wrapper.u_l", "leaf.sv::module:leaf", EdgeKind.INSTANTIATES
     )
     assert edge["confidence"] == 0.8
+
+
+def test_dangling_edge_endpoints_materialize_as_typed_stubs() -> None:
+    """An edge endpoint no parser emitted as a node must become an unresolved
+    stub (with kind recovered from the id), never the attribute-less node
+    networkx auto-creates — every analysis assumes ``data["kind"]`` exists."""
+    ir = FileIR(path="m.sv")
+    ir.nodes.append(
+        Node(id="m.sv::module:m", kind=NodeKind.MODULE, name="m", qualified_name="m", file="m.sv")
+    )
+    ir.local_edges.append(
+        Edge(src=file_node_id("missing.svh"), dst="m.sv::module:m", kind=EdgeKind.DECLARES)
+    )
+    ir.local_edges.append(Edge(src="m.sv::module:m", dst="???", kind=EdgeKind.DRIVES))
+    warnings: list[str] = []
+    g = build_graph([ir], warnings=warnings)
+
+    header = g.nodes[file_node_id("missing.svh")]
+    assert header["kind"] is NodeKind.FILE
+    assert header["attrs"]["unresolved"] is True
+    assert header["attrs"]["dangling"] is True
+
+    unknown = g.nodes["???"]
+    assert unknown["kind"] is NodeKind.SIGNAL  # unparseable id: fallback kind
+    assert unknown["attrs"]["kind_unknown"] is True
+
+    assert len(warnings) == 2
+    assert all("dangling edge endpoint" in w for w in warnings)
+    assert all("kind" in data for _, data in g.nodes(data=True))
+
+
+def test_cross_ir_forward_reference_is_not_dangling() -> None:
+    """A local edge may point at a node another IR contributes (e.g. a nested
+    filelist's node emitted later in the list); that is not a dangling ref."""
+    ir_edge = FileIR(path="a.f")
+    ir_edge.nodes.append(
+        Node(id="filelist:a.f", kind=NodeKind.FILELIST, name="a.f", qualified_name="a.f")
+    )
+    ir_edge.local_edges.append(Edge(src="filelist:a.f", dst="filelist:b.f", kind=EdgeKind.INCLUDES))
+    ir_node = FileIR(path="b.f")
+    ir_node.nodes.append(
+        Node(id="filelist:b.f", kind=NodeKind.FILELIST, name="b.f", qualified_name="b.f")
+    )
+    warnings: list[str] = []
+    g = build_graph([ir_edge, ir_node], warnings=warnings)
+    assert warnings == []
+    assert g.nodes["filelist:b.f"]["kind"] is NodeKind.FILELIST
