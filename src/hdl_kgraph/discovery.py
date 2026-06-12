@@ -1,6 +1,7 @@
 """Source-file discovery with the M1 real-world-input guards.
 
-Walks the build root for files matching the registered parser suffixes and
+Walks the build root (following directory symlinks, with loop protection)
+for files matching the registered parser suffixes and
 skips — while still recording, so ``status`` can report them — files that
 match an exclude glob, exceed the size guard (huge generated netlists), or
 contain ``\\`pragma protect`` encrypted IP (ROADMAP Risk #7).
@@ -17,7 +18,7 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import os
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -83,18 +84,52 @@ def check_file(
     return found
 
 
+def _walk_sources(root: Path) -> Iterator[Path]:
+    """Yield files with parser suffixes under *root*, following dir symlinks.
+
+    ``Path.rglob`` does not descend into symlinked directories (until the
+    Python 3.13 ``recurse_symlinks`` flag), so vendor/IP trees linked into
+    the build root were silently missed. Visited real paths are tracked to
+    break symlink loops.
+    """
+    visited = {root.resolve()}
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+        kept = []
+        for name in sorted(dirnames):
+            real = (Path(dirpath) / name).resolve()
+            if real not in visited:
+                visited.add(real)
+                kept.append(name)
+        dirnames[:] = kept  # prune already-visited (loop) dirs in place
+        for name in filenames:
+            path = Path(dirpath) / name
+            if path.suffix in SUFFIXES and path.is_file():
+                yield path
+
+
 def discover(
     root: Path,
     exclude: tuple[str, ...] = (),
     max_file_size_kb: int = DEFAULT_MAX_FILE_SIZE_KB,
 ) -> list[DiscoveredFile]:
-    """Find SV/Verilog sources under *root* (or just *root* if it is a file)."""
+    """Find SV/Verilog sources under *root* (or just *root* if it is a file).
+
+    Directory symlinks are followed; a file reachable through more than one
+    path (symlink alias or loop) is reported once, under its first path in
+    sorted order.
+    """
     root = root.resolve()
     if root.is_file():
         paths = [root] if root.suffix in SUFFIXES else []
         base = root.parent
     else:
-        paths = sorted(p for p in root.rglob("*") if p.is_file() and p.suffix in SUFFIXES)
+        paths = []
+        seen: set[Path] = set()
+        for path in sorted(_walk_sources(root)):
+            real = path.resolve()
+            if real not in seen:
+                seen.add(real)
+                paths.append(path)
         base = root
     return [check_file(path, base, exclude, max_file_size_kb) for path in paths]
 
