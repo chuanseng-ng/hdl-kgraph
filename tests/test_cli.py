@@ -346,6 +346,15 @@ def small_project(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def test_build_jobs_flag(small_project: Path) -> None:
+    serial = CliRunner().invoke(main, ["build", str(small_project), "--jobs", "1"])
+    assert serial.exit_code == 0, serial.output
+    parallel = CliRunner().invoke(main, ["build", str(small_project), "-j", "2"])
+    assert parallel.exit_code == 0, parallel.output
+    nodes_line = next(ln for ln in serial.output.splitlines() if "nodes:" in ln)
+    assert nodes_line in parallel.output
+
+
 def test_help_lists_m4_commands() -> None:
     result = CliRunner().invoke(main, ["--help"])
     assert result.exit_code == 0

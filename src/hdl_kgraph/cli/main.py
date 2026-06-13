@@ -77,6 +77,16 @@ _verbose_option = click.option(
     "unresolved includes (stage progress is always shown).",
 )
 
+_jobs_option = click.option(
+    "-j",
+    "--jobs",
+    type=int,
+    default=None,
+    metavar="N",
+    help="Parse with N worker processes (default: auto — serial for small "
+    "builds, otherwise one per CPU up to a cap; 1 = always serial).",
+)
+
 
 class _ProgressRenderer:
     """Default-on pipeline progress on stderr (so stdout reports stay clean).
@@ -356,6 +366,7 @@ def _echo_file_diagnostics(files: list, as_json: bool = False) -> None:
 @main.command()
 @_input_options
 @_verbose_option
+@_jobs_option
 def build(
     source: Path,
     db_path: Path | None,
@@ -368,11 +379,13 @@ def build(
     excludes: tuple[str, ...],
     max_file_size: int | None,
     verbose: bool,
+    jobs: int | None,
 ) -> None:
     """Build the knowledge graph from HDL sources under SOURCE."""
     options = _resolve_options(
         source, filelists, defines, incdirs, libs, config_path, no_config, excludes, max_file_size
     )
+    options.jobs = jobs
     renderer = _ProgressRenderer()
     report = run_build(
         source, db_path=db_path, options=options, progress=renderer.stage, tick=renderer.tick
@@ -402,6 +415,7 @@ def _echo_update_report(report: UpdateReport, verbose: bool = False) -> None:
 @main.command()
 @_input_options
 @_verbose_option
+@_jobs_option
 @click.option("--full", is_flag=True, help="Force a full rebuild.")
 def update(
     source: Path,
@@ -415,6 +429,7 @@ def update(
     excludes: tuple[str, ...],
     max_file_size: int | None,
     verbose: bool,
+    jobs: int | None,
     full: bool,
 ) -> None:
     """Incrementally update the graph: re-parse only changed files.
@@ -427,6 +442,7 @@ def update(
     options = _resolve_options(
         source, filelists, defines, incdirs, libs, config_path, no_config, excludes, max_file_size
     )
+    options.jobs = jobs
     renderer = _ProgressRenderer()
     report = run_update(
         source,
@@ -601,6 +617,7 @@ def impact(
 @main.command()
 @_input_options
 @_verbose_option
+@_jobs_option
 @click.option(
     "--debounce",
     type=int,
@@ -621,6 +638,7 @@ def watch(
     excludes: tuple[str, ...],
     max_file_size: int | None,
     verbose: bool,
+    jobs: int | None,
     debounce: int,
 ) -> None:
     """Watch SOURCE and incrementally update the graph on every save burst."""
@@ -629,6 +647,7 @@ def watch(
     options = _resolve_options(
         source, filelists, defines, incdirs, libs, config_path, no_config, excludes, max_file_size
     )
+    options.jobs = jobs
 
     renderer = _ProgressRenderer()
 

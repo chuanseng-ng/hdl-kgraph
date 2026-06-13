@@ -141,6 +141,7 @@ class BuildOptions:
     top: list[str] = field(default_factory=list)
     vhdl_libraries: dict[str, Path] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    jobs: int | None = None  # pass-1 parse workers; None = auto, 1 = serial
 
 
 def parse_lib(text: str) -> tuple[str, Path]:
