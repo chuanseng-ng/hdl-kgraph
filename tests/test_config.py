@@ -8,7 +8,9 @@ from hdl_kgraph.config import (
     CONFIG_FILENAME,
     BuildConfig,
     ConfigError,
+    LintWaiver,
     find_config,
+    load_waivers,
     parse_define,
     resolve_build_options,
 )
@@ -85,6 +87,79 @@ def test_load_warns_on_unknown_keys(tmp_path: Path) -> None:
     config = BuildConfig.load(write_config(tmp_path, "[build]\nbogus = 1\n\n[mystery]\nx = 2\n"))
     assert any("bogus" in w for w in config.warnings)
     assert any("mystery" in w for w in config.warnings)
+
+
+def test_load_lint_waivers(tmp_path: Path) -> None:
+    path = write_config(
+        tmp_path,
+        """
+        [[lint.waivers]]
+        check  = "open-port"
+        name   = "soc.u_leaf"
+        reason = "intentional tie-off"
+
+        [[lint.waivers]]
+        check  = "dead-module"
+        module = "dbg_*"
+        file   = "rtl/*.sv"
+        line   = 7
+        reason = "vendor IP"
+        """,
+    )
+    config = BuildConfig.load(path)
+    assert config.lint_waivers == [
+        LintWaiver(check="open-port", reason="intentional tie-off", name="soc.u_leaf"),
+        LintWaiver(
+            check="dead-module", reason="vendor IP", module="dbg_*", file="rtl/*.sv", line=7
+        ),
+    ]
+    assert config.warnings == []
+
+
+def test_lint_waiver_validation(tmp_path: Path) -> None:
+    cases = {
+        "[[lint.waivers]]\nname = 'x'\nreason = 'r'\n": "'check'",
+        "[[lint.waivers]]\ncheck = 'open-port'\nname = 'x'\n": "'reason'",
+        "[[lint.waivers]]\ncheck = 'open-port'\nname = 'x'\nreason = ' '\n": "'reason'",
+        "[[lint.waivers]]\ncheck = 'open-port'\nreason = 'r'\n": "at least one",
+        "[[lint.waivers]]\ncheck = 'open-port'\nname = 'x'\nreason = 'r'\nline = 'x'\n": "integer",
+        "[[lint.waivers]]\ncheck = 'open-port'\nname = 1\nreason = 'r'\n": "must be a string",
+        "[lint]\nwaivers = 'x'\n": "array of tables",
+    }
+    for text, match in cases.items():
+        with pytest.raises(ConfigError, match=match):
+            BuildConfig.load(write_config(tmp_path, text))
+
+
+def test_lint_waiver_unknown_keys_warn(tmp_path: Path) -> None:
+    config = BuildConfig.load(
+        write_config(
+            tmp_path,
+            """
+            [lint]
+            bogus = 1
+
+            [[lint.waivers]]
+            check  = "open-port"
+            name   = "x"
+            reason = "r"
+            why    = "?"
+            """,
+        )
+    )
+    assert any("[lint].bogus" in w for w in config.warnings)
+    assert any("'why'" in w for w in config.warnings)
+    assert not any("unknown section" in w for w in config.warnings)
+
+
+def test_load_waivers_standalone_file(tmp_path: Path) -> None:
+    path = tmp_path / "waivers.toml"
+    path.write_text('[[lint.waivers]]\ncheck = "open-port"\nfile = "*.sv"\nreason = "r"\n')
+    warnings: list[str] = []
+    assert load_waivers(path, warnings) == [LintWaiver(check="open-port", reason="r", file="*.sv")]
+    assert warnings == []
+    with pytest.raises(ConfigError, match="cannot read"):
+        load_waivers(tmp_path / "missing.toml")
 
 
 def test_find_config_walks_up(tmp_path: Path) -> None:

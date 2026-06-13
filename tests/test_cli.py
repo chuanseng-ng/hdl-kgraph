@@ -177,13 +177,111 @@ def test_lint_check_filter_and_json(project: Path) -> None:
     result = CliRunner().invoke(main, ["lint", "--check", "open-port", "--json", *db_args(project)])
     assert result.exit_code == 0, result.output
     payload = json_mod.loads(result.output)
-    assert payload and all(item["check"] == "open-port" for item in payload)
+    assert payload["findings"]
+    assert all(item["check"] == "open-port" for item in payload["findings"])
+    assert payload["waived"] == []
+    assert payload["counts"] == {"findings": len(payload["findings"]), "waived": 0}
 
 
 def test_lint_unknown_check_fails(project: Path) -> None:
     result = CliRunner().invoke(main, ["lint", "--check", "bogus", *db_args(project)])
     assert result.exit_code != 0
     assert "unknown lint check" in result.output
+
+
+def _write_open_port_waiver(directory: Path) -> Path:
+    path = directory / "waivers.toml"
+    path.write_text(
+        '[[lint.waivers]]\ncheck  = "open-port"\nfile   = "lint_case.sv"\n'
+        'reason = "intentional tie-off"\n'
+    )
+    return path
+
+
+def test_lint_waiver_file_filters_findings(project: Path, tmp_path: Path) -> None:
+    waiver = _write_open_port_waiver(tmp_path)
+    args = ["lint", "--check", "open-port", "--waiver-file", str(waiver), *db_args(project)]
+    result = CliRunner().invoke(main, args)
+    assert result.exit_code == 0, result.output
+    assert "no findings (1 waived)" in result.output
+    assert "explicitly left open" not in result.output
+
+    shown = CliRunner().invoke(main, [*args, "--show-waived"])
+    assert shown.exit_code == 0, shown.output
+    assert "[waived: intentional tie-off]" in shown.output
+    assert "no findings (1 waived)" in shown.output
+
+
+def test_lint_waiver_json_shape(project: Path, tmp_path: Path) -> None:
+    import json as json_mod
+
+    waiver = _write_open_port_waiver(tmp_path)
+    result = CliRunner().invoke(
+        main,
+        ["lint", "--check", "open-port", "--json", "--waiver-file", str(waiver), *db_args(project)],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json_mod.loads(result.output)
+    assert payload["findings"] == []
+    assert payload["waived"][0]["reason"] == "intentional tie-off"
+    assert payload["waived"][0]["finding"]["check"] == "open-port"
+    assert payload["waived"][0]["finding"]["unit"] == "lint_leaf"
+    assert payload["unused_waivers"] == []
+    assert payload["counts"] == {"findings": 0, "waived": 1}
+
+
+def test_lint_stale_waiver_warns(project: Path, tmp_path: Path) -> None:
+    waiver = tmp_path / "waivers.toml"
+    waiver.write_text(
+        '[[lint.waivers]]\ncheck = "open-port"\nname = "no_such.*"\nreason = "stale"\n'
+        '[[lint.waivers]]\ncheck = "gone-check"\nname = "*"\nreason = "stale"\n'
+    )
+    result = CliRunner().invoke(main, ["lint", "--waiver-file", str(waiver), *db_args(project)])
+    assert result.exit_code == 0, result.output  # a report, not a gate
+    stale_warning = "warning: lint waiver #1 (check=open-port, name=no_such.*) matched nothing"
+    assert stale_warning in result.output
+    assert "warning: lint waiver #2 names unknown check 'gone-check'" in result.output
+
+    # The waiver is not stale when its check is not selected.
+    scoped = CliRunner().invoke(
+        main,
+        ["lint", "--check", "dead-module", "--waiver-file", str(waiver), *db_args(project)],
+    )
+    assert scoped.exit_code == 0, scoped.output
+    assert "matched nothing" not in scoped.output
+
+
+def test_lint_discovers_config_waivers_and_build_top(
+    tmp_path: Path, fixtures_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shutil.copy(fixtures_dir / "lint_case.sv", tmp_path / "lint_case.sv")
+    (tmp_path / "hdl-kgraph.toml").write_text(
+        """
+        [build]
+        top = ["lint_top"]
+
+        [[lint.waivers]]
+        check  = "open-port"
+        name   = "lint_top.u_leaf"
+        reason = "documented tie-off"
+        """
+    )
+    build = CliRunner().invoke(main, ["build", str(tmp_path)])
+    assert build.exit_code == 0, build.output
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(main, ["lint"])
+    assert result.exit_code == 0, result.output
+    dead = [line.split() for line in result.output.splitlines() if line.startswith("dead-module")]
+    assert [row[1] for row in dead] == ["lint_dead"]  # [build].top exempts lint_top
+    assert "explicitly left open" not in result.output
+    assert "1 waived" in result.output
+
+    ignored = CliRunner().invoke(main, ["lint", "--no-config"])
+    assert ignored.exit_code == 0, ignored.output
+    assert "explicitly left open" in ignored.output
+    assert [
+        row.split()[1] for row in ignored.output.splitlines() if row.startswith("dead-module")
+    ] == ["lint_top", "lint_dead"]
 
 
 def test_query_uvm(project: Path) -> None:

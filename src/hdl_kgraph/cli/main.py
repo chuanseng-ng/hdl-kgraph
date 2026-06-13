@@ -39,7 +39,9 @@ from hdl_kgraph.config import (
     BuildConfig,
     BuildOptions,
     ConfigError,
+    LintWaiver,
     find_config,
+    load_waivers,
     resolve_build_options,
 )
 from hdl_kgraph.discovery import DEFAULT_MAX_FILE_SIZE_KB, SUFFIXES
@@ -749,6 +751,40 @@ def status(db_path: Path | None, as_json: bool, show_errors: bool) -> None:
         click.echo(f"unresolved: {len(stubs)}")
 
 
+def _lint_config(
+    db_path: Path | None, meta: dict[str, str], config_path: Path | None, no_config: bool
+) -> BuildConfig:
+    """The config whose ``[lint]`` section (and ``[build].top``) lint honors."""
+    if no_config:
+        return BuildConfig()
+    if config_path is None:
+        root = Path(meta.get("root") or "")
+        if not root.is_dir():  # project moved since the build: the DB is ground truth
+            root = db_path.parent.parent if db_path is not None else Path.cwd()
+        config_path = find_config(root)
+        if config_path is None:
+            return BuildConfig()
+    try:
+        return BuildConfig.load(config_path)
+    except ConfigError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+def _waiver_desc(waiver: LintWaiver) -> str:
+    parts = [f"check={waiver.check}"]
+    parts += [
+        f"{key}={getattr(waiver, key)}"
+        for key in ("name", "module", "file", "line")
+        if getattr(waiver, key) is not None
+    ]
+    return ", ".join(parts)
+
+
+def _lint_row(f: lint.LintFinding, suffix: str = "") -> str:
+    location = f"{f.file}:{f.line}" if f.file else "?"
+    return f"{f.check:18} {f.name:32} {location:28} {f.message}{suffix}"
+
+
 @main.command("lint")
 @_db_option
 @_json_option
@@ -764,37 +800,99 @@ def status(db_path: Path | None, as_json: bool, show_errors: bool) -> None:
     "tops",
     multiple=True,
     metavar="NAME",
-    help="Treat NAME as an intended top module (repeatable; exempts it from dead-module).",
+    help="Treat NAME as an intended top module (repeatable, additive with "
+    "[build].top; exempts it from dead-module).",
 )
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Path to hdl-kgraph.toml (default: nearest one from the build root upward).",
+)
+@click.option("--no-config", is_flag=True, help="Ignore any hdl-kgraph.toml.")
+@click.option(
+    "--waiver-file",
+    "waiver_files",
+    multiple=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Apply the [[lint.waivers]] entries of this TOML file too "
+    "(repeatable; after config waivers).",
+)
+@click.option("--show-waived", is_flag=True, help="List the waived findings as well.")
 def lint_cmd(
-    db_path: Path | None, as_json: bool, checks: tuple[str, ...], tops: tuple[str, ...]
+    db_path: Path | None,
+    as_json: bool,
+    checks: tuple[str, ...],
+    tops: tuple[str, ...],
+    config_path: Path | None,
+    no_config: bool,
+    waiver_files: tuple[Path, ...],
+    show_waived: bool,
 ) -> None:
     """Report graph-level lint findings (always exits 0 — a report, not a gate).
 
     Signal-level checks skip files with parse errors and implicit-net stubs
     so a finding is worth reading; confidences below 1.0 mark heuristics.
+    Known-benign findings can be waived via [[lint.waivers]] in
+    hdl-kgraph.toml or a --waiver-file; waivers that match nothing are
+    reported stale on stderr.
     """
-    graph, files, _ = _load(db_path)
+    graph, files, meta = _load(db_path)
+    config = _lint_config(db_path, meta, config_path, no_config)
+    waiver_warnings = list(config.warnings)
+    waivers = list(config.lint_waivers)
+    for path in waiver_files:
+        try:
+            waivers.extend(load_waivers(path, waiver_warnings))
+        except ConfigError as exc:
+            raise click.ClickException(str(exc)) from exc
+    for warning in waiver_warnings:
+        click.echo(f"warning: {warning}", err=True)
     error_files = frozenset(f.path for f in files if f.parse_error_count)
     try:
         findings = lint.run_checks(
             graph,
             names=checks or None,
-            tops=frozenset(tops),
+            tops=frozenset(tops) | frozenset(config.top),
             error_files=error_files,
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
+    result = lint.apply_waivers(findings, waivers, checks or None)
+    for i in result.unknown:
+        click.echo(
+            f"warning: lint waiver #{i + 1} names unknown check '{waivers[i].check}'", err=True
+        )
+    for i in result.unused:
+        click.echo(
+            f"warning: lint waiver #{i + 1} ({_waiver_desc(waivers[i])}) matched nothing",
+            err=True,
+        )
     if as_json:
-        _emit_json(findings)
+        _emit_json(
+            {
+                "findings": result.kept,
+                "waived": result.waived,
+                "unused_waivers": result.unused,
+                "counts": {"findings": len(result.kept), "waived": len(result.waived)},
+            }
+        )
         return
-    if not findings:
-        click.echo("no findings")
-        return
-    for f in findings:
-        location = f"{f.file}:{f.line}" if f.file else "?"
+    for f in result.kept:
         marker = "" if f.confidence >= 0.8 else f"  [~{f.confidence:.1f}]"
-        click.echo(f"{f.check:18} {f.name:32} {location:28} {f.message}{marker}")
+        click.echo(_lint_row(f, marker))
+    if show_waived and result.waived:
+        click.echo("waived:")
+        for wf in result.waived:
+            click.echo(_lint_row(wf.finding, f"  [waived: {wf.reason}]"))
+    if waivers:
+        if result.kept:
+            click.echo(f"{len(result.kept)} finding(s), {len(result.waived)} waived")
+        else:
+            click.echo(f"no findings ({len(result.waived)} waived)")
+    elif not result.kept:
+        click.echo("no findings")
 
 
 @main.command("metrics")
