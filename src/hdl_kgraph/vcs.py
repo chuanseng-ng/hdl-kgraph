@@ -176,10 +176,15 @@ def detect_p4_changes(base: Path, rev: str | None, suffixes: frozenset[str]) -> 
 
     Combines ``p4 -ztag status`` (files changed on disk but not yet opened) with
     ``p4 -ztag opened`` (already-opened files). Tagged output gives a
-    ``clientFile`` local path, so depot paths never need mapping. *rev* is
-    accepted for interface parity but v1 always compares against the workspace's
-    ``have`` revision.
+    ``clientFile`` local path, so depot paths never need mapping. v1 always
+    compares against the workspace's ``have`` revision; a non-default *rev*
+    (changelist) is rejected rather than silently ignored.
     """
+    if rev not in (None, "have"):
+        raise RuntimeError(
+            "Perforce backend compares against the workspace 'have' revision only; "
+            "diffing a specific changelist is not supported yet"
+        )
     records = _parse_ztag(_run(["p4", "-ztag", "status"], base, "p4"))
     records += _parse_ztag(_run(["p4", "-ztag", "opened"], base, "p4"))
     return _p4_records_to_changeset(records, base, suffixes)

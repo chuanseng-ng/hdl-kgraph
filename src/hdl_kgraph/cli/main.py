@@ -550,6 +550,8 @@ def detect_changes(
             for vcs, ref in (("git", git_ref), ("svn", svn_rev), ("p4", p4_rev))
             if ref is not None
         ]
+        if use_vcs and explicit:
+            raise click.ClickException("--vcs cannot be combined with --git/--svn/--p4")
         if len(explicit) > 1:
             raise click.ClickException("choose only one of --git/--svn/--p4")
         if explicit or use_vcs:
@@ -572,7 +574,8 @@ def detect_changes(
                 db_path = default_db_path(base)
             if not db_path.is_file():
                 raise click.ClickException(
-                    f"no database at {db_path}; run `hdl-kgraph build` first, or use --git"
+                    f"no database at {db_path}; run `hdl-kgraph build` first, "
+                    "or use --git/--svn/--p4/--vcs"
                 )
             try:
                 changes = scan_changes(source, db_path, options)

@@ -21,6 +21,7 @@ from hdl_kgraph.vcs import (
     _parse_svn_status,
     _parse_svn_summarize,
     _parse_ztag,
+    detect_p4_changes,
     detect_svn_changes,
     detect_vcs,
 )
@@ -118,3 +119,10 @@ def test_p4_records_to_changeset(tmp_path: Path) -> None:
     assert changes.changed == ["rtl/a.sv"]
     assert changes.added == ["moved.sv", "rtl/new.svh"]
     assert changes.removed == ["rtl/gone.sv"]
+
+
+def test_detect_p4_changes_rejects_nondefault_rev(tmp_path: Path) -> None:
+    # A specific changelist isn't supported yet; reject it (before any p4 call)
+    # rather than silently reporting workspace state against the wrong baseline.
+    with pytest.raises(RuntimeError, match="changelist is not supported"):
+        detect_p4_changes(tmp_path, "12345", SUFFIXES)
