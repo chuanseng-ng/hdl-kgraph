@@ -295,17 +295,37 @@ remain parked. Analysis and phased plan in
 **Goal:** elaboration-accurate facts where native parsers are available;
 tree-sitter remains the always-works baseline.
 
-- [ ] Enrichment plugin interface: parser backends declare capabilities; results
-      merge with higher confidence
-- [ ] pyslang backend (`[slang]` extra): true type/width resolution, parameterized
-      generate elaboration, `defparam`, accurate symbol binding → edges upgraded
-      to 1.0
-- [ ] pyVHDLModel / GHDL analysis backend (`[ghdl]` extra): VHDL semantic and
-      overload resolution
-- [ ] Discrepancy report: where heuristic edges disagreed with elaboration
+- [x] Enrichment plugin interface: backends declare capabilities; results merge
+      with higher confidence — **`hdl_kgraph.enrich`: an `EnrichmentBackend`
+      runs after pass-2 linking over the whole-design inputs and the linked
+      graph, returning deltas (edge upgrades, new elaborated nodes/edges,
+      discrepancies); the runner merges them via `graph.builder`'s
+      `add_or_upgrade_edge`/`ensure_node`, stamping `attrs["source"] =
+      "elaborated"`. Opt-in via `build --enrich`; whole-design elaboration so it
+      re-runs on every `update`. Backends ship in the core install, not extras
+      (`pyslang`, `pyVHDLModel` are core dependencies); elaboration stays opt-in
+      at runtime**
+- [x] pyslang backend: parameterized generate elaboration, `defparam`, accurate
+      symbol binding → edges upgraded to 1.0 — **`enrich/slang_backend.py`
+      unrolls generate loops/instance arrays (the headline acceptance case) and
+      confirms `INSTANTIATES` bindings; an un-elaboratable design degrades to the
+      heuristic graph with diagnostics. Full type/width and
+      `CONNECTS`/`PARAMETERIZES` value upgrades are a documented follow-on**
+- [ ] pyVHDLModel / GHDL analysis backend: VHDL semantic and overload
+      resolution — **deferred (follow-up phase): `pyVHDLModel` is a document
+      model, not an elaborator, and GHDL is a system binary, not a pip package.
+      The pip package ships in core now; the backend code and the `ghdl`-binary
+      requirement land later. SV elaboration already meets the acceptance
+      criterion**
+- [x] Discrepancy report: where heuristic edges disagreed with elaboration —
+      **`hdl-kgraph discrepancies` over a new `discrepancies` SQLite table
+      (schema v6); `instance_count` (generate multiplicity) and `wrong_target`
+      findings, with `--json`**
 
 **Acceptance:** on fixtures with parameterized generates, instance counts match
-elaborated reality; the tool still works with zero optional extras installed.
+elaborated reality (`tests/test_enrich.py`, `tests/fixtures/param_generate.sv`);
+a plain `build` (enrichment off) is unchanged. *(pyslang/pyVHDLModel are now
+core dependencies rather than optional extras — see the interface note above.)*
 
 ## M8 — v1.0: C/C++/Python boundary + API stability (stretch)
 

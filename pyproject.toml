@@ -44,6 +44,15 @@ dependencies = [
   "tree-sitter-systemverilog>=0.3.1,<0.4",
   "tree-sitter-vhdl>=1.5,<2",
   'tomli>=2.0; python_version < "3.11"',
+  # M7 semantic enrichment (native frontends). Shipped in the core install so
+  # `build --enrich` works out of the box; elaboration itself stays opt-in at
+  # runtime. pyslang is the slang SystemVerilog frontend binding; pyVHDLModel
+  # is the VHDL document model used by the (forthcoming) GHDL backend. The
+  # `ghdl` analyzer binary is a separate, optional system install — it is not
+  # a pip package, and only the VHDL backend needs it. Upper-bounded like the
+  # tree-sitter stack: these are native/compiled wheels whose API can churn.
+  "pyslang>=8,<12",
+  "pyVHDLModel>=0.28,<1",
 ]
 
 [project.optional-dependencies]
@@ -99,6 +108,8 @@ module = [
   "tomli.*",
   "watchdog.*",
   "fastmcp.*",
+  "pyslang.*",
+  "pyVHDLModel.*",
 ]
 ignore_missing_imports = true
 

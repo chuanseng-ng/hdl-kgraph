@@ -8,12 +8,15 @@ instances, ports, parameters, signals, classes, packages, and the
 relationships between them — design hierarchy, port connectivity, package
 imports, class inheritance, clock domains, and more.
 
-> **Status: alpha (v0.6).** Milestones M1–M6 are in: SystemVerilog/Verilog
+> **Status: alpha (v0.7).** Milestones M1–M6 are in: SystemVerilog/Verilog
 > and VHDL extraction with mixed-language linking, the SV preprocessor and
 > real-world build inputs (`.f` filelists, defines, `hdl-kgraph.toml`),
 > incremental rebuilds and watch mode, the clock/reset/CDC/lint/metrics
 > analyses with an interactive visualization, and an MCP server so AI
-> assistants can query the design. See the
+> assistants can query the design. M7 adds opt-in semantic enrichment
+> (`build --enrich`): the pyslang frontend elaborates the design — unrolling
+> parameterized generates so instance counts match reality — and records a
+> [discrepancy report](docs/enrichment.md). See the
 > [roadmap](#roadmap-at-a-glance).
 
 ## Why
@@ -104,7 +107,7 @@ full list, the confidence convention, and the schema pointers live in
 | M4 (v0.4) | Incremental updates, watch mode, impact analysis |
 | M5 (v0.5) | Clock/reset/CDC analyses, lint checks, visualization |
 | M6 (v0.6) | MCP server for AI assistants |
-| M7 (v0.7) | Semantic enrichment (pyslang, GHDL) |
+| M7 (v0.7) | Semantic enrichment via native frontends (pyslang elaboration; GHDL/VHDL planned) |
 | M8 (v1.0) | C/C++/Python boundary (DPI-C, cocotb), stable API |
 | M9 (v1.x) | Chisel/FIRRTL, Amaranth, SpinalHDL |
 | M10 (v1.x) | Tcl/SDC/UPF constraints, Perl scripting, SLN portable stimulus |

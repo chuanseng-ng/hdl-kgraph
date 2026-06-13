@@ -14,6 +14,11 @@ rebuild. Paths are POSIX-style and relative to the build root.
 * Unresolved stubs (created by the pass-2 linker, global so every referrer
   converges on the same node): ``unresolved:{kind}:{name}``, with stub ports
   ``unresolved:port:{module}.{port}``.
+* Elaborated nodes (M7 semantic enrichment, keyed by their full elaborated
+  hierarchical path so a generate loop's unrolled iterations get distinct,
+  stable ids that never collide with the single syntactic instance):
+  ``elab:{kind}:{hierarchical_path}`` — e.g.
+  ``elab:instance:top.g_leaf[0].u_leaf``.
 """
 
 from __future__ import annotations
@@ -46,6 +51,11 @@ def stub_node_id(kind: NodeKind, name: str) -> str:
     return f"unresolved:{kind.value}:{name}"
 
 
+def elab_node_id(kind: NodeKind, hier_path: str) -> str:
+    """Id of an elaboration-derived node (M7), keyed by hierarchical path."""
+    return f"elab:{kind.value}:{hier_path}"
+
+
 def parse_node_id(node_id: str) -> tuple[NodeKind, str] | None:
     """Recover (kind, name) from a node id, or None for an unknown shape.
 
@@ -75,12 +85,13 @@ def parse_node_id(node_id: str) -> tuple[NodeKind, str] | None:
         return NodeKind.LIBRARY, rest
     if prefix == "macro":
         return NodeKind.MACRO, rest.split("@", 1)[0]
-    if prefix == "unresolved":
+    if prefix in ("unresolved", "elab"):
         kind_text, sep, name = rest.partition(":")
         if not sep:
             return None
         try:
-            return NodeKind(kind_text), name
+            # An elaborated id's name is the last hierarchical-path segment.
+            return NodeKind(kind_text), name.rsplit(".", 1)[-1] if prefix == "elab" else name
         except ValueError:
             return None
     return None

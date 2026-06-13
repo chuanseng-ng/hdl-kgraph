@@ -49,7 +49,7 @@ except ModuleNotFoundError:  # Python 3.10
 CONFIG_FILENAME = "hdl-kgraph.toml"
 
 _BUILD_KEYS = frozenset(
-    {"sources", "filelists", "defines", "incdirs", "top", "exclude", "max_file_size_kb"}
+    {"sources", "filelists", "defines", "incdirs", "top", "exclude", "max_file_size_kb", "enrich"}
 )
 
 _LINT_KEYS = frozenset({"waivers"})
@@ -96,6 +96,7 @@ class BuildConfig:
     top: list[str] = field(default_factory=list)
     exclude: list[str] = field(default_factory=list)
     max_file_size_kb: int | None = None
+    enrich: bool = False  # opt-in M7 native-frontend elaboration
     vhdl_libraries: dict[str, Path] = field(default_factory=dict)
     lint_waivers: list[LintWaiver] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -129,6 +130,10 @@ class BuildConfig:
         if size is not None and not isinstance(size, int):
             raise ConfigError(f"{path}: [build].max_file_size_kb must be an integer")
         config.max_file_size_kb = size
+        enrich = build.get("enrich", False)
+        if not isinstance(enrich, bool):
+            raise ConfigError(f"{path}: [build].enrich must be a boolean")
+        config.enrich = enrich
 
         vhdl = data.pop("vhdl", {})
         libraries = vhdl.get("libraries", {}) if isinstance(vhdl, dict) else {}
@@ -234,6 +239,9 @@ class BuildOptions:
     vhdl_libraries: dict[str, Path] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     jobs: int | None = None  # pass-1 parse workers; None = auto, 1 = serial
+    enrich: bool = False  # run M7 native-frontend elaboration (opt-in)
+    # Restrict enrichment to these backend names; empty = all installed.
+    enrich_backends: list[str] = field(default_factory=list)
 
 
 def parse_lib(text: str) -> tuple[str, Path]:
@@ -274,4 +282,5 @@ def resolve_build_options(
         top=list(config.top),
         vhdl_libraries=vhdl_libraries,
         warnings=list(config.warnings),
+        enrich=config.enrich,
     )
