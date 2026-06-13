@@ -605,12 +605,10 @@ for (const tab of document.querySelectorAll(".tab")) {
        layout. Hidden elements get no pointer events, so #hier still works. */
     canvas.style.visibility = which === "graph" ? "visible" : "hidden";
     document.getElementById("recenter").style.display = which === "graph" ? "block" : "none";
-    if (which === "graph") {
-      resize();
-      /* Frame the graph the first time it is revealed, in case the layout
-         settled while the canvas was hidden — unless the user already moved. */
-      if (transform.k === 1 && transform.x === 0 && transform.y === 0) fitView();
-    }
+    /* resize() recomputes the bitmap for the now-visible canvas; framing is
+       left to the live sim's end.fit and the static tier's needFit, which fit
+       the *settled* layout (fitting a half-settled one looks wrong). */
+    if (which === "graph") resize();
   });
 }
 views.hier.style.display = "block"; canvas.style.visibility = "hidden";
