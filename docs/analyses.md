@@ -15,9 +15,12 @@ hdl-kgraph lint                    # unconnected ports, undriven/unread signals,
                                    #   dead modules, redundant parameter overrides
 hdl-kgraph metrics --communities   # fan-in/out, hubs/bridges, Louvain subsystems
 hdl-kgraph visualize -o graph.html # self-contained interactive HTML
+hdl-kgraph export --format graphml # GraphML/GEXF/JSON for Gephi, Cytoscape
 ```
 
-All of these take `--json` for scripting.
+The `query`, `lint`, and `metrics` reporting commands take `--json` for
+scripting. `visualize` and `export` write files instead (`export --format
+graphml|gexf|json`).
 
 ## Caveats — reports, not gates
 
@@ -80,3 +83,10 @@ force-directed graph with node-kind / edge-kind / clock-domain filters.
 - A payload past the inline size limit is refused with guidance (drop
   `--full` or narrow with `--top`); `--force-inline` writes it anyway.
 - Scaling strategy for very large designs: [viz-scalability.md](viz-scalability.md).
+
+`export` is the escape hatch for designs too large for the inline HTML
+artifact: `--format graphml|gexf|json` writes the graph for Gephi
+(OpenOrd/ForceAtlas2) or Cytoscape, which handle graphs the browser cannot.
+Enums, the line span, and free-form `attrs` are flattened to scalar
+attributes (`attrs` is serialized to JSON as an `attrs_json` string —
+non-JSON values are stringified via `json.dumps(..., default=str)`).
