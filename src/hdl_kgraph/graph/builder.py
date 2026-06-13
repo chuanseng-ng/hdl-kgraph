@@ -7,8 +7,9 @@ knowledge graph as a NetworkX ``MultiDiGraph`` (persisted via
 Resolution and confidence (see :mod:`hdl_kgraph.schema`):
 
 * a candidate in the same file resolves at 1.0; a unique cross-file match at
-  0.8; multiple candidates get one 0.6 edge each (unless exactly one is in
-  the referring file, which wins at 1.0)
+  0.8; multiple candidates get one 0.6 edge each — unless exactly one is in
+  the referring file, or (both-branches mode) exactly one is outside a
+  non-selected ``\\`ifdef`` arm, in which case it wins at full confidence
 * a name with no definition gets a stub node (``attrs["unresolved"] = True``)
   shared by every referrer. The *edge* to a stub keeps confidence 1.0 — the
   reference itself is syntactically certain; the stub node carries the
@@ -50,8 +51,11 @@ M5 — dataflow, clocks, and verification refs:
 * DRIVES/READS/CLOCKED_BY/RESETS/ASSERTS_ON/COVERS refs are **scoped**: the
   name resolves against the referring node's *enclosing design unit's*
   PORT/SIGNAL children (an ARCHITECTURE also searches its entity's ports),
-  never by global name. A match in scope resolves at 1.0 (× the ref's own
-  evidence confidence). Names matching a PARAMETER/ENUM_MEMBER (or any other
+  never by global name. A unique match in scope resolves at 1.0 (× the ref's
+  own evidence confidence); multiple matches follow the global ambiguity
+  contract (non-``conditional`` declaration wins, a non-ANSI port
+  redeclaration resolves to the PORT, a genuine tie emits every candidate
+  at 0.6). Names matching a PARAMETER/ENUM_MEMBER (or any other
   non-signal child) are dropped — constants are not dataflow. Unmatched
   names become SIGNAL stub children of the unit at ≤ 0.6, so implicit nets
   and typos stay visible. ASSERTS_ON prefers a sibling PROPERTY/SEQUENCE
@@ -383,6 +387,16 @@ class _Linker:
         local = [c for c in candidates if self.node_obj[c].file == ref_file]
         if len(local) == 1:
             return local, CONFIDENCE_RESOLVED
+        # Both-branches mode can define the same unit in several arms of an
+        # undefined `ifdef. The arm normal evaluation selects is not stamped
+        # `conditional`; when it is the only such candidate it wins at full
+        # confidence instead of dragging every reference down to 0.6.
+        selected = [
+            c for c in (local or candidates) if not self.node_obj[c].attrs.get("conditional")
+        ]
+        if len(selected) == 1:
+            same_file = self.node_obj[selected[0]].file == ref_file
+            return selected, CONFIDENCE_RESOLVED if same_file else CONFIDENCE_UNIQUE_MATCH
         return candidates, CONFIDENCE_AMBIGUOUS
 
     def _cross_language(
@@ -576,20 +590,31 @@ class _Linker:
         self._scope_indices[unit_id] = dict(index)
         return self._scope_indices[unit_id]
 
-    def _scoped_signal_target(self, unit_id: str, name: str) -> tuple[str | None, float]:
-        """(target id, confidence) for *name* in *unit_id*'s namespace.
+    def _scoped_signal_target(self, unit_id: str, name: str) -> tuple[list[str], float]:
+        """(target ids, confidence) for *name* in *unit_id*'s namespace.
 
-        (None, 0) means the name is a constant or some other non-signal
+        ([], 0) means the name is a constant or some other non-signal
         declaration — not dataflow. An undeclared name gets a SIGNAL stub
-        child (implicit nets / typos) at ≤ 0.6.
+        child (implicit nets / typos) at ≤ 0.6. Multiple matches follow the
+        same confidence contract as global resolution: the declaration the
+        preprocessor did not stamp ``conditional`` (the `ifdef arm normal
+        evaluation selects) wins at 1.0, a non-ANSI port redeclaration
+        (``output y; wire y;``) resolves to the PORT — one net, not an
+        ambiguity — and a genuine tie emits every candidate at 0.6.
         """
         matches = self._scope_index_for(unit_id).get(name, [])
         signals = [n for n in matches if n.kind in _SIGNAL_KINDS]
         if signals:
-            return signals[0].id, CONFIDENCE_RESOLVED
+            selected = [n for n in signals if not n.attrs.get("conditional")] or signals
+            if len(selected) == 1:
+                return [selected[0].id], CONFIDENCE_RESOLVED
+            ports = [n for n in selected if n.kind is NodeKind.PORT]
+            if len(ports) == 1:
+                return [ports[0].id], CONFIDENCE_RESOLVED
+            return [n.id for n in selected], CONFIDENCE_AMBIGUOUS
         if matches:
-            return None, 0.0
-        return self._stub_child(unit_id, NodeKind.SIGNAL, name), CONFIDENCE_AMBIGUOUS
+            return [], 0.0
+        return [self._stub_child(unit_id, NodeKind.SIGNAL, name)], CONFIDENCE_AMBIGUOUS
 
     def _resolve_scoped(self, ref: UnresolvedRef) -> None:
         unit_id = self._enclosing_unit_id(ref.src_id)
@@ -601,8 +626,8 @@ class _Linker:
             if assertables:
                 self._emit(ref, assertables[0].id, CONFIDENCE_RESOLVED)
                 return
-        target, confidence = self._scoped_signal_target(unit_id, ref.target_name)
-        if target is not None:
+        targets, confidence = self._scoped_signal_target(unit_id, ref.target_name)
+        for target in targets:
             self._emit(ref, target, confidence)
 
     def _derive_port_dataflow(
@@ -624,22 +649,21 @@ class _Linker:
             base = min(base, CONFIDENCE_AMBIGUOUS)
         vhdl = self._src_language(ref) is Language.VHDL
         for name in identifiers:
-            target, cap = self._scoped_signal_target(unit_id, name.lower() if vhdl else name)
-            if target is None:
-                continue
-            for kind in flows:
-                self._emit_edge(
-                    ref.src_id,
-                    target,
-                    kind,
-                    min(base, cap, ref.confidence),
-                    {
-                        "via_port": port.name,
-                        "derived": "connects",
-                        "expr_text": actual_text,
-                        "line_span": ref.line_span,
-                    },
-                )
+            targets, cap = self._scoped_signal_target(unit_id, name.lower() if vhdl else name)
+            for target in targets:
+                for kind in flows:
+                    self._emit_edge(
+                        ref.src_id,
+                        target,
+                        kind,
+                        min(base, cap, ref.confidence),
+                        {
+                            "via_port": port.name,
+                            "derived": "connects",
+                            "expr_text": actual_text,
+                            "line_span": ref.line_span,
+                        },
+                    )
 
     def _emit_edge(
         self, src: str, dst: str, kind: EdgeKind, confidence: float, attrs: dict[str, Any]
