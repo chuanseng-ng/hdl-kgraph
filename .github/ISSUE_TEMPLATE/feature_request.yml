@@ -1,0 +1,35 @@
+name: Feature request
+description: Suggest a new capability or an improvement to an existing one.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Note: extending the graph schema (new node/edge kinds) is welcome, but
+        changing the meaning of existing schema elements needs discussion in an
+        issue first — see [CONTRIBUTING.md](../../CONTRIBUTING.md).
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Problem / motivation
+      description: What problem are you trying to solve? What's the use case?
+      placeholder: e.g. I need to trace reset domains the same way clock domains are traced.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How would you like this to work? CLI flags, query API, MCP tools, etc.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches or workarounds you've tried or thought about.
+  - type: checkboxes
+    id: duplicates
+    attributes:
+      label: Duplicate check
+      options:
+        - label: I checked [ROADMAP.md](../../ROADMAP.md) and existing issues, and this isn't already planned or requested.
+          required: true
