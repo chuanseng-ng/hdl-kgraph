@@ -216,9 +216,11 @@ this is Phase 1 for a reason.
 - **Phase 5 — export escape hatch** — **done.** `hdl-kgraph export
   --format graphml|gexf|json` in `src/hdl_kgraph/export.py`: `_sanitize`
   copies the graph with scalar-only attributes (enums → `.value`, the
-  `line_span` tuple → `line_start`/`line_end`, the `attrs` dict → an
-  `attrs_json` string), then dispatches to NetworkX's `write_graphml` /
-  `write_gexf` / `node_link_data` writers. No HTML-artifact changes. Tests
+  `line_span` tuple → `line_start`/`line_end`, the `attrs` dict
+  JSON-serialized to an `attrs_json` string via `json.dumps(..., default=str)`),
+  then dispatches to NetworkX's `write_graphml` / `write_gexf` writer APIs for
+  those formats; the JSON branch instead converts via `node_link_data` and
+  writes with `json.dumps` / `write_text`. No HTML-artifact changes. Tests
   (`tests/test_export.py`) cover the GraphML/GEXF/JSON round-trips, attr
   flattening, the unknown-format error, and a CLI smoke.
 - **Phase 6 — WebGL (explicit non-goal for now)**: only if real-world

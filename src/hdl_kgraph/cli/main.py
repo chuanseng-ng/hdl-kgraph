@@ -1061,8 +1061,7 @@ def visualize(
     type=click.Choice(EXPORT_FORMATS),
     default="graphml",
     show_default=True,
-    help="Interchange format: 'graphml'/'gexf' for Gephi & Cytoscape, "
-    "'json' for node-link data.",
+    help="Interchange format: 'graphml'/'gexf' for Gephi & Cytoscape, 'json' for node-link data.",
 )
 def export_cmd(db_path: Path | None, output: Path | None, fmt: str) -> None:
     """Export the graph to GraphML/GEXF/JSON for external tools.
