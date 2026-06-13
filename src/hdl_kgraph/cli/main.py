@@ -825,10 +825,14 @@ def metrics_cmd(db_path: Path | None, as_json: bool, top_n: int, show_communitie
     units are listed hubs-first (descending betweenness centrality).
     """
     graph, _, _ = _load(db_path)
-    records = metrics.module_metrics(graph)
+    result = metrics.module_metrics(graph)
+    records = result.modules
     parts = metrics.communities(graph) if show_communities else []
     if as_json:
-        payload: dict[str, Any] = {"modules": records}
+        payload: dict[str, Any] = {
+            "modules": records,
+            "betweenness_approximate": result.betweenness_approximate,
+        }
         if show_communities:
             payload["communities"] = parts
         _emit_json(payload)
@@ -845,6 +849,12 @@ def metrics_cmd(db_path: Path | None, as_json: bool, top_n: int, show_communitie
         if m.unresolved:
             markers += " [?]"
         click.echo(f"{m.name:30} {m.fan_in:>6} {m.fan_out:>7} {m.betweenness:>12.4f}{markers}")
+    if result.betweenness_approximate:
+        click.echo(
+            f"note: betweenness sampled (k={metrics.BETWEENNESS_SAMPLES}, "
+            f"seed {metrics.BETWEENNESS_SEED}) — graph exceeds "
+            f"{metrics.BETWEENNESS_EXACT_MAX_NODES} units"
+        )
     if show_communities:
         click.echo(f"communities: {len(parts)}")
         for i, part in enumerate(parts):

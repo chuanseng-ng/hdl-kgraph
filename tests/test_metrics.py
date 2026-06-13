@@ -39,25 +39,41 @@ def test_projection_collapses_architectures_into_entities(graph) -> None:
 
 
 def test_fan_in_counts_instantiation_sites(graph) -> None:
-    by_name = {m.name: m for m in metrics.module_metrics(graph)}
+    by_name = {m.name: m for m in metrics.module_metrics(graph).modules}
     # alu is instantiated by mixed_sv_top and vhdl_top.
     assert by_name["alu"].fan_in == 2
     assert by_name["vhdl_top"].fan_out >= 3
 
 
 def test_mid_hierarchy_module_has_positive_betweenness(graph) -> None:
-    by_name = {m.name: m for m in metrics.module_metrics(graph)}
+    by_name = {m.name: m for m in metrics.module_metrics(graph).modules}
     # alu sits between its instantiators and nothing below; betweenness of a
     # pure leaf is 0 — make sure ordering puts a connected mid/hub first.
     leaf = by_name["simple_counter"]
     assert leaf.betweenness == 0.0
-    assert metrics.module_metrics(graph)[0].fan_in + metrics.module_metrics(graph)[0].fan_out > 0
+    hub = metrics.module_metrics(graph).modules[0]
+    assert hub.fan_in + hub.fan_out > 0
 
 
 def test_unresolved_targets_stay_visible(graph) -> None:
-    by_name = {m.name: m for m in metrics.module_metrics(graph)}
+    by_name = {m.name: m for m in metrics.module_metrics(graph).modules}
     assert by_name["ghost_mod"].unresolved
     assert by_name["ghost_mod"].fan_in >= 1
+
+
+def test_betweenness_exact_below_threshold(graph) -> None:
+    assert metrics.module_metrics(graph).betweenness_approximate is False
+
+
+def test_betweenness_sampled_above_threshold(graph, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(metrics, "BETWEENNESS_EXACT_MAX_NODES", 1)
+    first = metrics.module_metrics(graph)
+    second = metrics.module_metrics(graph)
+    assert first.betweenness_approximate is True
+    # The fixed seed keeps sampled values (and therefore ordering) stable.
+    assert [(m.node_id, m.betweenness) for m in first.modules] == [
+        (m.node_id, m.betweenness) for m in second.modules
+    ]
 
 
 def test_communities_are_deterministic(graph) -> None:

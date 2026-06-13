@@ -218,6 +218,22 @@ def test_metrics_communities_json(project: Path) -> None:
     payload = json_mod.loads(result.output)
     assert payload["modules"]
     assert payload["communities"]
+    assert payload["betweenness_approximate"] is False
+
+
+def test_metrics_notes_sampled_betweenness(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hdl_kgraph.graph import metrics as metrics_mod
+
+    monkeypatch.setattr(metrics_mod, "BETWEENNESS_EXACT_MAX_NODES", 1)
+    result = CliRunner().invoke(main, ["metrics", *db_args(project)])
+    assert result.exit_code == 0, result.output
+    assert "note: betweenness sampled" in result.output
+    json_result = CliRunner().invoke(main, ["metrics", "--json", *db_args(project)])
+    import json as json_mod
+
+    assert json_mod.loads(json_result.output)["betweenness_approximate"] is True
 
 
 def test_tree_from_top(project: Path) -> None:
