@@ -29,9 +29,14 @@
   /* No `inset` shorthand: older engines ignore it, and an absolute canvas
      with auto offsets sizes itself from its bitmap — which feeds back into
      the bitmap on resize and grows it without bound. */
-  #canvas { position:absolute; top:0; left:0; width:100%; height:100%; }
+  /* Defaults mirror the default-active tab (hierarchy): the canvas starts
+     hidden and #hier shown without waiting on JS, so the graph can never paint
+     over the hierarchy tab if the (async) script is mid-flight or throws. The
+     tab handler toggles these inline at runtime. */
+  #canvas { position:absolute; top:0; left:0; width:100%; height:100%;
+            visibility:hidden; }
   #hier { position:absolute; top:0; left:0; width:100%; height:100%;
-          overflow:auto; padding:14px 18px; display:none; }
+          overflow:auto; padding:14px 18px; display:block; }
   #hier ul { list-style:none; margin:0; padding-left:18px; border-left:1px solid var(--line); }
   #hier > ul { border-left:none; padding-left:0; }
   #hier li { padding:1px 0; }
@@ -595,7 +600,12 @@ for (const tab of document.querySelectorAll(".tab")) {
        layout. Hidden elements get no pointer events, so #hier still works. */
     canvas.style.visibility = which === "graph" ? "visible" : "hidden";
     document.getElementById("recenter").style.display = which === "graph" ? "block" : "none";
-    if (which === "graph") resize();
+    if (which === "graph") {
+      resize();
+      /* Frame the graph the first time it is revealed, in case the layout
+         settled while the canvas was hidden — unless the user already moved. */
+      if (transform.k === 1 && transform.x === 0 && transform.y === 0) fitView();
+    }
   });
 }
 views.hier.style.display = "block"; canvas.style.visibility = "hidden";

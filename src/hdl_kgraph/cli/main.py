@@ -1088,7 +1088,8 @@ def visualize(
 
     The file embeds D3 and the graph data — no network access needed to
     open it. Two views: a collapsible hierarchy and a force-directed graph
-    with node-kind / edge-kind / clock-domain filters. Large designs route to
+    with node-kind / edge-kind / community filters (and colour-by-community).
+    Large designs route to
     a precomputed 'static' layout so the graph view paints without a
     client-side simulation freeze; ``--collapse`` shows one supernode per
     subsystem instead of every unit (see docs/viz-scalability.md).

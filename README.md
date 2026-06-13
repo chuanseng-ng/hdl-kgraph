@@ -68,7 +68,9 @@ scored ≤0.8, never 1.0.
 
 **Analyses.** Clock domains, reset trees, CDC suspects, signal
 drivers/readers, UVM topology, graph-level lint checks, fan-in/out and
-hub/bridge metrics, and a self-contained interactive HTML visualization.
+hub/bridge metrics, and a self-contained interactive HTML visualization
+(`visualize`: hierarchy + force-directed views, community filters,
+`--collapse` for subsystem supernodes, `--layout` tiers for large designs).
 → [docs/analyses.md](docs/analyses.md)
 
 **AI assistants over MCP.** `hdl-kgraph setup` detects installed assistants

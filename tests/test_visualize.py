@@ -8,6 +8,7 @@ the unchanged "live" tier, so the original asserts hold by construction.
 import base64
 import gzip
 import json
+import re
 from pathlib import Path
 
 import networkx as nx
@@ -117,6 +118,20 @@ def test_template_canvas_sizing_survives_embedded_viewers(graph, tmp_path: Path)
     # bounded so a permanently hidden viewer can't spin an rAF chain forever.
     assert "requestAnimationFrame(resize)" in html
     assert "resizeRetries++ < 120" in html
+
+
+def test_template_defaults_to_hierarchy_view(graph, tmp_path: Path) -> None:
+    # The default-active tab is the hierarchy, so the CSS defaults must hide the
+    # canvas and show #hier without waiting on the (async) script. Otherwise the
+    # force graph paints over the hierarchy tab if the script is mid-flight or
+    # throws before the tab init line runs.
+    html = render_html(graph, tmp_path / "g.html").path.read_text()
+    style = html.split("</style>")[0]
+    # The graph canvas starts hidden in CSS, not just via the trailing JS line.
+    assert re.search(r"#canvas\s*\{[^}]*visibility:\s*hidden", style)
+    # #hier is shown by default (it is the active tab on load).
+    assert re.search(r"#hier\s*\{[^}]*display:\s*block", style)
+    assert not re.search(r"#hier\s*\{[^}]*display:\s*none", style)
 
 
 def test_payload_carries_communities(graph, tmp_path: Path) -> None:
