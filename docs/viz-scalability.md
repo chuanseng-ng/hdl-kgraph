@@ -1,9 +1,11 @@
 # Visualization scalability for very large designs
 
-**Status: parked — post-M6.** This work does not gate the MVP (M1–M4) or the
-v0.6 (M6) release. It is recorded here so the trade-off analysis is not lost
-and the phases can be picked up when a real design outgrows the current
-renderer.
+**Status: Phases 1–2 delivered; Phases 3–6 parked — post-M6.** This work does
+not gate the MVP (M1–M4) or the v0.6 (M6) release. The foundation — renderer
+hygiene (Phase 1) and the precomputed-layout "static" tier with auto-routing
+(Phase 2) — has shipped; the remaining phases are recorded here so the
+trade-off analysis is not lost and they can be picked up when a real design
+outgrows the static tier.
 
 ## Problem statement
 
@@ -183,17 +185,24 @@ this is Phase 1 for a reason.
 
 ## Phased implementation roadmap (parked, post-M6)
 
-- **Phase 1 — renderer hygiene** (`viz/template.html`): edge batching,
-  viewport culling, label cap, edge sampling. No new deps, no API change;
-  template behaviors pinned with string asserts in `tests/test_visualize.py`
-  in the style of the existing canvas-sizing tests.
-- **Phase 2 — precomputed layout**: new `viz/layout.py` with
-  `compute_layout(graph_view, communities, seed=42)` implementing the
-  community-stacked layout; `[layout]` extra (numpy ≥ 1.24, scipy ≥ 1.10) in
-  `pyproject.toml`; `render_html(..., layout=...)` and a `--layout` flag;
-  payload gains `"layout"` plus quantized per-node `x`/`y`; warn-and-fall-back
-  when numpy is missing (never fail the command). Tests: determinism,
-  fallback path, auto-threshold routing.
+- **Phase 1 — renderer hygiene** (`viz/template.html`) — **done.** Edge
+  batching into one `Path2D` per (dash, width-bucket); viewport culling of
+  off-screen nodes/edges; `MAX_LABELS` per-frame label cap; weight-prioritized
+  edge sampling above `MAX_DRAWN_EDGES` with a "showing X of Y edges" note. No
+  new deps, no API change; template behaviors pinned with string asserts in
+  `tests/test_visualize.py` in the style of the existing canvas-sizing tests.
+- **Phase 2 — precomputed layout** — **done.** New `viz/layout.py` with
+  `compute_layout(view, comm_of, seed=42)` implementing the community-stacked
+  layout (quotient-graph `spring_layout`, then per-community subgraphs offset
+  by √size); `[layout]` extra (numpy ≥ 1.24, scipy ≥ 1.10) in `pyproject.toml`;
+  `render_html(..., layout=...)` returning a `RenderResult` and a
+  `--layout auto|live|static` flag; tier thresholds (`LIVE_MAX_NODES`,
+  `LIVE_MAX_EDGES`, `STATIC_MAX_NODES`) as module constants; payload gains
+  `"layout"` plus quantized integer per-node `x`/`y`; the template's `STATIC`
+  branch skips the simulation and picks via `d3.quadtree`; warn-and-fall-back
+  to the live tier when numpy is missing (never fail the command). Tests cover
+  determinism, the fallback path, routing, and a scale smoke on a synthetic
+  graph.
 - **Phase 3 — aggregation/drill-down**: new `viz/aggregate.py` building
   supernodes/superlinks (two-level in full mode, reusing the unit-ownership
   traversal in `graph/metrics.py`); expand/collapse UI in the template;

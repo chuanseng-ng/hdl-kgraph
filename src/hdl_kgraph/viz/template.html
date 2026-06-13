@@ -184,30 +184,55 @@ const ctx = canvas.getContext("2d");
 const tooltip = document.getElementById("tooltip");
 let width = 0, height = 0, transform = d3.zoomIdentity, query = "";
 
+/* Phase-1 draw-loop budgets (viz-scalability): cap labels per frame and draw
+   a weight-prioritized edge sample past a threshold so pan/zoom stays
+   interactive on large graphs. Off-screen nodes/edges are culled regardless. */
+const MAX_LABELS = 400;
+const MAX_DRAWN_EDGES = 4000;
+
 const nodes = DATA.nodes.map(n => ({...n}));
 const byId = new Map(nodes.map(n => [n.id, n]));
 const links = DATA.links.filter(l => byId.has(l.source) && byId.has(l.target))
                         .map(l => ({...l}));
 
-/* Weak x/y gravity keeps disconnected components (and the big --full
-   clouds) from repelling each other off to infinity; full mode also gets
-   shorter links and softer charge so the layout stays compact. */
-const gravity = DATA.full ? 0.08 : 0.03;
-const sim = d3.forceSimulation(nodes)
-  .force("link", d3.forceLink(links).id(d => d.id)
-    .distance(DATA.full ? 40 : 60).strength(0.4))
-  .force("charge", d3.forceManyBody().strength(DATA.full ? -60 : -120))
-  .force("center", d3.forceCenter())
-  .force("x", d3.forceX().strength(gravity))
-  .force("y", d3.forceY().strength(gravity))
-  .force("collide", d3.forceCollide(10))
-  .on("tick", draw)
-  .on("end.fit", () => {
-    /* One-shot fit once the layout settles — unless the user already
-       panned or zoomed, in which case their viewpoint wins. */
-    sim.on("end.fit", null);
-    if (transform.k === 1 && transform.x === 0 && transform.y === 0) fitView();
-  });
+/* "static" tier: coordinates were precomputed in Python and shipped in the
+   payload (n.x / n.y), so we skip the simulation entirely and paint the first
+   frame immediately; picking uses a d3.quadtree. "live" tier (the default for
+   small graphs) keeps the in-browser force layout below, unchanged. */
+const STATIC = DATA.layout === "static";
+let sim = null, quadtree = null, needFit = false;
+
+function rebuildQuadtree() {
+  quadtree = d3.quadtree().x(d => d.x).y(d => d.y).addAll(nodes);
+}
+
+if (STATIC) {
+  /* forceLink would normally swap source/target ids for node refs; do it by
+     hand since no simulation runs. */
+  for (const l of links) { l.source = byId.get(l.source); l.target = byId.get(l.target); }
+  rebuildQuadtree();
+  needFit = true;  // one-shot fit once the view has a non-zero size (see resize)
+} else {
+  /* Weak x/y gravity keeps disconnected components (and the big --full
+     clouds) from repelling each other off to infinity; full mode also gets
+     shorter links and softer charge so the layout stays compact. */
+  const gravity = DATA.full ? 0.08 : 0.03;
+  sim = d3.forceSimulation(nodes)
+    .force("link", d3.forceLink(links).id(d => d.id)
+      .distance(DATA.full ? 40 : 60).strength(0.4))
+    .force("charge", d3.forceManyBody().strength(DATA.full ? -60 : -120))
+    .force("center", d3.forceCenter())
+    .force("x", d3.forceX().strength(gravity))
+    .force("y", d3.forceY().strength(gravity))
+    .force("collide", d3.forceCollide(10))
+    .on("tick", draw)
+    .on("end.fit", () => {
+      /* One-shot fit once the layout settles — unless the user already
+         panned or zoomed, in which case their viewpoint wins. */
+      sim.on("end.fit", null);
+      if (transform.k === 1 && transform.x === 0 && transform.y === 0) fitView();
+    });
+}
 
 function nodeVisible(n) {
   if (!activeKinds.has(n.kind)) return false;
@@ -220,21 +245,56 @@ function draw() {
   ctx.translate(width / 2 + transform.x, height / 2 + transform.y);
   ctx.scale(transform.k, transform.k);
   const q = query.toLowerCase();
+
+  /* Transformed viewport in world coordinates, padded a little, for culling. */
+  const pad = 24;
+  const vx0 = (-width / 2 - transform.x) / transform.k - pad;
+  const vx1 = (width / 2 - transform.x) / transform.k + pad;
+  const vy0 = (-height / 2 - transform.y) / transform.k - pad;
+  const vy1 = (height / 2 - transform.y) / transform.k + pad;
+  const inView = (x, y) => x >= vx0 && x <= vx1 && y >= vy0 && y <= vy1;
+
+  /* Edges: filter (kind/visibility) and cull, then optionally down-sample by
+     weight, then batch into one Path2D per (dash, width-bucket) so the whole
+     graph strokes in a handful of draw calls instead of one per edge. */
+  let drawn = [];
   for (const l of links) {
     if (!activeEdges.has(l.kind) || !nodeVisible(l.source) || !nodeVisible(l.target)) continue;
-    ctx.beginPath();
-    ctx.setLineDash(l.confidence < 0.8 ? [4, 3] : []);
-    ctx.strokeStyle = "#3b4657";
-    ctx.lineWidth = Math.min(2.5, 0.6 + (l.weight || 1) * 0.3);
-    ctx.moveTo(l.source.x, l.source.y);
-    ctx.lineTo(l.target.x, l.target.y);
-    ctx.stroke();
+    if (!inView(l.source.x, l.source.y) && !inView(l.target.x, l.target.y)) continue;
+    drawn.push(l);
+  }
+  const totalEdges = drawn.length;
+  const sampled = drawn.length > MAX_DRAWN_EDGES;
+  if (sampled) {
+    drawn.sort((a, b) => (b.weight || 1) - (a.weight || 1));
+    drawn = drawn.slice(0, MAX_DRAWN_EDGES);
+  }
+  const batches = new Map();  // "dash:widthBucket" -> {dash, width, path}
+  for (const l of drawn) {
+    const dash = l.confidence < 0.8 ? 1 : 0;
+    const width = Math.round(Math.min(2.5, 0.6 + (l.weight || 1) * 0.3) * 2) / 2;
+    const key = dash + ":" + width;
+    let b = batches.get(key);
+    if (!b) { b = { dash, width, path: new Path2D() }; batches.set(key, b); }
+    b.path.moveTo(l.source.x, l.source.y);
+    b.path.lineTo(l.target.x, l.target.y);
+  }
+  ctx.strokeStyle = "#3b4657";
+  for (const b of batches.values()) {
+    ctx.setLineDash(b.dash ? [4, 3] : []);
+    ctx.lineWidth = b.width;
+    ctx.stroke(b.path);
   }
   ctx.setLineDash([]);
-  let shown = 0;
+
+  /* Nodes: cull off-screen, cap labels drawn per frame (search hits always
+     labeled and counted first). */
+  let shown = 0, labels = 0;
+  const labelZoom = transform.k > 0.9;
   for (const n of nodes) {
     if (!nodeVisible(n)) continue;
     shown++;
+    if (!inView(n.x, n.y)) continue;
     const hit = q && n.name.toLowerCase().includes(q);
     const r = hit ? 8 : 5;
     ctx.beginPath();
@@ -244,15 +304,17 @@ function draw() {
       : color(n.kind);
     ctx.fill();
     if (n.unresolved) { ctx.strokeStyle = "#bf616a"; ctx.lineWidth = 1.4; ctx.stroke(); }
-    if (transform.k > 0.9 || hit) {
+    if ((labelZoom || hit) && labels < MAX_LABELS) {
+      labels++;
       ctx.fillStyle = hit ? "#ffd479" : "#9aa3b2";
       ctx.font = "10px monospace";
       ctx.fillText(n.name, n.x + r + 3, n.y + 3);
     }
   }
   ctx.restore();
+  const edgeNote = sampled ? `showing ${drawn.length} of ${totalEdges} edges` : `${links.length} edges`;
   document.getElementById("stats").textContent = nodes.length
-    ? `${shown}/${nodes.length} nodes · ${links.length} edges`
+    ? `${shown}/${nodes.length} nodes · ${edgeNote}`
     : "no nodes in the graph payload — rebuild and re-run visualize";
 }
 function refresh() { draw(); }
@@ -279,6 +341,13 @@ function resize() {
   canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   draw();
+  /* Static tier has no settling simulation to fit on, so fit once here as
+     soon as the view has a real size — unless the user already moved. */
+  if (needFit && width && height &&
+      transform.k === 1 && transform.x === 0 && transform.y === 0) {
+    needFit = false;
+    fitView();
+  }
 }
 new ResizeObserver(resize).observe(document.getElementById("view"));
 resize();
@@ -287,7 +356,8 @@ function pick(event) {
   const [px, py] = d3.pointer(event.sourceEvent || event, canvas);
   const x = (px - width / 2 - transform.x) / transform.k;
   const y = (py - height / 2 - transform.y) / transform.k;
-  const n = sim.find(x, y, 12 / transform.k);
+  const n = STATIC ? quadtree.find(x, y, 12 / transform.k)
+                   : sim.find(x, y, 12 / transform.k);
   return n && nodeVisible(n) ? n : null;
 }
 const zoom = d3.zoom().scaleExtent([0.05, 8])
@@ -295,11 +365,22 @@ const zoom = d3.zoom().scaleExtent([0.05, 8])
 d3.select(canvas)
   .call(d3.drag()
     .subject(pick)
-    .on("start", e => { if (!e.active) sim.alphaTarget(0.25).restart();
-                        e.subject.fx = e.subject.x; e.subject.fy = e.subject.y; })
-    .on("drag", e => { e.subject.fx = e.x; e.subject.fy = e.y; })
-    .on("end", e => { if (!e.active) sim.alphaTarget(0);
-                      e.subject.fx = null; e.subject.fy = null; }))
+    /* Live tier nudges the simulation; static tier repositions the node
+       directly (no physics) and rebuilds the picking quadtree on drop. */
+    .on("start", e => {
+      if (STATIC) return;
+      if (!e.active) sim.alphaTarget(0.25).restart();
+      e.subject.fx = e.subject.x; e.subject.fy = e.subject.y;
+    })
+    .on("drag", e => {
+      if (STATIC) { e.subject.x = e.x; e.subject.y = e.y; draw(); return; }
+      e.subject.fx = e.x; e.subject.fy = e.y;
+    })
+    .on("end", e => {
+      if (STATIC) { rebuildQuadtree(); return; }
+      if (!e.active) sim.alphaTarget(0);
+      e.subject.fx = null; e.subject.fy = null;
+    }))
   .call(zoom);
 function fitView() {
   /* Pan/zoom so the visible nodes fill ~90% of the viewport. Applied via
