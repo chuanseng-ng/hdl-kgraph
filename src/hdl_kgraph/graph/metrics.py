@@ -8,7 +8,8 @@ heavily-referenced missing module still shows up as a hub.
 
 * fan-in / fan-out — weighted degree: how many instantiation sites point at
   a unit / how many instances it contains.
-* hubs and bridges — betweenness centrality on the projection; true cut
+* hubs and bridges — betweenness centrality on the projection (sampled with
+  a fixed seed above ``BETWEENNESS_EXACT_MAX_NODES`` units); true cut
   vertices additionally flagged via articulation points on the undirected
   view.
 * communities — Louvain (``networkx.community.louvain_communities``) on the
@@ -27,6 +28,14 @@ from hdl_kgraph.schema import EdgeKind, NodeKind
 #: Design-unit kinds that appear in the projection.
 _UNIT_KINDS = frozenset({NodeKind.MODULE, NodeKind.INTERFACE, NodeKind.PROGRAM, NodeKind.ENTITY})
 
+#: Projections larger than this get sampled betweenness instead of exact
+#: (exact is O(V*E): fine at 1k units, minutes at 10k).
+BETWEENNESS_EXACT_MAX_NODES = 500
+#: Pivot-sample size (``k``) for approximate betweenness.
+BETWEENNESS_SAMPLES = 256
+#: Fixed seed so repeated sampled runs agree (same convention as communities()).
+BETWEENNESS_SEED = 42
+
 
 @dataclass
 class ModuleMetrics:
@@ -41,6 +50,14 @@ class ModuleMetrics:
     betweenness: float
     is_articulation: bool  # removing it disconnects the projection
     unresolved: bool
+
+
+@dataclass
+class MetricsResult:
+    """``module_metrics`` output: ranked per-unit metrics plus run-level flags."""
+
+    modules: list[ModuleMetrics]
+    betweenness_approximate: bool = False  # sampled with k=BETWEENNESS_SAMPLES
 
 
 def _unit_of(g: nx.MultiDiGraph, node_id: str) -> str | None:
@@ -92,10 +109,22 @@ def module_projection(g: nx.MultiDiGraph) -> nx.DiGraph:
     return proj
 
 
-def module_metrics(g: nx.MultiDiGraph) -> list[ModuleMetrics]:
-    """Per-unit metrics, hubs first (descending betweenness)."""
+def module_metrics(g: nx.MultiDiGraph) -> MetricsResult:
+    """Per-unit metrics, hubs first (descending betweenness).
+
+    Above ``BETWEENNESS_EXACT_MAX_NODES`` projection nodes, betweenness is
+    estimated from ``BETWEENNESS_SAMPLES`` pivots with a fixed seed (so
+    repeated runs agree) and ``betweenness_approximate`` is set on the result.
+    """
     proj = module_projection(g)
-    betweenness = nx.betweenness_centrality(proj)
+    n = proj.number_of_nodes()
+    approximate = n > BETWEENNESS_EXACT_MAX_NODES
+    if approximate:
+        betweenness = nx.betweenness_centrality(
+            proj, k=min(n, BETWEENNESS_SAMPLES), seed=BETWEENNESS_SEED
+        )
+    else:
+        betweenness = nx.betweenness_centrality(proj)
     articulation = (
         set(nx.articulation_points(proj.to_undirected())) if proj.number_of_nodes() else set()
     )
@@ -113,7 +142,8 @@ def module_metrics(g: nx.MultiDiGraph) -> list[ModuleMetrics]:
         )
         for node_id, data in proj.nodes(data=True)
     ]
-    return sorted(records, key=lambda r: (-r.betweenness, -(r.fan_in + r.fan_out), r.name))
+    records.sort(key=lambda r: (-r.betweenness, -(r.fan_in + r.fan_out), r.name))
+    return MetricsResult(modules=records, betweenness_approximate=approximate)
 
 
 def communities(g: nx.MultiDiGraph, seed: int = 42) -> list[list[str]]:

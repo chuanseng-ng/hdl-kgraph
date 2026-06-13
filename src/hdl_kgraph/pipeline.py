@@ -7,8 +7,9 @@ entry point.
 Pass 0 (M2) runs *serially in compile order* — filelist order, or sorted
 discovery order — threading one :class:`MacroTable` through all files the
 way simulators carry ``+define+`` and earlier-file defines forward. Pass 1
-parses each already-expanded unit independently, so it is parallelizable
-when it matters (currently run serially; see issue #26).
+parses each already-expanded unit independently, so large builds fan parse
+work out to a process pool (``--jobs``); results merge back in discovery
+order, keeping the linked graph identical to a serial build.
 
 A compilation unit whose content was already spliced into an earlier unit
 via ``\\`include`` is skipped (``skipped_reason="included"``) instead of
@@ -31,11 +32,14 @@ effective build inputs (defines, incdirs, filelist sets, library map — the
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import time
+from collections import deque
 from collections.abc import Callable
+from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -65,7 +69,13 @@ from hdl_kgraph.parser.filelist import (
     flattened_warnings,
     parse_filelist,
 )
-from hdl_kgraph.parser.preprocessor import MacroTable, PreprocEmitter, Preprocessor
+from hdl_kgraph.parser.preprocessor import (
+    LineOrigin,
+    MacroTable,
+    PreprocEmitter,
+    PreprocessedFile,
+    Preprocessor,
+)
 from hdl_kgraph.parser.systemverilog import SystemVerilogParser
 from hdl_kgraph.parser.vhdl import DEFAULT_LIBRARY, VhdlParser
 from hdl_kgraph.schema import Edge, EdgeKind, Language, Node, NodeKind
@@ -79,6 +89,16 @@ from hdl_kgraph.storage.sqlite_store import (
 
 DB_DIRNAME = ".hdl-kgraph"
 DB_FILENAME = "graph.db"
+
+#: Auto job count: ``min(os.cpu_count(), this)`` — parsing saturates well
+#: before the IPC overhead of more workers pays off.
+DEFAULT_JOBS_CAP = 8
+#: Auto mode stays serial below this many fresh-parse candidates: spawning
+#: a pool costs more than it saves on small builds and incremental updates.
+MIN_PARALLEL_FILES = 64
+#: ... and below this much total candidate source text: parse time tracks
+#: bytes, and for many tiny files per-task IPC outweighs the parallel parse.
+MIN_PARALLEL_KB = 2048
 
 #: Stage-progress callback: called with one human-readable line per
 #: pipeline stage as it starts.
@@ -223,6 +243,55 @@ def run_build(
     )
 
 
+# Pass-1 parse tasks run in pool workers. Tree-sitter parser objects are not
+# picklable, so each worker process builds its own lazily; everything that
+# crosses the process boundary (str, LineOrigin, FileIR) is a plain dataclass.
+_WORKER_SV_PARSER: SystemVerilogParser | None = None
+_WORKER_VHDL_PARSER: VhdlParser | None = None
+
+
+def _parse_sv_task(relpath: str, text: str, line_map: list[LineOrigin]) -> FileIR:
+    """Parse one already-expanded SV/Verilog unit (pool worker entry point)."""
+    global _WORKER_SV_PARSER
+    if _WORKER_SV_PARSER is None:
+        _WORKER_SV_PARSER = SystemVerilogParser()
+    return _WORKER_SV_PARSER.parse(Path(relpath), text, line_map=line_map)
+
+
+def _parse_vhdl_task(relpath: str, text: str, library: str) -> FileIR:
+    """Parse one VHDL unit (pool worker entry point)."""
+    global _WORKER_VHDL_PARSER
+    if _WORKER_VHDL_PARSER is None:
+        _WORKER_VHDL_PARSER = VhdlParser()
+    return _WORKER_VHDL_PARSER.parse(Path(relpath), text, library=library)
+
+
+def _effective_jobs(options: BuildOptions, candidates: int, candidate_bytes: int) -> int:
+    """Parse workers for this run; explicit ``--jobs`` wins over the auto heuristic."""
+    if options.jobs is not None:
+        return max(1, options.jobs)
+    if candidates < MIN_PARALLEL_FILES or candidate_bytes < MIN_PARALLEL_KB * 1024:
+        return 1
+    return min(os.cpu_count() or 1, DEFAULT_JOBS_CAP)
+
+
+@dataclass
+class _PendingUnit:
+    """One non-skipped unit awaiting finalization, kept in discovery order."""
+
+    found: DiscoveredFile
+    ir: FileIR | None = None  # ready: reused or parsed inline
+    future: Future[FileIR] | None = None  # in-flight pool parse
+    pp: PreprocessedFile | None = None  # SV fresh parse: PreprocEmitter input
+    reused: bool = False
+
+    def ready(self) -> bool:
+        return self.future is None or self.future.done()
+
+    def result(self) -> FileIR:
+        return self.ir if self.ir is not None else self.future.result()  # type: ignore[union-attr]
+
+
 def _execute(
     root: Path,
     db_path: Path | None,
@@ -274,8 +343,6 @@ def _execute(
         macros=MacroTable(inputs.defines),
         branch_mode="both" if report.both_branches else "select",
     )
-    parser = SystemVerilogParser()
-    vhdl_parser = VhdlParser()
     irs: list[FileIR] = []
     units: dict[str, StoredUnit] = {}
     files_meta: list[FileMeta] = []
@@ -284,58 +351,34 @@ def _execute(
     consumed: set[str] = set()  # spliced into an earlier unit -> skip standalone
     vhdl_file_libs: dict[str, str] = {}  # relpath -> library name
 
-    progress(f"pass 0+1: preprocessing and parsing {len(discovered)} file(s)")
-    for index, found in enumerate(discovered, start=1):
-        # Skipped/reused files advance the counter too: it always reaches total.
-        tick(index, len(discovered))
-        skipped_reason = found.skipped_reason
-        if skipped_reason is None and found.relpath in consumed:
-            skipped_reason = "included"
-        if skipped_reason is not None:
-            report.skipped[skipped_reason] = report.skipped.get(skipped_reason, 0) + 1
-            files_meta.append(
-                FileMeta(
-                    path=found.relpath,
-                    language=found.language,
-                    content_hash=found.content_hash,
-                    size_bytes=found.size_bytes,
-                    skipped_reason=skipped_reason,
-                )
-            )
-            continue
+    def finalize(entry: _PendingUnit) -> None:
+        """Per-unit accounting, called strictly in discovery order."""
+        found = entry.found
+        ir = entry.result()
         file_warnings: list[str] = []
-        ir = _reuse_unit(found, reuse, preprocessor, processed, consumed)
-        if ir is not None:
+        if entry.reused:
             report.reused_files += 1
             # The preprocessor does not re-run for reused units; carry their
             # previous build's warnings forward.
             file_warnings = list((prior_warnings or {}).get(found.relpath, []))
             if found.language is Language.VHDL:
-                vhdl_file_libs[found.relpath] = _library_for(found.path, options.vhdl_libraries)
                 report.vhdl_files += 1
             units[found.relpath] = reuse[found.relpath]
         elif found.language is Language.VHDL:
-            # VHDL has no SV preprocessor pass; route by configured library.
-            library = _library_for(found.path, options.vhdl_libraries)
-            vhdl_file_libs[found.relpath] = library
-            text = found.path.read_text(errors="replace")
-            ir = vhdl_parser.parse(Path(found.relpath), text, library=library)
             report.vhdl_files += 1
             units[found.relpath] = StoredUnit(
                 ir=ir_codec.ir_to_json(ir), macro_events="[]", included="[]"
             )
         else:
-            pp = preprocessor.preprocess(found.path)
-            processed.add(found.relpath)
-            consumed |= pp.included_relpaths - processed
-            ir = parser.parse(Path(found.relpath), pp.text, line_map=pp.line_map)
+            pp = entry.pp
+            assert pp is not None
             # One emitter per unit keeps each stored IR self-contained; the
             # linker dedupes repeats across units by first occurrence.
             PreprocEmitter().emit(pp, ir)
             report.includes_resolved += sum(1 for ev in pp.includes if ev.resolved is not None)
             report.includes_unresolved += sum(1 for ev in pp.includes if ev.resolved is None)
             file_warnings = list(pp.warnings)
-            macro_keys |= {(d.file, d.name, d.line) for d in pp.macro_defs}
+            macro_keys.update((d.file, d.name, d.line) for d in pp.macro_defs)
             units[found.relpath] = StoredUnit(
                 ir=ir_codec.ir_to_json(ir),
                 macro_events=ir_codec.macro_events_to_json(pp.macro_events),
@@ -361,6 +404,87 @@ def _execute(
                 parse_errors=list(ir.parse_errors),
             )
         )
+
+    fresh = [f for f in discovered if f.skipped_reason is None and f.relpath not in reuse]
+    jobs = _effective_jobs(options, len(fresh), sum(f.size_bytes for f in fresh))
+    progress(
+        f"pass 0+1: preprocessing and parsing {len(discovered)} file(s)"
+        + (f" ({jobs} parse workers)" if jobs > 1 else "")
+    )
+    # Pass 0 streams parse tasks to the pool as it expands each unit; results
+    # are drained in discovery order (the linker dedupes by first occurrence,
+    # so `irs` order must match a serial build) which also bounds how many
+    # expanded texts stay in memory at once.
+    pending: deque[_PendingUnit] = deque()
+    with contextlib.ExitStack() as stack:
+        executor = stack.enter_context(ProcessPoolExecutor(max_workers=jobs)) if jobs > 1 else None
+        for index, found in enumerate(discovered, start=1):
+            # Skipped/reused files advance the counter too: it always reaches total.
+            tick(index, len(discovered))
+            skipped_reason = found.skipped_reason
+            if skipped_reason is None and found.relpath in consumed:
+                skipped_reason = "included"
+            if skipped_reason is not None:
+                report.skipped[skipped_reason] = report.skipped.get(skipped_reason, 0) + 1
+                files_meta.append(
+                    FileMeta(
+                        path=found.relpath,
+                        language=found.language,
+                        content_hash=found.content_hash,
+                        size_bytes=found.size_bytes,
+                        skipped_reason=skipped_reason,
+                    )
+                )
+                continue
+            ir = _reuse_unit(found, reuse, preprocessor, processed, consumed)
+            if ir is not None:
+                if found.language is Language.VHDL:
+                    vhdl_file_libs[found.relpath] = _library_for(found.path, options.vhdl_libraries)
+                pending.append(_PendingUnit(found=found, ir=ir, reused=True))
+            elif found.language is Language.VHDL:
+                # VHDL has no SV preprocessor pass; route by configured library.
+                library = _library_for(found.path, options.vhdl_libraries)
+                vhdl_file_libs[found.relpath] = library
+                text = found.path.read_text(errors="replace")
+                if executor is None:
+                    pending.append(
+                        _PendingUnit(found=found, ir=_parse_vhdl_task(found.relpath, text, library))
+                    )
+                else:
+                    pending.append(
+                        _PendingUnit(
+                            found=found,
+                            future=executor.submit(_parse_vhdl_task, found.relpath, text, library),
+                        )
+                    )
+            else:
+                pp = preprocessor.preprocess(found.path)
+                processed.add(found.relpath)
+                consumed |= pp.included_relpaths - processed
+                if executor is None:
+                    pending.append(
+                        _PendingUnit(
+                            found=found,
+                            ir=_parse_sv_task(found.relpath, pp.text, pp.line_map),
+                            pp=pp,
+                        )
+                    )
+                else:
+                    pending.append(
+                        _PendingUnit(
+                            found=found,
+                            future=executor.submit(
+                                _parse_sv_task, found.relpath, pp.text, pp.line_map
+                            ),
+                            pp=pp,
+                        )
+                    )
+            while pending and pending[0].ready():
+                finalize(pending.popleft())
+        if pending:
+            progress(f"pass 1: waiting for {len(pending)} parse result(s)")
+            while pending:
+                finalize(pending.popleft())
     report.macros_defined = len(macro_keys)
 
     # Nothing parseable: the CLI treats this as an error, so leave any
@@ -529,11 +653,11 @@ def scan_changes(root: Path, db_path: Path, options: BuildOptions | None = None)
         if options.max_file_size_kb is not None
         else DEFAULT_MAX_FILE_SIZE_KB
     )
-    _, stored_files, _ = SqliteStore(db_path).load()
+    stored_hashes = SqliteStore(db_path).load_file_hashes()
     inputs = _resolve_inputs(options)
     discovered = _discover(root, base, options, inputs, max_kb)
     current = _current_hashes(base, inputs, discovered)
-    return diff_hashes({f.path: f.content_hash for f in stored_files}, current)
+    return diff_hashes(stored_hashes, current)
 
 
 def _current_hashes(

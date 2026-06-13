@@ -5,8 +5,9 @@ from pathlib import Path
 
 import pytest
 
+from hdl_kgraph.config import BuildOptions
 from hdl_kgraph.incremental import ChangeSet, detect_git_changes, diff_hashes
-from hdl_kgraph.pipeline import run_build, run_update
+from hdl_kgraph.pipeline import run_build, run_update, scan_changes
 from hdl_kgraph.schema import EdgeKind
 from hdl_kgraph.storage.sqlite_store import SqliteStore
 
@@ -210,6 +211,17 @@ def test_diff_hashes() -> None:
     assert changes == ChangeSet(changed=["b.sv"], added=["d.sv"], removed=["c.sv"])
     assert bool(changes)
     assert not ChangeSet()
+
+
+def test_scan_changes_clean_with_skipped_file(tmp_path: Path) -> None:
+    # Skipped files keep their stored hash, so an untouched tree diffs clean
+    # even though they never parsed (guards the load_file_hashes fast path).
+    (tmp_path / "a.sv").write_text("module a;\nendmodule\n")
+    (tmp_path / "big.sv").write_text("module big;\nendmodule\n" + "// pad\n" * 200)
+    options = BuildOptions(max_file_size_kb=1)
+    report = run_build(tmp_path, options=options)
+    assert report.skipped.get("size") == 1
+    assert not scan_changes(tmp_path, report.db_path, options)
 
 
 def test_detect_git_changes(tmp_path: Path) -> None:

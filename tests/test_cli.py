@@ -218,6 +218,20 @@ def test_metrics_communities_json(project: Path) -> None:
     payload = json_mod.loads(result.output)
     assert payload["modules"]
     assert payload["communities"]
+    assert payload["betweenness_approximate"] is False
+
+
+def test_metrics_notes_sampled_betweenness(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from hdl_kgraph.graph import metrics as metrics_mod
+
+    monkeypatch.setattr(metrics_mod, "BETWEENNESS_EXACT_MAX_NODES", 1)
+    result = CliRunner().invoke(main, ["metrics", *db_args(project)])
+    assert result.exit_code == 0, result.output
+    assert "note: betweenness sampled" in result.output
+    json_result = CliRunner().invoke(main, ["metrics", "--json", *db_args(project)])
+    import json as json_mod
+
+    assert json_mod.loads(json_result.output)["betweenness_approximate"] is True
 
 
 def test_tree_from_top(project: Path) -> None:
@@ -328,6 +342,15 @@ def small_project(tmp_path: Path) -> Path:
     result = CliRunner().invoke(main, ["build", str(tmp_path)])
     assert result.exit_code == 0, result.output
     return tmp_path
+
+
+def test_build_jobs_flag(small_project: Path) -> None:
+    serial = CliRunner().invoke(main, ["build", str(small_project), "--jobs", "1"])
+    assert serial.exit_code == 0, serial.output
+    parallel = CliRunner().invoke(main, ["build", str(small_project), "-j", "2"])
+    assert parallel.exit_code == 0, parallel.output
+    nodes_line = next(ln for ln in serial.output.splitlines() if "nodes:" in ln)
+    assert nodes_line in parallel.output
 
 
 def test_help_lists_m4_commands() -> None:
