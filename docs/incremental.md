@@ -30,13 +30,22 @@ continues).
 ```bash
 hdl-kgraph detect-changes          # M/A/D lines vs the last build
 hdl-kgraph detect-changes --git    # ...or vs git HEAD (any ref works)
+hdl-kgraph detect-changes --svn    # ...or vs the svn base (any revision works)
+hdl-kgraph detect-changes --p4     # ...or the Perforce workspace's local changes
+hdl-kgraph detect-changes --vcs    # ...or auto-detect which VCS the tree uses
 hdl-kgraph detect-changes --closure  # include files dirtied via include/macro deps
 ```
 
+`--git`, `--svn`, and `--p4` each take an optional ref/revision
+(`--git main`, `--svn r42`); `--vcs` picks git/svn/p4 automatically from the
+tree (`.git`/`.svn`, or a configured Perforce connection) and diffs against
+that VCS's default ref. Perforce support reports the *local* workspace changes
+(opened files plus reconciled on-disk edits) and needs a configured p4 client.
+
 Exit codes follow the `git diff --exit-code` convention so scripts can tell
 the cases apart: **0** nothing changed, **1** changes detected, **2** error
-(missing database, bad config, ...). `--json` emits the change set as
-structured data.
+(missing database, bad config, VCS unavailable, ...). `--json` emits the change
+set as structured data.
 
 ## `impact`
 

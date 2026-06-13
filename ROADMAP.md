@@ -185,7 +185,7 @@ affect?"
       full rebuild), then re-links pass 2 — **per-unit pass-1 IRs (plus macro
       event logs) persist in the `file_irs` table; unchanged units re-link
       without re-parsing**
-- [x] `watch` via watchdog (debounced); `detect-changes` (vs git HEAD or last build)
+- [x] `watch` via watchdog (debounced); `detect-changes` (vs git/svn/Perforce or last build)
 - [x] Impact radius: `impact <file|module>` → transitively affected modules via
       `INSTANTIATES`/`IMPORTS`/`INCLUDES`/`EXTENDS` (reverse `` `include `` and
       macro edges included — a header change dirties all users; VHDL
