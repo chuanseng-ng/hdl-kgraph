@@ -250,6 +250,28 @@ function resolveEntity(id) {
   return id;
 }
 
+// Remember entity positions across rebuilds so expand/collapse animates in
+// place: a persistent entity keeps its spot, and a newly-revealed child emerges
+// from its parent group instead of flying in from the origin.
+const posById = new Map();
+function snapshotPositions() {
+  if (!nodes) return;
+  for (const n of nodes)
+    if (Number.isFinite(n.x)) posById.set(n.id, {x: n.x, y: n.y, vx: n.vx || 0, vy: n.vy || 0});
+}
+function seedPosition(entity) {
+  const prior = posById.get(entity.id);
+  if (prior) { entity.x = prior.x; entity.y = prior.y; entity.vx = prior.vx; entity.vy = prior.vy; return; }
+  // New entity: start at the nearest ancestor group that already has a place.
+  let anchor = null;
+  if (entity.group) {
+    if (entity.level === "unit") anchor = posById.get("comm:" + entity.community);
+  } else {
+    anchor = (entity.unit && posById.get("unit:" + entity.unit)) || posById.get("comm:" + entity.community);
+  }
+  if (anchor) { entity.x = anchor.x + (Math.random() - 0.5) * 30; entity.y = anchor.y + (Math.random() - 0.5) * 30; }
+}
+
 let nodes, links, byId;
 function buildGraph() {
   if (!COLLAPSE) {
@@ -267,7 +289,9 @@ function buildGraph() {
     if (eid === n.id && unitIds.has(n.id)) continue;
     if (seen.has(eid)) continue;
     seen.add(eid);
-    nodes.push(groupMeta.has(eid) ? {...groupMeta.get(eid)} : {...n});
+    const entity = groupMeta.has(eid) ? {...groupMeta.get(eid)} : {...n};
+    seedPosition(entity);  // keep/seed a position so expand/collapse animates in place
+    nodes.push(entity);
   }
   byId = new Map(nodes.map(n => [n.id, n]));
   /* Resolve every edge to its live endpoints and sum parallel edges. */
@@ -482,6 +506,7 @@ d3.select(canvas)
    empty space to collapse everything. rebuild() re-derives the visible graph
    from `expanded`, re-binds the simulation, and reheats it so entities settle. */
 function rebuild() {
+  snapshotPositions();  // remember where everything is before the graph changes
   buildGraph();
   sim.nodes(nodes);
   sim.force("link").links(links);

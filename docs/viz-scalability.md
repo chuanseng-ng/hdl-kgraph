@@ -221,10 +221,13 @@ this is Phase 1 for a reason.
   and double-click empty space collapses everything. **Search auto-expands**
   every group on the way to a match (and re-collapses those it opened once the
   query clears), so hits hidden inside collapsed subsystems/units are reachable.
-  Tests: super-edge weights match projection sums, two-level counts/labels,
-  representative labels, payload round-trips, and the template drill-down /
-  two-level / search-expand branches. **Deferred:** precomputed member offsets
-  for the expand animation (the only Phase 3 item left).
+  Expand/collapse **animates in place**: entity positions are remembered across
+  rebuilds (`posById`) and newly-revealed children are seeded at their parent
+  group's position, so they emerge from the supernode rather than flying in from
+  the origin — client-side, no precomputed layout needed. Tests: super-edge
+  weights match projection sums, two-level counts/labels, representative labels,
+  payload round-trips, and the template drill-down / two-level / search-expand /
+  position-seeding branches. Phase 3 is complete.
 - **Phase 4 — payload guards** (split for reviewability):
   - **4a — inline size guard** — **done.** `render_html` measures the raw
     payload and raises above `MAX_INLINE_BYTES` (`viz/__init__.py`) with an
