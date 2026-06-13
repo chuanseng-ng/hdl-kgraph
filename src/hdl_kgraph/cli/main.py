@@ -288,6 +288,11 @@ def _echo_build_report(report: BuildReport, verbose: bool = False) -> None:
         if verbose:
             for path, count in sorted(report.file_errors.items()):
                 click.echo(f"      {path}: {count} error(s)")
+                details = report.file_error_details.get(path, [])
+                for detail in details:
+                    click.echo(f"        {detail}")
+                if details and count > len(details):
+                    click.echo(f"        ... and {count - len(details)} more")
     if report.macros_defined:
         click.echo(f"  macros defined: {report.macros_defined}")
     if report.includes_resolved or report.includes_unresolved:
@@ -324,6 +329,7 @@ def _echo_file_diagnostics(files: list, as_json: bool = False) -> None:
                 {
                     "path": f.path,
                     "parse_errors": f.parse_error_count,
+                    "errors": f.parse_errors,
                     "skipped_reason": f.skipped_reason,
                     "warnings": f.warnings,
                 }
@@ -337,6 +343,10 @@ def _echo_file_diagnostics(files: list, as_json: bool = False) -> None:
             continue
         if f.parse_error_count:
             click.echo(f"{f.path}: {f.parse_error_count} parse error(s)")
+            for detail in f.parse_errors:
+                click.echo(f"  {detail}")
+            if f.parse_errors and f.parse_error_count > len(f.parse_errors):
+                click.echo(f"  ... and {f.parse_error_count - len(f.parse_errors)} more")
         for warning in f.warnings:
             click.echo(f"{f.path}: warning: {warning}")
     if not flagged:
@@ -642,6 +652,8 @@ def watch(
         if verbose:
             for path, count in sorted(report.build.file_errors.items()):
                 click.echo(f"    parse errors: {path}: {count}")
+                for detail in report.build.file_error_details.get(path, []):
+                    click.echo(f"      {detail}")
             for warning in report.build.preproc_warnings:
                 click.echo(f"    warning: {warning}")
 

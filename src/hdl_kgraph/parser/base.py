@@ -22,6 +22,19 @@ from typing import Any, Protocol
 
 from hdl_kgraph.schema import CONFIDENCE_RESOLVED, Edge, EdgeKind, Node
 
+#: Per-file cap on recorded parse-error *details*; ``parse_error_count``
+#: stays exact beyond it (a garbage/minified file must not bloat the store).
+MAX_PARSE_ERRORS = 20
+
+
+def error_snippet(text: str, limit: int = 50) -> str:
+    """First line of *text*, trimmed to *limit* chars, for error messages."""
+    first, _, rest = text.strip().partition("\n")
+    first = first.strip()
+    if len(first) > limit or rest:
+        return first[:limit].rstrip() + "..."
+    return first
+
 
 @dataclass
 class UnresolvedRef:
@@ -81,6 +94,16 @@ class FileIR:
     # References to be resolved in pass 2 (instance targets, imports, extends).
     unresolved_refs: list[UnresolvedRef] = field(default_factory=list)
     parse_error_count: int = 0
+    # Human-readable ``file:line: message`` details for the first
+    # MAX_PARSE_ERRORS errors (so `build -v`/`status --errors` can point at
+    # the offending source, not just count it).
+    parse_errors: list[str] = field(default_factory=list)
+
+    def record_parse_error(self, message: str) -> None:
+        """Count one parse error, keeping the first MAX_PARSE_ERRORS details."""
+        self.parse_error_count += 1
+        if len(self.parse_errors) < MAX_PARSE_ERRORS:
+            self.parse_errors.append(message)
 
 
 class ParserBackend(Protocol):

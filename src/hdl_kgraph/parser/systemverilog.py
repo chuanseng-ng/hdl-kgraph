@@ -67,7 +67,7 @@ from tree_sitter import Node as TSNode
 from tree_sitter import Parser as TSParser
 
 from hdl_kgraph.ids import decl_node_id, file_node_id
-from hdl_kgraph.parser.base import FileIR, UnresolvedRef
+from hdl_kgraph.parser.base import FileIR, UnresolvedRef, error_snippet
 from hdl_kgraph.parser.preprocessor import LineOrigin
 from hdl_kgraph.schema import (
     CONFIDENCE_AMBIGUOUS,
@@ -264,12 +264,20 @@ class _Walker:
 
     # -- traversal -----------------------------------------------------------
 
+    def _record_parse_error(self, node: TSNode) -> None:
+        origin = self._origin(node)
+        if node.is_missing:
+            message = f"missing `{node.type}`"
+        else:
+            message = f"syntax error near `{error_snippet(self._text(node))}`"
+        self.ir.record_parse_error(f"{origin.file}:{origin.line}: {message}")
+
     def visit(self, node: TSNode) -> None:
         if node.is_missing:
-            self.ir.parse_error_count += 1
+            self._record_parse_error(node)
         if node.type == "ERROR":
             # Skip the subtree but keep going with siblings: partial results.
-            self.ir.parse_error_count += 1
+            self._record_parse_error(node)
             return
         handler = self._DISPATCH.get(node.type)
         if handler is not None:
@@ -286,9 +294,9 @@ class _Walker:
         """Keep ``parse_error_count`` honest for subtrees a handler consumes
         without re-dispatching (mirrors :meth:`visit`'s counting)."""
         if node.is_missing:
-            self.ir.parse_error_count += 1
+            self._record_parse_error(node)
         if node.type == "ERROR":
-            self.ir.parse_error_count += 1
+            self._record_parse_error(node)
             return
         for child in node.children:
             self._count_subtree_errors(child)
@@ -1183,6 +1191,6 @@ class SystemVerilogParser:
             walker = _Walker(ir, relpath, language, source, line_map)
             walker.scopes.append(_Scope(node_id=file_node.id, path=""))
             walker.visit(tree.root_node)
-        except Exception:  # defensive: a walker bug must not abort the build
-            ir.parse_error_count += 1
+        except Exception as exc:  # defensive: a walker bug must not abort the build
+            ir.record_parse_error(f"{relpath}: internal parser error ({exc})")
         return ir

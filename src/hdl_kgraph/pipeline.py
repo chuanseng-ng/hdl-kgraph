@@ -112,6 +112,8 @@ class BuildReport:
     warnings: list[str] = field(default_factory=list)  # config + filelist warnings
     # Diagnostics surfaced by `build -v` and persisted for `status --errors`:
     file_errors: dict[str, int] = field(default_factory=dict)  # relpath -> error count
+    # relpath -> `file:line: message` details (capped per file in the parser)
+    file_error_details: dict[str, list[str]] = field(default_factory=dict)
     preproc_warnings: list[str] = field(default_factory=list)  # full warning text
     incdirs: list[str] = field(default_factory=list)  # effective `include search path
 
@@ -345,6 +347,7 @@ def _execute(
             report.error_files += 1
             report.parse_error_count += ir.parse_error_count
             report.file_errors[found.relpath] = ir.parse_error_count
+            report.file_error_details[found.relpath] = list(ir.parse_errors)
         report.preproc_warnings.extend(file_warnings)
         report.preproc_warning_count += len(file_warnings)
         files_meta.append(
@@ -355,6 +358,7 @@ def _execute(
                 size_bytes=found.size_bytes,
                 parse_error_count=ir.parse_error_count,
                 warnings=file_warnings,
+                parse_errors=list(ir.parse_errors),
             )
         )
     report.macros_defined = len(macro_keys)

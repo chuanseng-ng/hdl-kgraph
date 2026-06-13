@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from hdl_kgraph.parser.base import FileIR, UnresolvedRef
+from hdl_kgraph.parser.base import MAX_PARSE_ERRORS, FileIR, UnresolvedRef
 from hdl_kgraph.parser.systemverilog import SystemVerilogParser
 from hdl_kgraph.schema import EdgeKind, Language, NodeKind
 
@@ -155,6 +155,21 @@ def test_error_tolerance_partial_results(parser, fixtures_dir) -> None:
     modules = nodes_of(ir, NodeKind.MODULE)
     assert "survives" in modules
     assert "survives.ok" in nodes_of(ir, NodeKind.PORT)
+
+
+def test_parse_errors_carry_location_and_snippet(parser, fixtures_dir) -> None:
+    ir = parse(parser, fixtures_dir, "broken.sv")
+    assert ir.parse_errors
+    assert len(ir.parse_errors) <= ir.parse_error_count
+    assert any("broken.sv:6: syntax error near `" in e for e in ir.parse_errors)
+
+
+def test_record_parse_error_caps_details() -> None:
+    ir = FileIR(path="x.sv")
+    for line in range(MAX_PARSE_ERRORS + 5):
+        ir.record_parse_error(f"x.sv:{line}: boom")
+    assert ir.parse_error_count == MAX_PARSE_ERRORS + 5
+    assert len(ir.parse_errors) == MAX_PARSE_ERRORS
 
 
 def test_declares_edges_cover_all_non_file_nodes(parser, fixtures_dir) -> None:

@@ -62,7 +62,7 @@ from tree_sitter import Node as TSNode
 from tree_sitter import Parser as TSParser
 
 from hdl_kgraph.ids import decl_node_id, file_node_id
-from hdl_kgraph.parser.base import FileIR, UnresolvedRef
+from hdl_kgraph.parser.base import FileIR, UnresolvedRef, error_snippet
 from hdl_kgraph.schema import (
     CONFIDENCE_HEURISTIC,
     CONFIDENCE_RESOLVED,
@@ -208,16 +208,24 @@ class _Walker:
 
     # -- traversal -----------------------------------------------------------
 
+    def _record_parse_error(self, node: TSNode) -> None:
+        line = node.start_point[0] + 1
+        if node.is_missing:
+            message = f"missing `{node.type}`"
+        else:
+            message = f"syntax error near `{error_snippet(self._text(node))}`"
+        self.ir.record_parse_error(f"{self.relpath}:{line}: {message}")
+
     def visit(self, node: TSNode) -> None:
         if node.is_missing:
-            self.ir.parse_error_count += 1
+            self._record_parse_error(node)
         if node.type == "ERROR":
             # Count it, but keep descending: this grammar wraps whole regions
             # (often the entire design_file) in one ERROR node with intact
             # design units inside, so skipping the subtree — the SV parser's
             # strategy — would discard salvageable declarations. Stray tokens
             # under the ERROR have no dispatch entry and visit harmlessly.
-            self.ir.parse_error_count += 1
+            self._record_parse_error(node)
         handler = self._DISPATCH.get(node.type)
         if handler is not None:
             handler(self, node)
@@ -781,6 +789,6 @@ class VhdlParser:
             walker = _Walker(ir, relpath, source, library)
             walker.scopes.append(_Scope(node_id=file_node.id, path=""))
             walker.visit(tree.root_node)
-        except Exception:  # defensive: a walker bug must not abort the build
-            ir.parse_error_count += 1
+        except Exception as exc:  # defensive: a walker bug must not abort the build
+            ir.record_parse_error(f"{relpath}: internal parser error ({exc})")
         return ir

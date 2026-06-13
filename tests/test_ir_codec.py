@@ -39,6 +39,7 @@ def test_ir_round_trip_preserves_everything(fixture_irs) -> None:
         decoded = ir_from_json(ir_to_json(ir))
         assert decoded.path == ir.path
         assert decoded.parse_error_count == ir.parse_error_count
+        assert decoded.parse_errors == ir.parse_errors
         assert len(decoded.nodes) == len(ir.nodes)
         for got, want in zip(decoded.nodes, ir.nodes, strict=True):
             assert got.id == want.id

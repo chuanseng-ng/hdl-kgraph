@@ -32,6 +32,7 @@ def ir_to_json(ir: FileIR) -> str:
             "local_edges": [_encode_edge(e) for e in ir.local_edges],
             "unresolved_refs": [_encode_ref(r) for r in ir.unresolved_refs],
             "parse_error_count": ir.parse_error_count,
+            "parse_errors": ir.parse_errors,
         },
         sort_keys=True,
         default=list,
@@ -46,6 +47,7 @@ def ir_from_json(text: str) -> FileIR:
         local_edges=[_decode_edge(e) for e in data["local_edges"]],
         unresolved_refs=[_decode_ref(r) for r in data["unresolved_refs"]],
         parse_error_count=data["parse_error_count"],
+        parse_errors=data.get("parse_errors", []),
     )
 
 

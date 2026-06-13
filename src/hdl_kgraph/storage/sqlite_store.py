@@ -43,7 +43,7 @@ import networkx as nx
 from hdl_kgraph import __version__
 from hdl_kgraph.schema import EdgeKind, Language, NodeKind
 
-SCHEMA_VERSION = "4"  # v4: files table gained per-file preprocessor warnings
+SCHEMA_VERSION = "5"  # v5: files table gained per-file parse error details
 
 # How long a reader waits on a residual write lock before giving up.
 _BUSY_TIMEOUT_MS = 5_000
@@ -60,7 +60,8 @@ CREATE TABLE IF NOT EXISTS files (
   size_bytes        INTEGER NOT NULL,
   parse_error_count INTEGER NOT NULL DEFAULT 0,
   skipped_reason    TEXT,
-  warnings          TEXT NOT NULL DEFAULT '[]'
+  warnings          TEXT NOT NULL DEFAULT '[]',
+  parse_errors      TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS nodes (
   id             TEXT PRIMARY KEY,
@@ -121,6 +122,9 @@ class FileMeta:
     parse_error_count: int = 0
     skipped_reason: str | None = None  # None | 'size' | 'pragma_protect' | 'exclude'
     warnings: list[str] = field(default_factory=list)  # preprocessor diagnostics
+    # ``file:line: message`` details (capped at parser.base.MAX_PARSE_ERRORS;
+    # parse_error_count stays exact beyond the cap).
+    parse_errors: list[str] = field(default_factory=list)
 
 
 class SqliteStore:
@@ -167,7 +171,7 @@ class SqliteStore:
                 ],
             )
             conn.executemany(
-                "INSERT INTO files VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO files VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         f.path,
@@ -177,6 +181,7 @@ class SqliteStore:
                         f.parse_error_count,
                         f.skipped_reason,
                         json.dumps(f.warnings),
+                        json.dumps(f.parse_errors),
                     )
                     for f in files
                 ],
@@ -319,6 +324,7 @@ class SqliteStore:
                     parse_error_count=row[4],
                     skipped_reason=row[5],
                     warnings=json.loads(row[6]),
+                    parse_errors=json.loads(row[7]),
                 )
                 for row in conn.execute("SELECT * FROM files")
             ]

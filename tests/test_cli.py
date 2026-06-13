@@ -506,6 +506,7 @@ def test_build_verbose_reports_stages_and_per_file_diagnostics(diag_project: Pat
     assert "pass 2" in result.output
     assert "writing" in result.output
     assert "broken.sv:" in result.output  # per-file parse-error count
+    assert "broken.sv:6: syntax error near `" in result.output  # exact error location
     assert 'cannot resolve `include "missing.svh"' in result.output
     assert "`include search path: (no incdirs configured)" in result.output
 
@@ -622,6 +623,7 @@ def test_status_errors_lists_per_file_diagnostics(diag_project: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "broken.sv:" in result.output
     assert "parse error(s)" in result.output
+    assert "broken.sv:6: syntax error near `" in result.output  # exact error location
     assert 'cannot resolve `include "missing.svh"' in result.output
 
 
@@ -658,6 +660,8 @@ def test_update_verbose_keeps_warnings_of_reused_files(diag_project: Path) -> No
     assert "re-parsed: other.sv (added)" in result.output
     # top.sv was re-linked, not re-preprocessed; its warning must survive.
     assert 'cannot resolve `include "missing.svh"' in result.output
+    # broken.sv was reused too; its parse-error details come from the stored IR.
+    assert "broken.sv:6: syntax error near `" in result.output
 
 
 # -- issue #22: --json coverage, exit codes, serve/visualize polish -----------
@@ -683,7 +687,9 @@ def test_status_errors_json(project: Path) -> None:
     payload = _json_out(
         CliRunner().invoke(main, ["status", "--errors", "--json", *db_args(project)])
     )
-    assert any(f["path"] == "broken.sv" and f["parse_errors"] > 0 for f in payload)
+    broken = next(f for f in payload if f["path"] == "broken.sv")
+    assert broken["parse_errors"] > 0
+    assert any("syntax error near" in e for e in broken["errors"])
 
 
 def test_tree_json(project: Path) -> None:
