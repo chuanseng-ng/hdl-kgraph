@@ -1,0 +1,70 @@
+name: Bug report
+description: Report a parsing error, mis-extraction, crash, or other incorrect behavior.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! The most valuable thing you
+        can include is the **smallest self-contained HDL file that reproduces
+        the problem** — strip proprietary content, keep the construct. Accepted
+        reproductions land in `tests/fixtures/` and become permanent regression
+        tests.
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug — what hdl-kgraph did wrong.
+      placeholder: e.g. Instances inside a generate block are not extracted.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal HDL reproduction
+      description: >
+        The smallest self-contained HDL snippet that triggers the bug. Strip
+        proprietary content, keep the construct.
+      render: systemverilog
+      placeholder: |
+        module top;
+          // smallest snippet that reproduces the issue
+        endmodule
+  - type: dropdown
+    id: language
+    attributes:
+      label: HDL language
+      options:
+        - SystemVerilog
+        - Verilog
+        - VHDL
+        - Mixed
+        - Not applicable
+    validations:
+      required: true
+  - type: textarea
+    id: command-output
+    attributes:
+      label: Command and output
+      description: The exact command you ran and the actual output or traceback.
+      render: shell
+      placeholder: |
+        $ hdl-kgraph index ./rtl
+        Traceback (most recent call last):
+          ...
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you expected hdl-kgraph to do instead.
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: hdl-kgraph version (`pip show hdl-kgraph`), Python version, and OS.
+      placeholder: |
+        hdl-kgraph: 0.6.0
+        Python: 3.12.3
+        OS: Ubuntu 24.04
+    validations:
+      required: true
