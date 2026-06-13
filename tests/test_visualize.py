@@ -379,6 +379,13 @@ def test_full_collapse_template_has_two_level_branch(graph, tmp_path: Path) -> N
     assert "TWO_LEVEL" in html and "resolveEntity" in html and "unitnodes" in html
 
 
+def test_collapse_template_seeds_expand_positions(graph, tmp_path: Path) -> None:
+    # Expand/collapse should animate in place: positions carry across rebuilds
+    # and new children emerge from their parent group (pinned by structure).
+    html = render_html(graph, tmp_path / "g.html", collapse=True).path.read_text()
+    assert "seedPosition" in html and "snapshotPositions" in html and "posById" in html
+
+
 def test_compression_lets_oversized_payload_embed(graph, tmp_path: Path, monkeypatch) -> None:
     # The guard measures the *embedded* (post-compression) size, so a payload
     # that would be refused raw can still embed once gzipped.
