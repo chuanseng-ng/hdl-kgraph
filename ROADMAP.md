@@ -231,7 +231,7 @@ survives rapid save bursts.
       instantiation projection (entities absorb their architectures); Louvain
       seeded for run-to-run determinism; articulation points flag true bridges**
 - [x] `visualize` → self-contained D3.js HTML (hierarchy view + force-directed
-      view; filter by node kind, edge kind, clock domain) — **d3 v7 vendored
+      view; filter by node kind, edge kind, Louvain community) — **d3 v7 vendored
       (ISC; `viz/static/LICENSE.d3`) so the artifact opens air-gapped; the
       force view renders on canvas (SVG dies near 1k nodes) and defaults to
       the module projection, `--full` embeds everything; < 0.8-confidence

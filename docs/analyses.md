@@ -73,13 +73,21 @@ for `dead-module` (CLI flags are additive).
 
 `visualize` writes a single self-contained HTML file — D3 is vendored and
 the graph data embedded, so it opens air-gapped and can be attached to a
-review or bug report as-is. Two views: a collapsible hierarchy and a
-force-directed graph with node-kind / edge-kind / clock-domain filters.
+review or bug report as-is. The page opens on a collapsible hierarchy view;
+a second tab is a force-directed graph with node-kind / edge-kind / community
+filters and a "colour by community" toggle (Louvain subsystems).
 
 - The default payload is the module-level projection, which stays
   responsive on large designs; `--full` embeds every node and edge.
 - `--top NAME` roots the hierarchy view at a module (an unknown name is an
   error, like `tree`).
+- `--title TEXT` sets the page title (defaults to the build root's name);
+  `--open` launches the result in a browser after writing it.
+- `--layout auto|live|static` (default `auto`) picks the layout tier: `live`
+  runs the in-browser force simulation, `static` ships precomputed coordinates
+  so the graph view paints without a client-side freeze (needs the `[layout]`
+  extra — `pip install 'hdl-kgraph[layout]'`), and `auto` routes by graph size.
+  A missing `[layout]` extra falls back to `live`, never an error.
 - `--collapse` shows one supernode per subsystem (Louvain community) instead of
   every unit; double-click a supernode in the browser to expand it in place, and
   searching auto-expands the subsystem(s) containing a match. Adding `--full`

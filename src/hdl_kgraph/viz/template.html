@@ -29,9 +29,14 @@
   /* No `inset` shorthand: older engines ignore it, and an absolute canvas
      with auto offsets sizes itself from its bitmap — which feeds back into
      the bitmap on resize and grows it without bound. */
-  #canvas { position:absolute; top:0; left:0; width:100%; height:100%; }
+  /* Defaults mirror the default-active tab (hierarchy): the canvas starts
+     hidden and #hier shown without waiting on JS, so the graph can never paint
+     over the hierarchy tab if the (async) script is mid-flight or throws. The
+     tab handler toggles these inline at runtime. */
+  #canvas { position:absolute; top:0; left:0; width:100%; height:100%;
+            visibility:hidden; }
   #hier { position:absolute; top:0; left:0; width:100%; height:100%;
-          overflow:auto; padding:14px 18px; display:none; }
+          overflow:auto; padding:14px 18px; display:block; }
   #hier ul { list-style:none; margin:0; padding-left:18px; border-left:1px solid var(--line); }
   #hier > ul { border-left:none; padding-left:0; }
   #hier li { padding:1px 0; }
@@ -437,6 +442,13 @@ function draw() {
 }
 function refresh() { draw(); }
 
+/* Declared before resize(): the static tier fits on the first resize() (see
+   needFit below), and fitView() drives the view through this zoom behavior, so
+   it must exist before that first call — otherwise the const is still in its
+   temporal dead zone and the whole script aborts on large (static) graphs. */
+const zoom = d3.zoom().scaleExtent([0.05, 8])
+  .on("zoom", e => { transform = e.transform; draw(); });
+
 let resizeRetries = 0;
 function resize() {
   /* Size from the container, never from the canvas: where the canvas's own
@@ -478,8 +490,6 @@ function pick(event) {
   const n = STATIC ? quadtree.find(x, y, radius) : sim.find(x, y, radius);
   return n && nodeVisible(n) ? n : null;
 }
-const zoom = d3.zoom().scaleExtent([0.05, 8])
-  .on("zoom", e => { transform = e.transform; draw(); });
 d3.select(canvas)
   .call(d3.drag()
     .subject(pick)
@@ -595,6 +605,9 @@ for (const tab of document.querySelectorAll(".tab")) {
        layout. Hidden elements get no pointer events, so #hier still works. */
     canvas.style.visibility = which === "graph" ? "visible" : "hidden";
     document.getElementById("recenter").style.display = which === "graph" ? "block" : "none";
+    /* resize() recomputes the bitmap for the now-visible canvas; framing is
+       left to the live sim's end.fit and the static tier's needFit, which fit
+       the *settled* layout (fitting a half-settled one looks wrong). */
     if (which === "graph") resize();
   });
 }
