@@ -209,10 +209,58 @@ let width = 0, height = 0, transform = d3.zoomIdentity, query = "";
 const MAX_LABELS = 400;
 const MAX_DRAWN_EDGES = 4000;
 
-const nodes = DATA.nodes.map(n => ({...n}));
-const byId = new Map(nodes.map(n => [n.id, n]));
-const links = DATA.links.filter(l => byId.has(l.source) && byId.has(l.target))
-                        .map(l => ({...l}));
+/* Aggregated "collapse" view (viz-scalability Phase 3): render one supernode
+   per Louvain community and expand a community in place on double-click. The
+   visible graph is rebuilt from the `expanded` set each time it changes:
+   collapsed communities resolve to their supernode, expanded ones to their
+   members, and edges are resolved+summed across whichever endpoints are live. */
+const COLLAPSE = !!DATA.collapse;
+const expanded = new Set();                 // community labels expanded in place
+const memberById = new Map(DATA.nodes.map(n => [n.id, n]));
+const superByComm = new Map();
+if (COLLAPSE) for (const s of DATA.supernodes) superByComm.set(s.id, {
+  id: "super:" + s.id, supernode: true, community: s.id,
+  name: s.label, count: s.count, kind: "module", unresolved: false, domain: "", file: "",
+});
+
+let nodes, links, byId;
+function buildGraph() {
+  if (!COLLAPSE) {
+    nodes = DATA.nodes.map(n => ({...n}));
+  } else {
+    nodes = [];
+    for (const [c, sup] of superByComm) {
+      if (expanded.has(c)) { for (const n of DATA.nodes) if (n.community === c) nodes.push({...n}); }
+      else nodes.push({...sup});
+    }
+  }
+  byId = new Map(nodes.map(n => [n.id, n]));
+  if (!COLLAPSE) {
+    links = DATA.links.filter(l => byId.has(l.source) && byId.has(l.target)).map(l => ({...l}));
+    return;
+  }
+  /* Resolve every projection edge to the live entity (supernode if its
+     community is collapsed, member if expanded) and sum parallel edges. */
+  const resolve = id => {
+    const c = (memberById.get(id) || {}).community;
+    return (c && !expanded.has(c)) ? "super:" + c : id;
+  };
+  const agg = new Map();
+  for (const l of DATA.links) {
+    const s = resolve(l.source), t = resolve(l.target);
+    if (s === t || !byId.has(s) || !byId.has(t)) continue;  // drop collapsed self-pairs
+    const key = s + " " + t, prev = agg.get(key);
+    if (prev) prev.weight += (l.weight || 1);
+    else agg.set(key, {source: s, target: t, kind: "instantiates", confidence: 1, weight: l.weight || 1});
+  }
+  links = [...agg.values()];
+}
+buildGraph();
+
+function radiusOf(n) {
+  // Supernodes scale with member count (bounded); plain nodes are fixed-size.
+  return n && n.supernode ? Math.min(38, 6 + Math.sqrt(n.count) * 2.5) : 5;
+}
 
 /* "static" tier: coordinates were precomputed in Python and shipped in the
    payload (n.x / n.y), so we skip the simulation entirely and paint the first
@@ -315,15 +363,16 @@ function draw() {
     shown++;
     if (!inView(n.x, n.y)) continue;
     const hit = q && n.name.toLowerCase().includes(q);
-    const r = hit ? 8 : 5;
+    const r = radiusOf(n) + (hit ? 3 : 0);
     ctx.beginPath();
     ctx.arc(n.x, n.y, r, 0, 2 * Math.PI);
     ctx.fillStyle = q && !hit ? "#3b4657"
       : colorByCommunity && n.community !== "" ? commColor(n.community)
       : color(n.kind);
     ctx.fill();
-    if (n.unresolved) { ctx.strokeStyle = "#bf616a"; ctx.lineWidth = 1.4; ctx.stroke(); }
-    if ((labelZoom || hit) && labels < MAX_LABELS) {
+    if (n.supernode) { ctx.strokeStyle = "#eceff4"; ctx.lineWidth = 1.5; ctx.stroke(); }
+    else if (n.unresolved) { ctx.strokeStyle = "#bf616a"; ctx.lineWidth = 1.4; ctx.stroke(); }
+    if ((labelZoom || hit || n.supernode) && labels < MAX_LABELS) {
       labels++;
       ctx.fillStyle = hit ? "#ffd479" : "#9aa3b2";
       ctx.font = "10px monospace";
@@ -375,8 +424,8 @@ function pick(event) {
   const [px, py] = d3.pointer(event.sourceEvent || event, canvas);
   const x = (px - width / 2 - transform.x) / transform.k;
   const y = (py - height / 2 - transform.y) / transform.k;
-  const n = STATIC ? quadtree.find(x, y, 12 / transform.k)
-                   : sim.find(x, y, 12 / transform.k);
+  const radius = (COLLAPSE ? 40 : 12) / transform.k;  // supernodes are larger targets
+  const n = STATIC ? quadtree.find(x, y, radius) : sim.find(x, y, radius);
   return n && nodeVisible(n) ? n : null;
 }
 const zoom = d3.zoom().scaleExtent([0.05, 8])
@@ -401,6 +450,26 @@ d3.select(canvas)
       e.subject.fx = null; e.subject.fy = null;
     }))
   .call(zoom);
+
+/* Collapse view: double-click expands a supernode to its members (or collapses
+   a member's community back). Rebuild the visible graph from `expanded`, re-bind
+   the simulation, and reheat it so the new entities settle. */
+function rebuild() {
+  buildGraph();
+  sim.nodes(nodes);
+  sim.force("link").links(links);
+  sim.alpha(0.6).restart();
+}
+if (COLLAPSE) {
+  d3.select(canvas).on("dblclick.zoom", null);  // reclaim dblclick for drill-down
+  canvas.addEventListener("dblclick", event => {
+    const n = pick(event);
+    if (!n || n.community === "") return;
+    if (n.supernode) expanded.add(n.community);
+    else expanded.delete(n.community);  // double-click a member re-collapses it
+    rebuild();
+  });
+}
 function fitView() {
   /* Pan/zoom so the visible nodes fill ~90% of the viewport. Applied via
      zoom.transform so d3's internal state stays in sync for later gestures. */
@@ -425,6 +494,11 @@ canvas.addEventListener("mousemove", event => {
   tooltip.style.display = "block";
   tooltip.style.left = (event.offsetX + 14) + "px";
   tooltip.style.top = (event.offsetY + 14) + "px";
+  if (n.supernode) {
+    tooltip.innerHTML = `<b>${esc(n.name)}</b><br>subsystem of ${n.count} unit(s)`
+      + `<br>community: ${esc(n.community)}<br>double-click to expand`;
+    return;
+  }
   tooltip.innerHTML = `<b>${esc(n.name)}</b><br>${esc(n.kind)}`
     + (n.domain ? `<br>domain: ${esc(n.domain)}` : "")
     + (n.community !== "" ? `<br>community: ${esc(n.community)}` : "")

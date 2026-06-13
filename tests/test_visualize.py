@@ -322,6 +322,40 @@ def test_compressed_render_is_deterministic(graph, tmp_path: Path, monkeypatch) 
     assert a == b
 
 
+# ---------------------------------------------------------------------------
+# viz-scalability Phase 3: collapsed community view (aggregation / drill-down).
+# ---------------------------------------------------------------------------
+
+
+def test_collapse_payload_carries_supernodes(graph, tmp_path: Path) -> None:
+    result = render_html(graph, tmp_path / "g.html", collapse=True)
+    payload = _embedded_payload(result.path.read_text())
+    assert payload["collapse"] is True
+    assert payload["supernodes"] and "label" in payload["supernodes"][0]
+    # One supernode per community, keyed by the community label.
+    assert {s["id"] for s in payload["supernodes"]} == set(payload["communities"])
+    assert "superlinks" in payload
+
+
+def test_non_collapse_render_has_no_supernodes(graph, tmp_path: Path) -> None:
+    payload = _embedded_payload(render_html(graph, tmp_path / "g.html").path.read_text())
+    assert payload["collapse"] is False
+    assert "supernodes" not in payload
+
+
+def test_template_has_collapse_drilldown(graph, tmp_path: Path) -> None:
+    # No JS harness in the repo, so pin the expand/collapse branch by structure.
+    html = render_html(graph, tmp_path / "g.html", collapse=True).path.read_text()
+    assert "function rebuild()" in html
+    assert "dblclick" in html and "expanded" in html
+
+
+def test_collapse_rejects_full(graph, tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="full"):
+        render_html(graph, tmp_path / "g.html", collapse=True, full=True)
+    assert not (tmp_path / "g.html").exists()
+
+
 def test_compression_lets_oversized_payload_embed(graph, tmp_path: Path, monkeypatch) -> None:
     # The guard measures the *embedded* (post-compression) size, so a payload
     # that would be refused raw can still embed once gzipped.

@@ -1,12 +1,13 @@
 # Visualization scalability for very large designs
 
-**Status: Phases 1–2 + 4 + 5 delivered; Phases 3, 6 parked — post-M6.**
-This work does not gate the MVP (M1–M4) or the v0.6 (M6) release. The
-foundation — renderer hygiene (Phase 1), the precomputed-layout "static" tier
-with auto-routing (Phase 2), the inline-payload size guard and gzip compression
-(Phase 4), and the GraphML/GEXF/JSON export escape hatch (Phase 5) — has
-shipped; the remaining phases are recorded here so the trade-off analysis is
-not lost and they can be picked up when a real design outgrows the static tier.
+**Status: Phases 1–5 delivered; Phase 6 parked — post-M6.** This work does not
+gate the MVP (M1–M4) or the v0.6 (M6) release. The foundation — renderer
+hygiene (Phase 1), the precomputed-layout "static" tier with auto-routing
+(Phase 2), the community collapse/drill-down view (Phase 3), the inline-payload
+size guard and gzip compression (Phase 4), and the GraphML/GEXF/JSON export
+escape hatch (Phase 5) — has shipped; only the WebGL renderer (Phase 6) remains
+parked, recorded here so the trade-off analysis is not lost should the adopted
+tiers prove insufficient on a real design.
 
 ## Problem statement
 
@@ -204,11 +205,21 @@ this is Phase 1 for a reason.
   to the live tier when numpy is missing (never fail the command). Tests cover
   determinism, the fallback path, routing, and a scale smoke on a synthetic
   graph.
-- **Phase 3 — aggregation/drill-down**: new `viz/aggregate.py` building
-  supernodes/superlinks (two-level in full mode, reusing the unit-ownership
-  traversal in `graph/metrics.py`); expand/collapse UI in the template;
-  `--collapse` flag. Tests: super-edge weights match projection sums,
-  expand metadata round-trips.
+- **Phase 3 — aggregation/drill-down** — **done.** `viz/aggregate.py` collapses
+  the module projection to one supernode per Louvain community, named after the
+  community's highest-betweenness member (`metrics.module_metrics`), with
+  super-edge weights summed over cross-community projection edges. The
+  `--collapse` flag ships `supernodes`/`superlinks` in the payload; the template
+  draws the collapsed view (supernode radius ∝ √member-count) and **double-click
+  expands a community in place** to its members — visible entities and edges are
+  resolved from the `expanded` set each toggle and re-fed to a live simulation
+  (bounded supernode counts, so no `[layout]` extra needed). `--collapse` is
+  projection-level, so it cannot combine with `--full`. Tests: super-edge
+  weights match projection sums, representative labels, payload round-trip, the
+  template drill-down branch, and the `--full` rejection. **Deferred:** two-level
+  aggregation in `--full` mode (leaf → unit → community), search auto-expanding
+  the community of a hit, and precomputed member offsets for the expand
+  animation.
 - **Phase 4 — payload guards** (split for reviewability):
   - **4a — inline size guard** — **done.** `render_html` measures the raw
     payload and raises above `MAX_INLINE_BYTES` (`viz/__init__.py`) with an
