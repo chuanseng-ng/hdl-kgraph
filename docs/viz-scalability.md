@@ -1,9 +1,10 @@
 # Visualization scalability for very large designs
 
-**Status: Phases 1–2 delivered; Phases 3–6 parked — post-M6.** This work does
-not gate the MVP (M1–M4) or the v0.6 (M6) release. The foundation — renderer
-hygiene (Phase 1) and the precomputed-layout "static" tier with auto-routing
-(Phase 2) — has shipped; the remaining phases are recorded here so the
+**Status: Phases 1–2 + 5 delivered; Phases 3–4, 6 parked — post-M6.** This
+work does not gate the MVP (M1–M4) or the v0.6 (M6) release. The foundation —
+renderer hygiene (Phase 1), the precomputed-layout "static" tier with
+auto-routing (Phase 2), and the GraphML/GEXF/JSON export escape hatch
+(Phase 5) — has shipped; the remaining phases are recorded here so the
 trade-off analysis is not lost and they can be picked up when a real design
 outgrows the static tier.
 
@@ -212,8 +213,16 @@ this is Phase 1 for a reason.
   `DecompressionStream` branch, hard cap with `--force-inline`. Tests:
   Python-side round-trip of the compressed payload; small graphs still embed
   plain JSON.
-- **Phase 5 — export escape hatch**: `export` CLI command with enum/attr
-  sanitization. Tests: `nx.read_graphml` round-trip on a fixture graph.
+- **Phase 5 — export escape hatch** — **done.** `hdl-kgraph export
+  --format graphml|gexf|json` in `src/hdl_kgraph/export.py`: `_sanitize`
+  copies the graph with scalar-only attributes (enums → `.value`, the
+  `line_span` tuple → `line_start`/`line_end`, the `attrs` dict
+  JSON-serialized to an `attrs_json` string via `json.dumps(..., default=str)`),
+  then dispatches to NetworkX's `write_graphml` / `write_gexf` writer APIs for
+  those formats; the JSON branch instead converts via `node_link_data` and
+  writes with `json.dumps` / `write_text`. No HTML-artifact changes. Tests
+  (`tests/test_export.py`) cover the GraphML/GEXF/JSON round-trips, attr
+  flattening, the unknown-format error, and a CLI smoke.
 - **Phase 6 — WebGL (explicit non-goal for now)**: only if real-world
   feedback shows tiers 0–2 insufficient, vendor sigma.js + graphology (MIT,
   consistent with the ISC-D3 precedent) behind a `--renderer webgl` flag. The

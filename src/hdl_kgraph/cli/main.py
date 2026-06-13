@@ -45,6 +45,7 @@ from hdl_kgraph.config import (
     resolve_build_options,
 )
 from hdl_kgraph.discovery import DEFAULT_MAX_FILE_SIZE_KB, SUFFIXES
+from hdl_kgraph.export import EXPORT_FORMATS
 from hdl_kgraph.graph import analysis, clocks, lint, metrics, uvm
 from hdl_kgraph.incremental import detect_git_changes, dirty_closure
 from hdl_kgraph.pipeline import (
@@ -1042,6 +1043,43 @@ def visualize(
         import webbrowser
 
         webbrowser.open(result.path.resolve().as_uri())
+
+
+@main.command("export")
+@_db_option
+@click.option(
+    "-o",
+    "--output",
+    "output",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Output file (default: graph.<format>).",
+)
+@click.option(
+    "--format",
+    "fmt",
+    type=click.Choice(EXPORT_FORMATS),
+    default="graphml",
+    show_default=True,
+    help="Interchange format: 'graphml'/'gexf' for Gephi & Cytoscape, 'json' for node-link data.",
+)
+def export_cmd(db_path: Path | None, output: Path | None, fmt: str) -> None:
+    """Export the graph to GraphML/GEXF/JSON for external tools.
+
+    The escape hatch for designs too large for the inline HTML artifact:
+    Gephi (OpenOrd/ForceAtlas2) and Cytoscape handle graphs the browser
+    cannot (see docs/viz-scalability.md).
+    """
+    from hdl_kgraph.export import export_graph
+
+    graph, _, _ = _load(db_path)
+    if output is None:
+        output = Path(f"graph.{fmt}")
+    try:
+        path = export_graph(graph, output, fmt)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"wrote {path}")
 
 
 @main.group()
