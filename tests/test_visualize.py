@@ -134,6 +134,17 @@ def test_template_defaults_to_hierarchy_view(graph, tmp_path: Path) -> None:
     assert not re.search(r"#hier\s*\{[^}]*display:\s*none", style)
 
 
+def test_template_zoom_declared_before_resize(graph, tmp_path: Path) -> None:
+    # The static tier sets needFit and fits on the first resize(), and fitView()
+    # drives the view through `zoom`. So the `const zoom` declaration must precede
+    # resize(), or the first fit hits the temporal dead zone and the whole script
+    # aborts on large (static-layout) graphs — leaving an unfitted graph painted
+    # off-screen. Guard the ordering (and that there is exactly one declaration).
+    html = render_html(graph, tmp_path / "g.html").path.read_text()
+    assert html.count("const zoom = d3.zoom(") == 1
+    assert html.index("const zoom = d3.zoom(") < html.index("function resize(")
+
+
 def test_payload_carries_communities(graph, tmp_path: Path) -> None:
     # The two fixture files are disconnected subsystems, so Louvain yields
     # at least two communities; connected units share one.

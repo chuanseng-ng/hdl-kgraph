@@ -442,6 +442,13 @@ function draw() {
 }
 function refresh() { draw(); }
 
+/* Declared before resize(): the static tier fits on the first resize() (see
+   needFit below), and fitView() drives the view through this zoom behavior, so
+   it must exist before that first call — otherwise the const is still in its
+   temporal dead zone and the whole script aborts on large (static) graphs. */
+const zoom = d3.zoom().scaleExtent([0.05, 8])
+  .on("zoom", e => { transform = e.transform; draw(); });
+
 let resizeRetries = 0;
 function resize() {
   /* Size from the container, never from the canvas: where the canvas's own
@@ -483,8 +490,6 @@ function pick(event) {
   const n = STATIC ? quadtree.find(x, y, radius) : sim.find(x, y, radius);
   return n && nodeVisible(n) ? n : null;
 }
-const zoom = d3.zoom().scaleExtent([0.05, 8])
-  .on("zoom", e => { transform = e.transform; draw(); });
 d3.select(canvas)
   .call(d3.drag()
     .subject(pick)
