@@ -529,11 +529,11 @@ def scan_changes(root: Path, db_path: Path, options: BuildOptions | None = None)
         if options.max_file_size_kb is not None
         else DEFAULT_MAX_FILE_SIZE_KB
     )
-    _, stored_files, _ = SqliteStore(db_path).load()
+    stored_hashes = SqliteStore(db_path).load_file_hashes()
     inputs = _resolve_inputs(options)
     discovered = _discover(root, base, options, inputs, max_kb)
     current = _current_hashes(base, inputs, discovered)
-    return diff_hashes({f.path: f.content_hash for f in stored_files}, current)
+    return diff_hashes(stored_hashes, current)
 
 
 def _current_hashes(
