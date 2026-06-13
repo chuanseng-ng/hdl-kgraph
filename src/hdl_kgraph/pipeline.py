@@ -7,8 +7,8 @@ entry point.
 Pass 0 (M2) runs *serially in compile order* — filelist order, or sorted
 discovery order — threading one :class:`MacroTable` through all files the
 way simulators carry ``+define+`` and earlier-file defines forward. Pass 1
-parses each already-expanded unit independently, so it stays embarrassingly
-parallel for when it matters.
+parses each already-expanded unit independently, so it is parallelizable
+when it matters (currently run serially; see issue #26).
 
 A compilation unit whose content was already spliced into an earlier unit
 via ``\\`include`` is skipped (``skipped_reason="included"``) instead of
