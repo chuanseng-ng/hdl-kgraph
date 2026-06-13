@@ -52,9 +52,15 @@ filelists = ["sim/tb.f"]
 defines   = ["SYNTHESIS", "WIDTH=8"]
 incdirs   = ["include"]
 exclude   = ["vendor/*"]
+top       = ["soc_top"]  # intended tops; lint's dead-module exempts them
 
 [vhdl.libraries]
 work = "src/vhdl"        # or: hdl-kgraph build --lib work=./src/vhdl
+
+[[lint.waivers]]         # acknowledge a known lint finding (see analyses.md)
+check  = "open-port"
+name   = "soc_top.u_dbg"
+reason = "debug port, tied off"
 ```
 
 Use `--config PATH` to point at a specific file or `--no-config` to ignore

@@ -21,8 +21,18 @@ Schema::
     [vhdl.libraries]                 # VHDL library name -> source directory
     work = "src/vhdl"                # (M3; CLI --lib NAME=PATH wins per name)
 
+    [[lint.waivers]]                 # acknowledge a known lint finding
+    check  = "unread-signal"         # required; exact check name
+    name   = "soc_top.dbg_*"         # glob on the finding name
+    module = "fifo_*"                # glob on the owning module/entity
+    file   = "rtl/vendor/*.sv"       # glob on the root-relative path
+    line   = 42                      # exact line
+    reason = "vendor IP"             # required; the reviewable justification
+
 Relative paths resolve against the config file's own directory, so a config
-at the repo root keeps working from any subdirectory.
+at the repo root keeps working from any subdirectory. Waiver ``file``
+patterns are the exception: like ``exclude``, they match the database's
+root-relative POSIX paths as-is.
 """
 
 from __future__ import annotations
@@ -42,9 +52,30 @@ _BUILD_KEYS = frozenset(
     {"sources", "filelists", "defines", "incdirs", "top", "exclude", "max_file_size_kb"}
 )
 
+_LINT_KEYS = frozenset({"waivers"})
+
+_WAIVER_KEYS = frozenset({"check", "name", "module", "file", "line", "reason"})
+
 
 class ConfigError(Exception):
     """Raised for an unreadable or malformed config file."""
+
+
+@dataclass(frozen=True)
+class LintWaiver:
+    """One ``[[lint.waivers]]`` entry: criteria AND together against a finding.
+
+    ``check`` is an exact check name; ``name``/``module``/``file`` are glob
+    patterns (at least one is required — disabling a whole check is what
+    ``lint --check`` is for). ``reason`` is the reviewable justification.
+    """
+
+    check: str
+    reason: str
+    name: str | None = None
+    module: str | None = None
+    file: str | None = None
+    line: int | None = None
 
 
 def parse_define(text: str) -> tuple[str, str | None]:
@@ -66,6 +97,7 @@ class BuildConfig:
     exclude: list[str] = field(default_factory=list)
     max_file_size_kb: int | None = None
     vhdl_libraries: dict[str, Path] = field(default_factory=dict)
+    lint_waivers: list[LintWaiver] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
     @classmethod
@@ -106,6 +138,13 @@ class BuildConfig:
             raise ConfigError(f"{path}: [vhdl.libraries] must map library names to paths")
         config.vhdl_libraries = {name: base / p for name, p in libraries.items()}
 
+        lint_table = data.pop("lint", {})
+        if not isinstance(lint_table, dict):
+            raise ConfigError(f"{path}: [lint] must be a table")
+        for key in sorted(set(lint_table) - _LINT_KEYS):
+            config.warnings.append(f"unknown key [lint].{key} ignored")
+        config.lint_waivers = _parse_waivers(path, lint_table, config.warnings)
+
         for section in sorted(data):
             config.warnings.append(f"unknown section [{section}] ignored")
         return config
@@ -116,6 +155,59 @@ def _str_list(path: Path, table: dict[str, object], key: str) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ConfigError(f"{path}: [build].{key} must be a list of strings")
     return value
+
+
+def _parse_waivers(
+    path: Path, lint_table: dict[str, object], warnings: list[str]
+) -> list[LintWaiver]:
+    raw = lint_table.get("waivers", [])
+    if not isinstance(raw, list):
+        raise ConfigError(f"{path}: [lint].waivers must be an array of tables")
+    return [_parse_waiver(path, entry, i, warnings) for i, entry in enumerate(raw)]
+
+
+def _parse_waiver(path: Path, entry: object, index: int, warnings: list[str]) -> LintWaiver:
+    where = f"{path}: [[lint.waivers]] entry {index + 1}"
+    if not isinstance(entry, dict):
+        raise ConfigError(f"{where} must be a table")
+    for key in sorted(set(entry) - _WAIVER_KEYS):
+        warnings.append(f"unknown key {key!r} in [[lint.waivers]] entry {index + 1} ignored")
+    check = entry.get("check")
+    if not isinstance(check, str) or not check:
+        raise ConfigError(f"{where}: 'check' (a check name) is required")
+    reason = entry.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        raise ConfigError(f"{where}: 'reason' (a non-empty string) is required")
+    patterns: dict[str, str | None] = {}
+    for key in ("name", "module", "file"):
+        value = entry.get(key)
+        if value is not None and not isinstance(value, str):
+            raise ConfigError(f"{where}: '{key}' must be a string")
+        patterns[key] = value
+    line = entry.get("line")
+    if line is not None and (isinstance(line, bool) or not isinstance(line, int)):
+        raise ConfigError(f"{where}: 'line' must be an integer")
+    if all(value is None for value in patterns.values()):
+        raise ConfigError(
+            f"{where}: needs at least one of 'name', 'module', or 'file' "
+            "(to disable a whole check, run lint with --check instead)"
+        )
+    return LintWaiver(check=check, reason=reason, line=line, **patterns)
+
+
+def load_waivers(path: Path, warnings: list[str] | None = None) -> list[LintWaiver]:
+    """Parse only the ``[[lint.waivers]]`` entries of a TOML file (``--waiver-file``)."""
+    try:
+        with path.open("rb") as f:
+            data = tomllib.load(f)
+    except OSError as exc:
+        raise ConfigError(f"cannot read {path}: {exc}") from exc
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"invalid TOML in {path}: {exc}") from exc
+    lint_table = data.get("lint", {})
+    if not isinstance(lint_table, dict):
+        raise ConfigError(f"{path}: [lint] must be a table")
+    return _parse_waivers(path, lint_table, [] if warnings is None else warnings)
 
 
 def find_config(start: Path) -> Path | None:
