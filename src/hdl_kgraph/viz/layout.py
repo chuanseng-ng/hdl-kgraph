@@ -41,9 +41,17 @@ _MEMBER_SPREAD = 60.0
 
 
 def layout_available() -> bool:
-    """True when the ``[layout]`` extra (numpy) is importable."""
+    """True when the ``[layout]`` extra (numpy **and** scipy) is importable.
+
+    Both matter: networkx's ``spring_layout`` switches to scipy's sparse
+    solver for graphs of 500+ nodes — exactly the large-graph case the static
+    tier exists for — so checking only numpy would let :func:`compute_layout`
+    pick the static tier and then crash inside ``nx.spring_layout`` instead of
+    returning ``None`` and falling back to the live simulation.
+    """
     try:
         import numpy  # noqa: F401
+        import scipy  # noqa: F401
     except ImportError:
         return False
     return True

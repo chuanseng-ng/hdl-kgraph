@@ -94,6 +94,7 @@ module = [
   "tree_sitter_systemverilog.*",
   "tree_sitter_vhdl.*",
   "networkx.*",
+  "scipy.*",
   "tomli.*",
   "watchdog.*",
   "fastmcp.*",
