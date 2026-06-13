@@ -41,6 +41,7 @@ def store(tmp_path: Path, fixtures_dir: Path) -> tuple[SqliteStore, object, list
             content_hash="0" * 64,
             size_bytes=123,
             parse_error_count=ir.parse_error_count,
+            parse_errors=list(ir.parse_errors),
         )
         for ir in irs
     ]
@@ -83,6 +84,8 @@ def test_round_trip_preserves_file_meta(store) -> None:
     by_path = {f.path: f for f in loaded_files}
     broken = by_path["broken.sv"]
     assert broken.parse_error_count > 0
+    assert broken.parse_errors
+    assert all(e.startswith("broken.sv:") for e in broken.parse_errors)
     assert broken.content_hash == "0" * 64
     assert broken.skipped_reason is None
     assert by_path["adder.v"].language is Language.VERILOG
@@ -158,13 +161,13 @@ def test_schema_version_mismatch_raises(store) -> None:
 
 
 def test_old_database_is_refused(store) -> None:
-    """The per-file warnings column bumped the schema to v4: an M5/M6 (v3)
-    database must be refused with the rebuild message — rebuild *is* the
-    migration."""
-    assert SCHEMA_VERSION == "4"
+    """The per-file parse-error details column bumped the schema to v5: an
+    older (v4) database must be refused with the rebuild message — rebuild
+    *is* the migration."""
+    assert SCHEMA_VERSION == "5"
     sqlite_store, _, _ = store
     with sqlite3.connect(sqlite_store.db_path) as conn:
-        conn.execute("UPDATE meta SET value = '3' WHERE key = 'schema_version'")
+        conn.execute("UPDATE meta SET value = '4' WHERE key = 'schema_version'")
     with pytest.raises(SchemaVersionError, match="hdl-kgraph build"):
         sqlite_store.load()
 

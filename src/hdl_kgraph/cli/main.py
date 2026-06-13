@@ -9,8 +9,9 @@ and ``watch``. M5 adds the analyses — ``lint``, ``metrics``, ``visualize``,
 and ``query`` ``clock-domains``/``reset-tree``/``cdc``/``drivers``/``uvm``
 (all with ``--json``). M6 adds ``serve --mcp`` (AI assistants query the
 graph over MCP) and ``setup`` (auto-configure detected assistants).
-Diagnostics: ``build``/``update``/``watch`` take ``-v/--verbose`` (stage
-progress plus per-file parse errors and preprocessor warnings), and
+Diagnostics: ``build``/``update``/``watch`` report pipeline stages and a
+per-file parse counter on stderr as they run; ``-v/--verbose`` adds
+per-file parse errors, preprocessor warnings, and unresolved includes, and
 ``status --errors`` lists the same per-file diagnostics after the fact.
 
 The database lives at ``<root>/.hdl-kgraph/graph.db``; read commands locate
@@ -24,6 +25,7 @@ import dataclasses
 import enum
 import json
 import sys
+import time
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
@@ -71,16 +73,61 @@ _verbose_option = click.option(
     "-v",
     "--verbose",
     is_flag=True,
-    help="Report pipeline stages as they run, plus per-file parse errors, "
-    "preprocessor warnings, and unresolved includes.",
+    help="Also report per-file parse errors, preprocessor warnings, and "
+    "unresolved includes (stage progress is always shown).",
 )
 
 
-def _progress(verbose: bool) -> Callable[[str], None] | None:
-    """Stage-progress callback for ``-v`` (stderr, so reports stay clean)."""
-    if not verbose:
-        return None
-    return lambda line: click.echo(line, err=True)
+class _ProgressRenderer:
+    """Default-on pipeline progress on stderr (so stdout reports stay clean).
+
+    ``stage`` prints one line per pipeline stage; ``tick`` drives the
+    pass 0+1 per-file counter — a single ``\\r``-rewritten line when stderr
+    is a terminal, a milestone line every ``MILESTONE_EVERY`` files
+    otherwise (CI logs, pipes). ``finish`` terminates a pending live line
+    so later output starts on a fresh line.
+    """
+
+    MILESTONE_EVERY = 25
+    MIN_INTERVAL_S = 0.1
+
+    def __init__(self) -> None:
+        # Resolve stderr at command runtime, not import time: Click's
+        # CliRunner patches sys.stderr around each invocation.
+        self._stream = sys.stderr
+        self._isatty = bool(getattr(self._stream, "isatty", lambda: False)())
+        self._live_len = 0  # width of the pending \r-rewritten line (0 = none)
+        self._last_draw = 0.0
+        self._last_milestone = 0
+
+    def stage(self, line: str) -> None:
+        self.finish()
+        self._stream.write(line + "\n")
+        self._stream.flush()
+        self._last_milestone = 0
+
+    def tick(self, done: int, total: int) -> None:
+        if self._isatty:
+            now = time.monotonic()
+            if done != total and now - self._last_draw < self.MIN_INTERVAL_S:
+                return
+            text = f"pass 0+1: parsing {done}/{total} file(s)..."
+            # Pad over any leftover from a longer previous draw.
+            pad = " " * max(self._live_len - len(text), 0)
+            self._stream.write("\r" + text + pad)
+            self._stream.flush()
+            self._live_len = len(text)
+            self._last_draw = now
+        elif done == total or done - self._last_milestone >= self.MILESTONE_EVERY:
+            self._stream.write(f"pass 0+1: parsing {done}/{total} file(s)\n")
+            self._stream.flush()
+            self._last_milestone = done
+
+    def finish(self) -> None:
+        if self._live_len:
+            self._stream.write("\n")
+            self._stream.flush()
+            self._live_len = 0
 
 
 def _json_default(value: Any) -> Any:
@@ -241,6 +288,11 @@ def _echo_build_report(report: BuildReport, verbose: bool = False) -> None:
         if verbose:
             for path, count in sorted(report.file_errors.items()):
                 click.echo(f"      {path}: {count} error(s)")
+                details = report.file_error_details.get(path, [])
+                for detail in details:
+                    click.echo(f"        {detail}")
+                if details and count > len(details):
+                    click.echo(f"        ... and {count - len(details)} more")
     if report.macros_defined:
         click.echo(f"  macros defined: {report.macros_defined}")
     if report.includes_resolved or report.includes_unresolved:
@@ -277,6 +329,7 @@ def _echo_file_diagnostics(files: list, as_json: bool = False) -> None:
                 {
                     "path": f.path,
                     "parse_errors": f.parse_error_count,
+                    "errors": f.parse_errors,
                     "skipped_reason": f.skipped_reason,
                     "warnings": f.warnings,
                 }
@@ -290,6 +343,10 @@ def _echo_file_diagnostics(files: list, as_json: bool = False) -> None:
             continue
         if f.parse_error_count:
             click.echo(f"{f.path}: {f.parse_error_count} parse error(s)")
+            for detail in f.parse_errors:
+                click.echo(f"  {detail}")
+            if f.parse_errors and f.parse_error_count > len(f.parse_errors):
+                click.echo(f"  ... and {f.parse_error_count - len(f.parse_errors)} more")
         for warning in f.warnings:
             click.echo(f"{f.path}: warning: {warning}")
     if not flagged:
@@ -316,7 +373,11 @@ def build(
     options = _resolve_options(
         source, filelists, defines, incdirs, libs, config_path, no_config, excludes, max_file_size
     )
-    report = run_build(source, db_path=db_path, options=options, progress=_progress(verbose))
+    renderer = _ProgressRenderer()
+    report = run_build(
+        source, db_path=db_path, options=options, progress=renderer.stage, tick=renderer.tick
+    )
+    renderer.finish()
     _echo_build_report(report, verbose=verbose)
 
 
@@ -366,9 +427,16 @@ def update(
     options = _resolve_options(
         source, filelists, defines, incdirs, libs, config_path, no_config, excludes, max_file_size
     )
+    renderer = _ProgressRenderer()
     report = run_update(
-        source, db_path=db_path, options=options, full=full, progress=_progress(verbose)
+        source,
+        db_path=db_path,
+        options=options,
+        full=full,
+        progress=renderer.stage,
+        tick=renderer.tick,
     )
+    renderer.finish()
     _echo_update_report(report, verbose=verbose)
 
 
@@ -562,7 +630,10 @@ def watch(
         source, filelists, defines, incdirs, libs, config_path, no_config, excludes, max_file_size
     )
 
+    renderer = _ProgressRenderer()
+
     def on_report(report: UpdateReport) -> None:
+        renderer.finish()
         if report.up_to_date or report.build is None:
             click.echo(f"up to date ({report.elapsed_s:.2f}s)")
             return
@@ -581,10 +652,13 @@ def watch(
         if verbose:
             for path, count in sorted(report.build.file_errors.items()):
                 click.echo(f"    parse errors: {path}: {count}")
+                for detail in report.build.file_error_details.get(path, []):
+                    click.echo(f"      {detail}")
             for warning in report.build.preproc_warnings:
                 click.echo(f"    warning: {warning}")
 
     def on_error(exc: BaseException) -> None:
+        renderer.finish()
         click.echo(f"update failed: {exc} (still watching)", err=True)
 
     click.echo(f"watching {source.resolve()} (Ctrl-C to stop)")
@@ -595,7 +669,8 @@ def watch(
             options=options,
             quiet_s=debounce / 1000,
             on_report=on_report,
-            progress=_progress(verbose),
+            progress=renderer.stage,
+            tick=renderer.tick,
             on_error=on_error,
         )
     except WatchUnavailableError as exc:

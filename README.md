@@ -48,9 +48,12 @@ still yield partial results; `status` reports the parse-error count.
 Unresolved instance targets render as `[?]` in `tree` and ambiguous matches as
 `[~0.6]` — see the confidence convention in [ROADMAP.md](ROADMAP.md).
 
-To judge whether the graph is trustworthy on real RTL, `build`/`update`/`watch`
-take `-v/--verbose`: pipeline stages as they run, per-file parse-error counts,
-the full preprocessor warnings (unresolved `` `include``s with the search path,
+`build`/`update`/`watch` report pipeline stages and a live per-file parse
+counter on stderr as they run (a single in-place line on a terminal, milestone
+lines every 25 files when piped). To judge whether the graph is trustworthy on
+real RTL, they also take `-v/--verbose`: per-file parse errors (with
+`file:line` locations and a source snippet) and the full preprocessor
+warnings (unresolved `` `include``s with the search path,
 malformed `` `define``s, ...). The same diagnostics are persisted with the
 build, so `hdl-kgraph status --errors` lists them per file after the fact —
 including files that were skipped, with reasons.

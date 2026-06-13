@@ -1,13 +1,17 @@
 """End-to-end CLI tests: build -> status -> query -> tree on the fixtures."""
 
+import io
+import itertools
 import shutil
+import sys
+import time
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
 from hdl_kgraph import __version__
-from hdl_kgraph.cli.main import main
+from hdl_kgraph.cli.main import _ProgressRenderer, main
 
 
 @pytest.fixture(scope="module")
@@ -502,6 +506,7 @@ def test_build_verbose_reports_stages_and_per_file_diagnostics(diag_project: Pat
     assert "pass 2" in result.output
     assert "writing" in result.output
     assert "broken.sv:" in result.output  # per-file parse-error count
+    assert "broken.sv:6: syntax error near `" in result.output  # exact error location
     assert 'cannot resolve `include "missing.svh"' in result.output
     assert "`include search path: (no incdirs configured)" in result.output
 
@@ -523,6 +528,94 @@ def test_build_without_verbose_hints_at_details(diag_project: Path) -> None:
     assert "status --errors" in result.output
 
 
+def test_build_reports_stages_by_default(diag_project: Path) -> None:
+    result = CliRunner().invoke(main, ["build", str(diag_project)])
+    assert result.exit_code == 0, result.output
+    assert "discovering source files" in result.output
+    assert "pass 0+1" in result.output
+    assert "pass 2" in result.output
+    assert "writing" in result.output
+
+
+def test_build_non_tty_counter_milestones(tmp_path: Path) -> None:
+    for i in range(30):
+        (tmp_path / f"m{i:02}.sv").write_text(f"module m{i:02};\nendmodule\n")
+    result = CliRunner().invoke(main, ["build", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "pass 0+1: parsing 25/30 file(s)" in result.output
+    assert "pass 0+1: parsing 30/30 file(s)" in result.output
+    assert "\r" not in result.output  # CliRunner streams are not TTYs
+
+
+def test_build_non_tty_counter_small_build_final_only(tmp_path: Path) -> None:
+    for i in range(3):
+        (tmp_path / f"m{i}.sv").write_text(f"module m{i};\nendmodule\n")
+    result = CliRunner().invoke(main, ["build", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "pass 0+1: parsing 3/3 file(s)" in result.output
+    assert "parsing 1/3" not in result.output
+
+
+def test_update_reports_progress_by_default(diag_project: Path) -> None:
+    build = CliRunner().invoke(main, ["build", str(diag_project)])
+    assert build.exit_code == 0, build.output
+    (diag_project / "newer.sv").write_text("module newer;\nendmodule\n")
+    result = CliRunner().invoke(main, ["update", str(diag_project)])
+    assert result.exit_code == 0, result.output
+    assert "scanning for changed files" in result.output
+
+
+class _TtyStringIO(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
+def test_progress_renderer_tty_rewrites_one_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    stream = _TtyStringIO()
+    monkeypatch.setattr(sys, "stderr", stream)
+    clock = itertools.count(start=1)
+    monkeypatch.setattr(time, "monotonic", lambda: float(next(clock)))
+    renderer = _ProgressRenderer()
+    renderer.stage("pass 0+1: preprocessing and parsing 2 file(s)")
+    renderer.tick(1, 2)
+    renderer.tick(2, 2)
+    renderer.stage("pass 2: linking")
+    out = stream.getvalue()
+    assert "\rpass 0+1: parsing 1/2 file(s)..." in out
+    # The live line is terminated before the next stage line prints.
+    assert "pass 0+1: parsing 2/2 file(s)...\npass 2: linking\n" in out
+
+
+def test_progress_renderer_tty_throttles_but_always_draws_final(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream = _TtyStringIO()
+    monkeypatch.setattr(sys, "stderr", stream)
+    monkeypatch.setattr(time, "monotonic", lambda: 100.0)  # frozen clock
+    renderer = _ProgressRenderer()
+    renderer.tick(1, 3)
+    renderer.tick(2, 3)  # within MIN_INTERVAL_S of the last draw: skipped
+    renderer.tick(3, 3)  # done == total always draws
+    out = stream.getvalue()
+    assert "1/3" in out
+    assert "2/3" not in out
+    assert "3/3" in out
+
+
+def test_progress_renderer_non_tty_milestones(monkeypatch: pytest.MonkeyPatch) -> None:
+    stream = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", stream)
+    renderer = _ProgressRenderer()
+    for done in range(1, 31):
+        renderer.tick(done, 30)
+    renderer.finish()  # no live line pending in milestone mode: no-op
+    out = stream.getvalue()
+    assert "\r" not in out
+    assert "pass 0+1: parsing 25/30 file(s)\n" in out
+    assert "pass 0+1: parsing 30/30 file(s)\n" in out
+    assert "parsing 1/30" not in out
+
+
 def test_status_errors_lists_per_file_diagnostics(diag_project: Path) -> None:
     build = CliRunner().invoke(main, ["build", str(diag_project)])
     assert build.exit_code == 0, build.output
@@ -530,6 +623,7 @@ def test_status_errors_lists_per_file_diagnostics(diag_project: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "broken.sv:" in result.output
     assert "parse error(s)" in result.output
+    assert "broken.sv:6: syntax error near `" in result.output  # exact error location
     assert 'cannot resolve `include "missing.svh"' in result.output
 
 
@@ -566,6 +660,8 @@ def test_update_verbose_keeps_warnings_of_reused_files(diag_project: Path) -> No
     assert "re-parsed: other.sv (added)" in result.output
     # top.sv was re-linked, not re-preprocessed; its warning must survive.
     assert 'cannot resolve `include "missing.svh"' in result.output
+    # broken.sv was reused too; its parse-error details come from the stored IR.
+    assert "broken.sv:6: syntax error near `" in result.output
 
 
 # -- issue #22: --json coverage, exit codes, serve/visualize polish -----------
@@ -591,7 +687,9 @@ def test_status_errors_json(project: Path) -> None:
     payload = _json_out(
         CliRunner().invoke(main, ["status", "--errors", "--json", *db_args(project)])
     )
-    assert any(f["path"] == "broken.sv" and f["parse_errors"] > 0 for f in payload)
+    broken = next(f for f in payload if f["path"] == "broken.sv")
+    assert broken["parse_errors"] > 0
+    assert any("syntax error near" in e for e in broken["errors"])
 
 
 def test_tree_json(project: Path) -> None:
