@@ -81,8 +81,9 @@ force-directed graph with node-kind / edge-kind / clock-domain filters.
 - `--top NAME` roots the hierarchy view at a module (an unknown name is an
   error, like `tree`).
 - `--collapse` shows one supernode per subsystem (Louvain community) instead of
-  every unit; double-click a supernode in the browser to expand it in place.
-  Aggregates the projection, so it cannot be combined with `--full`.
+  every unit; double-click a supernode in the browser to expand it in place, and
+  searching auto-expands the subsystem(s) containing a match. Aggregates the
+  projection, so it cannot be combined with `--full`.
 - Large payloads are gzip-compressed inline automatically (decoded in the
   browser via `DecompressionStream`); small graphs stay plain JSON.
 - A payload still past the inline size limit *after compression* is refused

@@ -216,6 +216,7 @@ const MAX_DRAWN_EDGES = 4000;
    members, and edges are resolved+summed across whichever endpoints are live. */
 const COLLAPSE = !!DATA.collapse;
 const expanded = new Set();                 // community labels expanded in place
+const searchExpanded = new Set();           // subset opened by search (auto-collapse on clear)
 const memberById = new Map(DATA.nodes.map(n => [n.id, n]));
 const superByComm = new Map();
 if (COLLAPSE) for (const s of DATA.supernodes) superByComm.set(s.id, {
@@ -460,13 +461,30 @@ function rebuild() {
   sim.force("link").links(links);
   sim.alpha(0.6).restart();
 }
+
+/* Search auto-expand: a hit hidden inside a collapsed community is invisible, so
+   open every community that contains a match (and re-collapse the ones we opened
+   once the query clears, leaving the user's manual expansions alone). Returns
+   whether the expanded set changed. */
+function syncSearchExpansion(q) {
+  if (!COLLAPSE) return false;
+  const want = new Set();
+  if (q) for (const n of DATA.nodes) if (n.name.toLowerCase().includes(q)) want.add(n.community);
+  let changed = false;
+  for (const c of want) if (!expanded.has(c)) { expanded.add(c); searchExpanded.add(c); changed = true; }
+  for (const c of [...searchExpanded]) if (!want.has(c)) {
+    searchExpanded.delete(c);
+    if (expanded.has(c)) { expanded.delete(c); changed = true; }
+  }
+  return changed;
+}
 if (COLLAPSE) {
   d3.select(canvas).on("dblclick.zoom", null);  // reclaim dblclick for drill-down
   canvas.addEventListener("dblclick", event => {
     const n = pick(event);
     if (!n || n.community === "") return;
     if (n.supernode) expanded.add(n.community);
-    else expanded.delete(n.community);  // double-click a member re-collapses it
+    else { expanded.delete(n.community); searchExpanded.delete(n.community); }  // re-collapse
     rebuild();
   });
 }
@@ -524,8 +542,10 @@ for (const tab of document.querySelectorAll(".tab")) {
 views.hier.style.display = "block"; canvas.style.visibility = "hidden";
 document.getElementById("search").addEventListener("input", e => {
   query = e.target.value.trim();
-  draw();
   const q = query.toLowerCase();
+  // In collapse mode, reveal hits hidden inside collapsed communities first;
+  // rebuild restarts the sim (which redraws), else just redraw the highlight.
+  if (syncSearchExpansion(q)) rebuild(); else draw();
   for (const el of document.querySelectorAll("#hier .mod, #hier .inst"))
     el.style.background = q && el.textContent.toLowerCase().includes(q) ? "#4c3a1e" : "";
 });

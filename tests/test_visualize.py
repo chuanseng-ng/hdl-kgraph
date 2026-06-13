@@ -350,6 +350,13 @@ def test_template_has_collapse_drilldown(graph, tmp_path: Path) -> None:
     assert "dblclick" in html and "expanded" in html
 
 
+def test_template_has_search_auto_expand(graph, tmp_path: Path) -> None:
+    # Search must reveal hits hidden inside collapsed communities (pinned by
+    # structure, like the other template behaviors).
+    html = render_html(graph, tmp_path / "g.html", collapse=True).path.read_text()
+    assert "syncSearchExpansion" in html and "searchExpanded" in html
+
+
 def test_collapse_rejects_full(graph, tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="full"):
         render_html(graph, tmp_path / "g.html", collapse=True, full=True)
