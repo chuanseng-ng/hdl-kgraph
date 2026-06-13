@@ -49,13 +49,17 @@ dependencies = [
 [project.optional-dependencies]
 watch = ["watchdog>=4"]
 mcp = ["fastmcp>=2"]
+# Precomputed-layout tier for `visualize` on large designs (BSD-3; both ship
+# pure-pip wheels everywhere). Optional: without it, visualize falls back to
+# the in-browser force simulation. See docs/viz-scalability.md.
+layout = ["numpy>=1.24", "scipy>=1.10"]
 dev = [
   "pytest>=8",
   "pytest-cov",
   "ruff>=0.6",
   "mypy>=1.10",
 ]
-all = ["hdl-kgraph[watch,mcp]"]
+all = ["hdl-kgraph[watch,mcp,layout]"]
 
 [project.scripts]
 hdl-kgraph = "hdl_kgraph.cli.main:main"
@@ -90,6 +94,8 @@ module = [
   "tree_sitter_systemverilog.*",
   "tree_sitter_vhdl.*",
   "networkx.*",
+  "numpy.*",
+  "scipy.*",
   "tomli.*",
   "watchdog.*",
   "fastmcp.*",

@@ -998,6 +998,15 @@ def metrics_cmd(db_path: Path | None, as_json: bool, top_n: int, show_communitie
 )
 @click.option("--top", "top", default=None, help="Root the hierarchy view at this module.")
 @click.option("--title", default=None, help="Page title (default: the build root's name).")
+@click.option(
+    "--layout",
+    type=click.Choice(["auto", "live", "static"]),
+    default="auto",
+    show_default=True,
+    help="Layout tier: 'live' runs the in-browser force simulation; 'static' "
+    "ships precomputed coordinates (needs the [layout] extra); 'auto' routes "
+    "by graph size.",
+)
 @click.option("--open", "open_browser", is_flag=True, help="Open the result in a browser.")
 def visualize(
     db_path: Path | None,
@@ -1005,13 +1014,16 @@ def visualize(
     full: bool,
     top: str | None,
     title: str | None,
+    layout: str,
     open_browser: bool,
 ) -> None:
     """Render a self-contained interactive HTML view of the graph.
 
     The file embeds D3 and the graph data — no network access needed to
     open it. Two views: a collapsible hierarchy and a force-directed graph
-    with node-kind / edge-kind / clock-domain filters.
+    with node-kind / edge-kind / clock-domain filters. Large designs route to
+    a precomputed 'static' layout so the graph view paints without a
+    client-side simulation freeze (see docs/viz-scalability.md).
     """
     from hdl_kgraph.viz import render_html
 
@@ -1020,14 +1032,16 @@ def visualize(
         root = meta.get("root", "")
         title = f"hdl-kgraph: {Path(root).name}" if root else "hdl-kgraph"
     try:
-        path = render_html(graph, output, full=full, top=top, title=title)
+        result = render_html(graph, output, full=full, top=top, title=title, layout=layout)
     except ValueError as exc:  # --top names nothing: error out, like `tree`
         raise click.ClickException(str(exc)) from exc
-    click.echo(f"wrote {path}")
+    if result.note:
+        click.echo(result.note, err=True)
+    click.echo(f"wrote {result.path}")
     if open_browser:
         import webbrowser
 
-        webbrowser.open(path.resolve().as_uri())
+        webbrowser.open(result.path.resolve().as_uri())
 
 
 @main.group()
