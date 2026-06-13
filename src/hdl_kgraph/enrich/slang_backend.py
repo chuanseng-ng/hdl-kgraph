@@ -123,11 +123,15 @@ def _elaborate(inp: EnrichmentInput, result: EnrichmentResult) -> _ChildMap | No
             "facts taken where elaboration succeeded"
         )
 
-    # First instance of each module def is its structural representative — all
-    # instances of a module elaborate identically, so counting one avoids
-    # multiplying a plain (non-generate) instantiation by its parent's count.
-    representative: dict[str, str] = {}
-    child_rows: defaultdict[str, list[tuple[str, str, str]]] = defaultdict(list)
+    # Record each container *instance*'s direct child instances keyed by its
+    # hierarchical path, then take the max multiplicity per (module def, child
+    # name, target def) across all instances of that module. Max (rather than a
+    # single representative) keeps a plain duplicate instantiation at its true
+    # count of one — every instance of the module has the same one child — while
+    # still reporting the largest expansion when parameterized specializations
+    # of the same module elaborate to different generate/array counts.
+    per_instance: defaultdict[str, dict[tuple[str, str], list[str]]] = defaultdict(dict)
+    container_def_of: dict[str, str] = {}
 
     def members(scope: Any) -> list[Any]:
         try:
@@ -136,29 +140,30 @@ def _elaborate(inp: EnrichmentInput, result: EnrichmentResult) -> _ChildMap | No
             return []
 
     def walk(scope: Any, container_path: str, container_def: str) -> None:
+        container_def_of[container_path] = container_def
         for m in members(scope):
             kind = getattr(m, "kind", None)
             if kind == SymbolKind.Instance:
                 child_def = m.definition.name if getattr(m, "definition", None) else ""
                 path = m.hierarchicalPath
-                if container_path == representative.setdefault(container_def, container_path):
-                    suffix = path[len(container_path) + 1 :] if container_path else path
-                    child_rows[container_def].append((m.name, child_def, suffix))
+                suffix = path[len(container_path) + 1 :] if container_path else path
+                per_instance[container_path].setdefault((m.name, child_def), []).append(suffix)
                 walk(getattr(m, "body", m), path, child_def)
             elif kind in (SymbolKind.GenerateBlock, SymbolKind.GenerateBlockArray):
                 walk(m, container_path, container_def)
 
     for top in root.topInstances:
         top_def = top.definition.name if getattr(top, "definition", None) else top.name
-        representative.setdefault(top_def, top.hierarchicalPath)
         walk(getattr(top, "body", top), top.hierarchicalPath, top_def)
 
     children: _ChildMap = {}
-    for module_def, rows in child_rows.items():
-        for base, child_def, suffix in rows:
-            children.setdefault((module_def, base), {}).setdefault(child_def, []).append(
-                f"{module_def}.{suffix}"
-            )
+    for container_path, groups in per_instance.items():
+        container_def = container_def_of[container_path]
+        for (base, child_def), suffixes in groups.items():
+            target_map = children.setdefault((container_def, base), {})
+            rel_paths = [f"{container_def}.{suffix}" for suffix in suffixes]
+            if len(rel_paths) > len(target_map.get(child_def, [])):
+                target_map[child_def] = rel_paths
     return children
 
 

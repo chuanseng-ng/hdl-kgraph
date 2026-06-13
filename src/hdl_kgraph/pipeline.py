@@ -527,7 +527,18 @@ def _execute(
     # -- pass 3 (M7): opt-in native-frontend enrichment ------------------------
     discrepancies: list[Discrepancy] = []
     if options.enrich:
-        discrepancies = _enrich(graph, base, options, inputs, discovered, report, progress)
+        # The compilation-unit set, not the raw discovery: a header spliced
+        # into an earlier unit (``consumed``) must not also be handed to the
+        # native frontend as a standalone top, or it double-defines its
+        # contents and breaks elaboration.
+        enrich_files = [
+            f.path
+            for f in discovered
+            if f.skipped_reason is None
+            and f.relpath not in consumed
+            and f.language in (Language.VERILOG, Language.SYSTEMVERILOG)
+        ]
+        discrepancies = _enrich(graph, base, options, inputs, enrich_files, report, progress)
         report.node_count = graph.number_of_nodes()
         report.edge_count = graph.number_of_edges()
 
@@ -548,11 +559,15 @@ def _enrich(
     base: Path,
     options: BuildOptions,
     inputs: _Inputs,
-    discovered: list[DiscoveredFile],
+    enrich_files: list[Path],
     report: BuildReport,
     progress: ProgressFn,
 ) -> list[Discrepancy]:
-    """Run the M7 enrichment pass over the linked graph (mutated in place)."""
+    """Run the M7 enrichment pass over the linked graph (mutated in place).
+
+    *enrich_files* is the standalone compilation-unit set (consumed headers
+    already excluded by the caller).
+    """
     backends = available_backends(options.enrich_backends or None)
     if not backends:
         report.warnings.append(
@@ -561,11 +576,7 @@ def _enrich(
         return []
     progress(f"pass 3: enriching via {', '.join(b.name for b in backends)}")
     enrich_input = EnrichmentInput(
-        files=[
-            f.path
-            for f in discovered
-            if f.skipped_reason is None and f.language in (Language.VERILOG, Language.SYSTEMVERILOG)
-        ],
+        files=enrich_files,
         defines=inputs.defines,
         incdirs=inputs.incdirs,
         tops=list(options.top),

@@ -121,6 +121,21 @@ def test_toggling_enrich_forces_full_rebuild(project: Path) -> None:
     assert report.build is not None and report.build.enriched
 
 
+def test_duplicate_instantiation_is_not_flagged_as_generate(tmp_path: Path) -> None:
+    # `mid` is instantiated twice, each with exactly one `u_leaf`. The child's
+    # multiplicity within a single `mid` is 1, so it must not be reported as a
+    # generate/array expansion (no false instance_count discrepancy).
+    (tmp_path / "dup.sv").write_text(
+        "module leaf (input logic clk);\nendmodule\n"
+        "module mid (input logic clk);\n  leaf u_leaf (.clk(clk));\nendmodule\n"
+        "module dup_top (input logic clk);\n"
+        "  mid u_mid0 (.clk(clk));\n  mid u_mid1 (.clk(clk));\nendmodule\n"
+    )
+    report = run_build(tmp_path, options=BuildOptions(enrich=True))
+    assert report.discrepancy_count == 0
+    assert _db(tmp_path).load_discrepancies() == []
+
+
 # -- graceful degradation ----------------------------------------------------
 
 

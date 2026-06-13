@@ -341,7 +341,7 @@ def _echo_build_report(report: BuildReport, verbose: bool = False) -> None:
     if report.unresolved_count:
         click.echo(f"  unresolved: {report.unresolved_count}")
     if report.enriched:
-        backends = ", ".join(report.enrich_backends) or "(none available)"
+        backends = ", ".join(report.enrich_backends) or "(no matching files)"
         click.echo(f"  enriched via {backends}: {report.edges_upgraded} edge(s) upgraded")
         if report.discrepancy_count:
             click.echo(
