@@ -301,6 +301,18 @@ def test_visualize_writes_html(project: Path, tmp_path: Path) -> None:
     assert "simple_counter" in html
 
 
+def test_visualize_force_inline_flag_accepted(project: Path, tmp_path: Path) -> None:
+    # The Phase-4a size-guard override flag (the cap itself is unit-tested in
+    # test_visualize.py against a shrunk limit); here just confirm the CLI
+    # surface exists and writes the normal small artifact.
+    out = tmp_path / "g.html"
+    result = CliRunner().invoke(
+        main, ["visualize", "--force-inline", "-o", str(out), *db_args(project)]
+    )
+    assert result.exit_code == 0, result.output
+    assert out.read_text().startswith("<!DOCTYPE html>")
+
+
 def test_metrics_lists_hubs(project: Path) -> None:
     result = CliRunner().invoke(main, ["metrics", "--limit", "0", *db_args(project)])
     assert result.exit_code == 0, result.output

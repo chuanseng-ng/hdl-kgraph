@@ -1008,6 +1008,12 @@ def metrics_cmd(db_path: Path | None, as_json: bool, top_n: int, show_communitie
     "ships precomputed coordinates (needs the [layout] extra); 'auto' routes "
     "by graph size.",
 )
+@click.option(
+    "--force-inline",
+    "force_inline",
+    is_flag=True,
+    help="Write the HTML even if the payload exceeds the inline size limit.",
+)
 @click.option("--open", "open_browser", is_flag=True, help="Open the result in a browser.")
 def visualize(
     db_path: Path | None,
@@ -1016,6 +1022,7 @@ def visualize(
     top: str | None,
     title: str | None,
     layout: str,
+    force_inline: bool,
     open_browser: bool,
 ) -> None:
     """Render a self-contained interactive HTML view of the graph.
@@ -1033,7 +1040,15 @@ def visualize(
         root = meta.get("root", "")
         title = f"hdl-kgraph: {Path(root).name}" if root else "hdl-kgraph"
     try:
-        result = render_html(graph, output, full=full, top=top, title=title, layout=layout)
+        result = render_html(
+            graph,
+            output,
+            full=full,
+            top=top,
+            title=title,
+            layout=layout,
+            force_inline=force_inline,
+        )
     except ValueError as exc:  # --top names nothing: error out, like `tree`
         raise click.ClickException(str(exc)) from exc
     if result.note:

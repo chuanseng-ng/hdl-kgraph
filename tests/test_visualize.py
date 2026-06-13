@@ -232,3 +232,34 @@ def test_compute_layout_covers_all_nodes_at_scale() -> None:
     assert set(pos) == set(g.nodes())
     assert all(isinstance(x, int) and isinstance(y, int) for x, y in pos.values())
     assert compute_layout(g, comm_of) == pos  # deterministic
+
+
+# ---------------------------------------------------------------------------
+# viz-scalability Phase 4a: inline-payload size guard.
+# ---------------------------------------------------------------------------
+
+
+def test_oversized_payload_is_refused(graph, tmp_path: Path, monkeypatch) -> None:
+    # Shrink the cap instead of building a giant graph: any real payload trips
+    # it, and the error must point the user at the escapes.
+    monkeypatch.setattr("hdl_kgraph.viz.MAX_INLINE_BYTES", 10)
+    with pytest.raises(ValueError, match="inline limit") as exc:
+        render_html(graph, tmp_path / "g.html")
+    message = str(exc.value)
+    assert "--force-inline" in message and "--full" in message
+    assert not (tmp_path / "g.html").exists()  # nothing written on refusal
+
+
+def test_force_inline_overrides_the_cap(graph, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("hdl_kgraph.viz.MAX_INLINE_BYTES", 10)
+    result = render_html(graph, tmp_path / "g.html", force_inline=True)
+    assert result.path.is_file()
+    assert "force-inline" in result.note and "exceeds" in result.note
+    # The artifact is still well-formed despite the override.
+    assert _embedded_payload(result.path.read_text())["nodes"]
+
+
+def test_small_graph_under_default_cap_has_no_note(graph, tmp_path: Path) -> None:
+    # Regression: the default cap never trips a normal design.
+    result = render_html(graph, tmp_path / "g.html")
+    assert result.note == ""
