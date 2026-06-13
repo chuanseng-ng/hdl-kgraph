@@ -277,3 +277,124 @@ def test_cross_ir_forward_reference_is_not_dangling() -> None:
     g = build_graph([ir_edge, ir_node], warnings=warnings)
     assert warnings == []
     assert g.nodes["filelist:b.f"]["kind"] is NodeKind.FILELIST
+
+
+# -- issue #23: confidence contract for multi-match scoped signals and
+# -- both-branches duplicate definitions ---------------------------------------
+
+
+def _both_branches_graph(tmp_path: Path, source: str) -> nx.MultiDiGraph:
+    """Parse *source* through the preprocessor in both-branches mode."""
+    from hdl_kgraph.parser.preprocessor import MacroTable, Preprocessor
+
+    path = tmp_path / "dup.sv"
+    path.write_text(source)
+    pp = Preprocessor(base=tmp_path, macros=MacroTable(), branch_mode="both")
+    out = pp.preprocess(path)
+    ir = SystemVerilogParser().parse(Path("dup.sv"), out.text, line_map=out.line_map)
+    return build_graph([ir])
+
+
+def test_both_branches_duplicate_module_resolves_to_selected_arm(tmp_path: Path) -> None:
+    """An undefined `ifdef guarding two variants of one module must not drag
+    every instantiation down to 0.6: the arm normal evaluation selects (not
+    stamped `conditional`) wins at full confidence."""
+    g = _both_branches_graph(
+        tmp_path,
+        "`ifdef FAST\n"
+        "module worker(input logic c, output logic q);\n"
+        "endmodule\n"
+        "`else\n"
+        "module worker(input logic c, output logic q);\n"
+        "endmodule\n"
+        "`endif\n"
+        "\n"
+        "module top;\n"
+        "  worker u0(.c(1'b0), .q());\n"
+        "endmodule\n",
+    )
+    workers = {
+        n: d
+        for n, d in g.nodes(data=True)
+        if d["kind"] is NodeKind.MODULE and d["name"] == "worker"
+    }
+    assert len(workers) == 2  # both arms parsed
+    (selected,) = [n for n, d in workers.items() if not d["attrs"].get("conditional")]
+    inst = next(
+        n for n, d in g.nodes(data=True) if d["kind"] is NodeKind.INSTANCE and d["name"] == "u0"
+    )
+    edges = [
+        (v, d) for _, v, d in g.out_edges(inst, data=True) if d["kind"] is EdgeKind.INSTANTIATES
+    ]
+    assert [v for v, _ in edges] == [selected]
+    assert edges[0][1]["confidence"] == 1.0
+
+
+def test_both_branches_duplicate_signal_resolves_to_selected_arm(tmp_path: Path) -> None:
+    g = _both_branches_graph(
+        tmp_path,
+        "module m(input logic c);\n"
+        "`ifdef WIDE\n"
+        "  logic [15:0] state;\n"
+        "`else\n"
+        "  logic [7:0] state;\n"
+        "`endif\n"
+        "  always_ff @(posedge c) state <= state + 1;\n"
+        "endmodule\n",
+    )
+    states = {
+        n: d for n, d in g.nodes(data=True) if d["kind"] is NodeKind.SIGNAL and d["name"] == "state"
+    }
+    assert len(states) == 2
+    (selected,) = [n for n, d in states.items() if not d["attrs"].get("conditional")]
+    drives = [
+        (u, v, d) for u, v, d in g.edges(data=True) if d["kind"] is EdgeKind.DRIVES and v in states
+    ]
+    assert {v for _, v, _ in drives} == {selected}
+    assert all(d["confidence"] == 1.0 for _, _, d in drives)
+
+
+def test_two_conditional_arms_stay_ambiguous(tmp_path: Path) -> None:
+    """Two declarations in *different* undefined `ifdef arms: neither is the
+    selected one, so the tie is genuinely ambiguous — one 0.6 edge each."""
+    g = _both_branches_graph(
+        tmp_path,
+        "module m(input logic c, output logic q);\n"
+        "`ifdef A\n"
+        "  logic pick;\n"
+        "`endif\n"
+        "`ifdef B\n"
+        "  logic pick;\n"
+        "`endif\n"
+        "  assign q = pick;\n"
+        "endmodule\n",
+    )
+    picks = {
+        n for n, d in g.nodes(data=True) if d["kind"] is NodeKind.SIGNAL and d["name"] == "pick"
+    }
+    assert len(picks) == 2
+    reads = [(v, d) for _, v, d in g.edges(data=True) if d["kind"] is EdgeKind.READS and v in picks]
+    assert {v for v, _ in reads} == picks
+    assert all(d["confidence"] == 0.6 for _, d in reads)
+
+
+def test_nonansi_port_redeclaration_is_one_net_not_an_ambiguity(tmp_path: Path) -> None:
+    """`output y; wire y;` declares one net twice (PORT + SIGNAL); dataflow
+    resolves to the PORT at full confidence instead of downgrading to 0.6."""
+    ir = SystemVerilogParser().parse(
+        Path("nonansi.v"),
+        "module nonansi(a, y);\n  input a;\n  output y;\n  wire y;\n  assign y = a;\nendmodule\n",
+    )
+    g = build_graph([ir])
+    y_nodes = {
+        n: d["kind"]
+        for n, d in g.nodes(data=True)
+        if d["name"] == "y" and d["kind"] in (NodeKind.PORT, NodeKind.SIGNAL)
+    }
+    assert set(y_nodes.values()) == {NodeKind.PORT, NodeKind.SIGNAL}
+    drives = [
+        (v, d) for _, v, d in g.edges(data=True) if d["kind"] is EdgeKind.DRIVES and v in y_nodes
+    ]
+    assert len(drives) == 1
+    assert y_nodes[drives[0][0]] is NodeKind.PORT
+    assert drives[0][1]["confidence"] == 1.0
