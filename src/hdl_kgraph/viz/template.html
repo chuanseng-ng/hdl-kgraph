@@ -118,8 +118,10 @@ const esc = s => String(s).replace(/[&<>"']/g, ch =>
 /* ---------- filters ---------- */
 const nodeKinds = [...new Set(DATA.nodes.map(n => n.kind))].sort();
 const edgeKinds = [...new Set(DATA.links.map(l => l.kind))].sort();
-const activeKinds = new Set(nodeKinds.filter(k => !DATA.full || !NOISY_KINDS.has(k)));
-const activeEdges = new Set(edgeKinds.filter(k => !DATA.full || !NOISY_EDGES.has(k)));
+/* In collapse mode the aggregation already controls volume, so don't also
+   default the noisy kinds off — expanding a unit should reveal its signals. */
+const activeKinds = new Set(nodeKinds.filter(k => DATA.collapse || !DATA.full || !NOISY_KINDS.has(k)));
+const activeEdges = new Set(edgeKinds.filter(k => DATA.collapse || !DATA.full || !NOISY_EDGES.has(k)));
 
 function checkboxes(host, items, active, swatchFor, onchange) {
   const div = document.getElementById(host);
@@ -145,7 +147,7 @@ checkboxes("edge-filters", edgeKinds, activeEdges, null, refresh);
    Color by community defaults on in projection mode, where every node is a
    design unit and kind-based coloring is uniform anyway. */
 const activeComms = new Set(DATA.communities);
-let colorByCommunity = !DATA.full && DATA.communities.length > 1;
+let colorByCommunity = (DATA.collapse || !DATA.full) && DATA.communities.length > 1;
 const COMM_COLORS = ["#88c0d0","#a3be8c","#ebcb8b","#d08770","#b48ead",
                      "#81a1c1","#bf616a","#8fbcbb","#d699b6","#5e81ac"];
 const commColor = c => COMM_COLORS[+c % COMM_COLORS.length];
@@ -209,46 +211,69 @@ let width = 0, height = 0, transform = d3.zoomIdentity, query = "";
 const MAX_LABELS = 400;
 const MAX_DRAWN_EDGES = 4000;
 
-/* Aggregated "collapse" view (viz-scalability Phase 3): render one supernode
-   per Louvain community and expand a community in place on double-click. The
-   visible graph is rebuilt from the `expanded` set each time it changes:
-   collapsed communities resolve to their supernode, expanded ones to their
-   members, and edges are resolved+summed across whichever endpoints are live. */
+/* Aggregated "collapse" view (viz-scalability Phase 3). One supernode per
+   Louvain community; with --full it is two-level (community -> units -> leaves).
+   The visible graph is rebuilt from the `expanded` set of group ids each time
+   it changes: every node resolves to the outermost still-collapsed group in its
+   ancestry, or to itself once all its groups are open; edges are resolved+summed
+   across whichever endpoints are live. */
 const COLLAPSE = !!DATA.collapse;
-const expanded = new Set();                 // community labels expanded in place
+const expanded = new Set();                 // open group ids ("comm:X" / "unit:Y")
 const searchExpanded = new Set();           // subset opened by search (auto-collapse on clear)
 const memberById = new Map(DATA.nodes.map(n => [n.id, n]));
-const superByComm = new Map();
-if (COLLAPSE) for (const s of DATA.supernodes) superByComm.set(s.id, {
-  id: "super:" + s.id, supernode: true, community: s.id,
-  name: s.label, count: s.count, kind: "module", unresolved: false, domain: "", file: "",
-});
+const TWO_LEVEL = COLLAPSE && !!DATA.unitnodes;   // --full: community -> units -> leaves
+const groupMeta = new Map();                       // entity id -> supernode metadata
+if (COLLAPSE) {
+  for (const s of DATA.supernodes) groupMeta.set("comm:" + s.id, {
+    id: "comm:" + s.id, group: true, level: "comm", community: s.id,
+    name: s.label, count: s.count, kind: "module", unresolved: false, domain: "", file: "" });
+  if (TWO_LEVEL) for (const u of DATA.unitnodes) groupMeta.set("unit:" + u.id, {
+    id: "unit:" + u.id, group: true, level: "unit", community: u.community,
+    name: u.label, count: u.count, kind: "module", unresolved: false, domain: "", file: "" });
+}
+const unitIds = new Set(TWO_LEVEL ? DATA.unitnodes.map(u => u.id) : []);
+
+// Ancestry of a node, outermost group first: [comm] or [comm, unit]. Nodes with
+// no community (orphans like file/package nodes) have no group and stand alone.
+function ancestry(n) {
+  if (!COLLAPSE || !n.community) return [];
+  const a = ["comm:" + n.community];
+  if (TWO_LEVEL && n.unit) a.push("unit:" + n.unit);
+  return a;
+}
+// Resolve a node id to its visible entity: the outermost still-collapsed group
+// in its ancestry, or the node itself once all its groups are open.
+function resolveEntity(id) {
+  const n = memberById.get(id);
+  if (!n) return id;
+  for (const g of ancestry(n)) if (!expanded.has(g)) return g;
+  return id;
+}
 
 let nodes, links, byId;
 function buildGraph() {
   if (!COLLAPSE) {
     nodes = DATA.nodes.map(n => ({...n}));
-  } else {
-    nodes = [];
-    for (const [c, sup] of superByComm) {
-      if (expanded.has(c)) { for (const n of DATA.nodes) if (n.community === c) nodes.push({...n}); }
-      else nodes.push({...sup});
-    }
-  }
-  byId = new Map(nodes.map(n => [n.id, n]));
-  if (!COLLAPSE) {
+    byId = new Map(nodes.map(n => [n.id, n]));
     links = DATA.links.filter(l => byId.has(l.source) && byId.has(l.target)).map(l => ({...l}));
     return;
   }
-  /* Resolve every projection edge to the live entity (supernode if its
-     community is collapsed, member if expanded) and sum parallel edges. */
-  const resolve = id => {
-    const c = (memberById.get(id) || {}).community;
-    return (c && !expanded.has(c)) ? "super:" + c : id;
-  };
+  // Each node resolves to its outermost collapsed group, or itself when fully
+  // open; a unit's own module node is never a leaf (its children replace it).
+  nodes = [];
+  const seen = new Set();
+  for (const n of DATA.nodes) {
+    const eid = resolveEntity(n.id);
+    if (eid === n.id && unitIds.has(n.id)) continue;
+    if (seen.has(eid)) continue;
+    seen.add(eid);
+    nodes.push(groupMeta.has(eid) ? {...groupMeta.get(eid)} : {...n});
+  }
+  byId = new Map(nodes.map(n => [n.id, n]));
+  /* Resolve every edge to its live endpoints and sum parallel edges. */
   const agg = new Map();
   for (const l of DATA.links) {
-    const s = resolve(l.source), t = resolve(l.target);
+    const s = resolveEntity(l.source), t = resolveEntity(l.target);
     if (s === t || !byId.has(s) || !byId.has(t)) continue;  // drop collapsed self-pairs
     const key = s + " " + t, prev = agg.get(key);
     if (prev) prev.weight += (l.weight || 1);
@@ -259,8 +284,8 @@ function buildGraph() {
 buildGraph();
 
 function radiusOf(n) {
-  // Supernodes scale with member count (bounded); plain nodes are fixed-size.
-  return n && n.supernode ? Math.min(38, 6 + Math.sqrt(n.count) * 2.5) : 5;
+  // Group supernodes scale with their member count (bounded); leaves fixed-size.
+  return n && n.group ? Math.min(38, 6 + Math.sqrt(n.count) * 2.5) : 5;
 }
 
 /* "static" tier: coordinates were precomputed in Python and shipped in the
@@ -371,9 +396,9 @@ function draw() {
       : colorByCommunity && n.community !== "" ? commColor(n.community)
       : color(n.kind);
     ctx.fill();
-    if (n.supernode) { ctx.strokeStyle = "#eceff4"; ctx.lineWidth = 1.5; ctx.stroke(); }
+    if (n.group) { ctx.strokeStyle = "#eceff4"; ctx.lineWidth = 1.5; ctx.stroke(); }
     else if (n.unresolved) { ctx.strokeStyle = "#bf616a"; ctx.lineWidth = 1.4; ctx.stroke(); }
-    if ((labelZoom || hit || n.supernode) && labels < MAX_LABELS) {
+    if ((labelZoom || hit || n.group) && labels < MAX_LABELS) {
       labels++;
       ctx.fillStyle = hit ? "#ffd479" : "#9aa3b2";
       ctx.font = "10px monospace";
@@ -452,9 +477,10 @@ d3.select(canvas)
     }))
   .call(zoom);
 
-/* Collapse view: double-click expands a supernode to its members (or collapses
-   a member's community back). Rebuild the visible graph from `expanded`, re-bind
-   the simulation, and reheat it so the new entities settle. */
+/* Collapse view drill-down: double-click a supernode to expand it one level
+   (community -> units -> leaves), a leaf to re-collapse its innermost group, or
+   empty space to collapse everything. rebuild() re-derives the visible graph
+   from `expanded`, re-binds the simulation, and reheats it so entities settle. */
 function rebuild() {
   buildGraph();
   sim.nodes(nodes);
@@ -462,19 +488,20 @@ function rebuild() {
   sim.alpha(0.6).restart();
 }
 
-/* Search auto-expand: a hit hidden inside a collapsed community is invisible, so
-   open every community that contains a match (and re-collapse the ones we opened
+/* Search auto-expand: a hit hidden inside a collapsed group is invisible, so
+   open every group on the way to each match (and re-collapse the ones we opened
    once the query clears, leaving the user's manual expansions alone). Returns
    whether the expanded set changed. */
 function syncSearchExpansion(q) {
   if (!COLLAPSE) return false;
   const want = new Set();
-  if (q) for (const n of DATA.nodes) if (n.name.toLowerCase().includes(q)) want.add(n.community);
+  if (q) for (const n of DATA.nodes)
+    if (n.name.toLowerCase().includes(q)) for (const g of ancestry(n)) want.add(g);
   let changed = false;
-  for (const c of want) if (!expanded.has(c)) { expanded.add(c); searchExpanded.add(c); changed = true; }
-  for (const c of [...searchExpanded]) if (!want.has(c)) {
-    searchExpanded.delete(c);
-    if (expanded.has(c)) { expanded.delete(c); changed = true; }
+  for (const g of want) if (!expanded.has(g)) { expanded.add(g); searchExpanded.add(g); changed = true; }
+  for (const g of [...searchExpanded]) if (!want.has(g)) {
+    searchExpanded.delete(g);
+    if (expanded.has(g)) { expanded.delete(g); changed = true; }
   }
   return changed;
 }
@@ -482,10 +509,16 @@ if (COLLAPSE) {
   d3.select(canvas).on("dblclick.zoom", null);  // reclaim dblclick for drill-down
   canvas.addEventListener("dblclick", event => {
     const n = pick(event);
-    if (!n || n.community === "") return;
-    if (n.supernode) expanded.add(n.community);
-    else { expanded.delete(n.community); searchExpanded.delete(n.community); }  // re-collapse
-    rebuild();
+    if (!n) {  // double-click empty space collapses everything back to communities
+      if (expanded.size) { expanded.clear(); searchExpanded.clear(); rebuild(); }
+      return;
+    }
+    if (n.group) { expanded.add(n.id); searchExpanded.delete(n.id); rebuild(); return; }  // drill in
+    // A leaf: collapse its innermost still-open group (unit, else community).
+    const chain = ancestry(n);
+    for (let i = chain.length - 1; i >= 0; i--) if (expanded.has(chain[i])) {
+      expanded.delete(chain[i]); searchExpanded.delete(chain[i]); rebuild(); return;
+    }
   });
 }
 function fitView() {
@@ -512,8 +545,9 @@ canvas.addEventListener("mousemove", event => {
   tooltip.style.display = "block";
   tooltip.style.left = (event.offsetX + 14) + "px";
   tooltip.style.top = (event.offsetY + 14) + "px";
-  if (n.supernode) {
-    tooltip.innerHTML = `<b>${esc(n.name)}</b><br>subsystem of ${n.count} unit(s)`
+  if (n.group) {
+    const what = n.level === "unit" ? `unit of ${n.count} node(s)` : `subsystem of ${n.count} unit(s)`;
+    tooltip.innerHTML = `<b>${esc(n.name)}</b><br>${what}`
       + `<br>community: ${esc(n.community)}<br>double-click to expand`;
     return;
   }

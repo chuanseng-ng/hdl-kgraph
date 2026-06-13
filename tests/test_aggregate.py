@@ -10,7 +10,7 @@ from hdl_kgraph.graph.builder import build_graph
 from hdl_kgraph.graph.metrics import ModuleMetrics
 from hdl_kgraph.parser.systemverilog import SystemVerilogParser
 from hdl_kgraph.schema import NodeKind
-from hdl_kgraph.viz.aggregate import aggregate
+from hdl_kgraph.viz.aggregate import aggregate, aggregate_full
 
 
 @pytest.fixture(scope="module")
@@ -88,6 +88,45 @@ def test_synthetic_superlink_sums_and_labels() -> None:
     assert {s["id"]: s["count"] for s in agg.supernodes} == {"0": 2, "1": 2}
     assert {s["id"]: s["label"] for s in agg.supernodes} == {"0": "A", "1": "C"}
     assert agg.superlinks == [{"source": "0", "target": "1", "weight": 4}]
+
+
+def test_unit_membership_maps_leaves_to_their_unit(graph) -> None:
+    um = metrics.unit_membership(graph)
+    units = set(metrics.module_projection(graph).nodes())
+    assert um and all(owner in units for owner in um.values())  # owners are units
+    assert not (set(um) & units)  # a unit is never its own leaf
+
+
+def test_aggregate_full_has_two_levels(graph) -> None:
+    comm_of = _comm_of(graph)
+    ranked = metrics.module_metrics(graph).modules
+    um = metrics.unit_membership(graph)
+    agg = aggregate_full(comm_of, ranked, um)
+    # Community level: one per community, counting its units.
+    assert {s["id"] for s in agg.supernodes} == set(comm_of.values())
+    assert sum(s["count"] for s in agg.supernodes) == len(comm_of)  # every unit counted once
+    # Unit level: one per projection unit, community consistent with comm_of.
+    assert {u["id"] for u in agg.unitnodes} == set(comm_of)
+    assert all(u["community"] == comm_of[u["id"]] for u in agg.unitnodes)
+    # Leaf counts total the leaf→unit mappings.
+    assert sum(u["count"] for u in agg.unitnodes) == len(um)
+
+
+def test_aggregate_full_synthetic_counts_and_labels() -> None:
+    # community 0 = {a (hub), b}; community 1 = {c}. Leaves: 2 under a, 1 under c.
+    comm_of = {"a": "0", "b": "0", "c": "1"}
+    ranked = _rank(("a", 0.9), ("c", 0.7), ("b", 0.1))
+    unit_of = {"a.sig1": "a", "a.sig2": "a", "c.sig": "c"}
+    agg = aggregate_full(comm_of, ranked, unit_of)
+    assert {s["id"]: (s["label"], s["count"]) for s in agg.supernodes} == {
+        "0": ("A", 2),  # 2 units, labeled after the hub
+        "1": ("C", 1),
+    }
+    assert {u["id"]: (u["community"], u["count"]) for u in agg.unitnodes} == {
+        "a": ("0", 2),
+        "b": ("0", 0),
+        "c": ("1", 1),
+    }
 
 
 def test_empty_and_edgeless_graphs_degrade_cleanly() -> None:

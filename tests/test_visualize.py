@@ -357,10 +357,26 @@ def test_template_has_search_auto_expand(graph, tmp_path: Path) -> None:
     assert "syncSearchExpansion" in html and "searchExpanded" in html
 
 
-def test_collapse_rejects_full(graph, tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="full"):
-        render_html(graph, tmp_path / "g.html", collapse=True, full=True)
-    assert not (tmp_path / "g.html").exists()
+def test_full_collapse_is_two_level(graph, tmp_path: Path) -> None:
+    # --collapse --full aggregates communities of units, each holding leaves.
+    result = render_html(graph, tmp_path / "g.html", collapse=True, full=True)
+    payload = _embedded_payload(result.path.read_text())
+    assert payload["collapse"] is True and payload["full"] is True
+    assert payload["supernodes"] and payload["unitnodes"]  # both levels present
+    # Community supernodes are keyed by community; unit nodes carry their community.
+    assert {s["id"] for s in payload["supernodes"]} == set(payload["communities"])
+    assert all(u["community"] in payload["communities"] for u in payload["unitnodes"])
+    # Every node is tagged with unit + community; leaves that have an owning
+    # unit point at a real one (orphans like file nodes carry an empty unit).
+    unit_ids = {u["id"] for u in payload["unitnodes"]}
+    assert all("unit" in n and "community" in n for n in payload["nodes"])
+    owned = [n for n in payload["nodes"] if n["id"] not in unit_ids and n["unit"]]
+    assert owned and all(n["unit"] in unit_ids for n in owned)
+
+
+def test_full_collapse_template_has_two_level_branch(graph, tmp_path: Path) -> None:
+    html = render_html(graph, tmp_path / "g.html", collapse=True, full=True).path.read_text()
+    assert "TWO_LEVEL" in html and "resolveEntity" in html and "unitnodes" in html
 
 
 def test_compression_lets_oversized_payload_embed(graph, tmp_path: Path, monkeypatch) -> None:
