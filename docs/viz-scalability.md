@@ -1,11 +1,12 @@
 # Visualization scalability for very large designs
 
-**Status: Phases 1–2 delivered; Phases 3–6 parked — post-M6.** This work does
-not gate the MVP (M1–M4) or the v0.6 (M6) release. The foundation — renderer
-hygiene (Phase 1) and the precomputed-layout "static" tier with auto-routing
-(Phase 2) — has shipped; the remaining phases are recorded here so the
-trade-off analysis is not lost and they can be picked up when a real design
-outgrows the static tier.
+**Status: Phases 1–2 + 4a delivered; Phases 3, 4b, 5–6 parked — post-M6.**
+This work does not gate the MVP (M1–M4) or the v0.6 (M6) release. The
+foundation — renderer hygiene (Phase 1), the precomputed-layout "static" tier
+with auto-routing (Phase 2), and the inline-payload size guard (Phase 4a) —
+has shipped; the remaining phases are recorded here so the trade-off analysis
+is not lost and they can be picked up when a real design outgrows the static
+tier.
 
 ## Problem statement
 
@@ -208,10 +209,18 @@ this is Phase 1 for a reason.
   traversal in `graph/metrics.py`); expand/collapse UI in the template;
   `--collapse` flag. Tests: super-edge weights match projection sums,
   expand metadata round-trips.
-- **Phase 4 — payload guards**: columnar encoding, gzip + base64 +
-  `DecompressionStream` branch, hard cap with `--force-inline`. Tests:
-  Python-side round-trip of the compressed payload; small graphs still embed
-  plain JSON.
+- **Phase 4 — payload guards** (split for reviewability):
+  - **4a — inline size guard** — **done.** `render_html` measures the raw
+    payload and raises above `MAX_INLINE_BYTES` (`viz/__init__.py`) with an
+    actionable message (drop `--full` or narrow with `--top`); the new
+    `--force-inline` flag overrides and the `RenderResult.note` flags the
+    over-cap size. Pure Python, no template change. Tests shrink the cap to
+    exercise refusal/override/no-op.
+  - **4b — compression (parked)**: gzip + base64 + a client
+    `DecompressionStream` decode branch (async template bootstrap); columnar
+    encoding only if it still earns its complexity once gzip lands. Tests:
+    Python-side round-trip of the compressed payload; small graphs still embed
+    plain JSON.
 - **Phase 5 — export escape hatch**: `export` CLI command with enum/attr
   sanitization. Tests: `nx.read_graphml` round-trip on a fixture graph.
 - **Phase 6 — WebGL (explicit non-goal for now)**: only if real-world

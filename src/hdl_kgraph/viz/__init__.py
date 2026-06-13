@@ -48,6 +48,13 @@ LIVE_MAX_EDGES = 6000
 #: still ship a best-effort static layout and note the over-budget size.
 STATIC_MAX_NODES = 50_000
 
+#: Hard cap on the raw (uncompressed) inlined payload, in bytes. Above this the
+#: artifact is too large for a browser to open usefully; ``render_html`` refuses
+#: with an actionable message unless ``--force-inline`` overrides. Referenced by
+#: the module-global name (not a default arg) so tests can monkeypatch it.
+#: (viz-scalability Phase 4a.)
+MAX_INLINE_BYTES = 75 * 1024 * 1024
+
 #: Accepted ``--layout`` values.
 LAYOUT_MODES = ("auto", "live", "static")
 
@@ -231,6 +238,7 @@ def render_html(
     top: str | None = None,
     title: str = "hdl-kgraph",
     layout: str = "auto",
+    force_inline: bool = False,
 ) -> RenderResult:
     """Render the graph to a single self-contained HTML file.
 
@@ -239,8 +247,14 @@ def render_html(
     coordinates, and ``"auto"`` (default) routes by node/edge count. ``static``
     and ``auto`` fall back to ``live`` when the ``[layout]`` extra is missing.
 
+    The raw inlined payload is capped at :data:`MAX_INLINE_BYTES`; above it the
+    command raises :class:`ValueError` with guidance (drop ``--full``, narrow
+    with ``--top``, or ``export``) unless *force_inline* is set, in which case
+    the file is written and the returned note flags the over-cap size.
+
     Returns a :class:`RenderResult` describing the resolved tier. Raises
-    :class:`ValueError` when *top* names no module or entity.
+    :class:`ValueError` when *top* names no module or entity, or when the
+    payload exceeds the inline cap and *force_inline* is false.
     """
     if layout not in LAYOUT_MODES:
         raise ValueError(f"layout must be one of {LAYOUT_MODES}, got {layout!r}")
@@ -281,8 +295,23 @@ def render_html(
         positions=positions,
         layout_mode=decision.layout,
     )
+    # Guard the inline payload size before writing anything: a huge --full
+    # design would otherwise emit an HTML file no browser can open.
+    raw = json.dumps(payload)
+    size = len(raw.encode("utf-8"))
+    if size > MAX_INLINE_BYTES and not force_inline:
+        raise ValueError(
+            f"graph payload is {size / 1e6:.0f} MB, over the "
+            f"{MAX_INLINE_BYTES / 1e6:.0f} MB inline limit — drop --full, "
+            f"narrow with --top, or pass --force-inline to write it anyway"
+        )
+    if size > MAX_INLINE_BYTES:
+        decision.note = (
+            f"payload {size / 1e6:.0f} MB exceeds the "
+            f"{MAX_INLINE_BYTES / 1e6:.0f} MB inline limit (--force-inline)"
+        )
     # "</" must not appear verbatim inside an inline <script> payload.
-    data = json.dumps(payload).replace("</", "<\\/")
+    data = raw.replace("</", "<\\/")
     html = template.replace(_D3_MARKER, d3, 1).replace(_DATA_MARKER, data, 1)
     out_path = Path(out_path)
     out_path.write_text(html, encoding="utf-8")
