@@ -76,7 +76,8 @@ is always connected and queries never dead-end silently.
 ### Two-pass build architecture
 
 - **Pass 1 (parse):** each file is parsed independently into a per-file IR of
-  declarations and unresolved references. Embarrassingly parallel.
+  declarations and unresolved references. Parallelizable by design (currently
+  run serially; parallel execution is tracked in issue #26).
 - **Pass 2 (link):** cross-file resolution — instance→definition, package imports,
   VHDL library/work scoping, bind/configuration resolution — with confidence scoring.
 

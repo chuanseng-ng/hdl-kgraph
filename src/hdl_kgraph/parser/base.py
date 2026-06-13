@@ -4,8 +4,9 @@ Design (see ROADMAP.md, "Two-pass build architecture"):
 
 * **Pass 1 (parse):** a :class:`ParserBackend` parses one file independently
   into a per-file IR — declared nodes plus unresolved references (instance
-  targets, package imports, include paths). Pass 1 is embarrassingly parallel
-  and is the only stage re-run for changed files during incremental updates.
+  targets, package imports, include paths). Pass 1 is parallelizable (the
+  pipeline currently runs it serially; see issue #26) and is the only stage
+  re-run for changed files during incremental updates.
 * **Pass 2 (link):** the graph builder resolves references across files with
   confidence scoring (see :mod:`hdl_kgraph.schema`).
 
