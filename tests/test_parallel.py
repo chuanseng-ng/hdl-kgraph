@@ -119,9 +119,7 @@ def test_update_parallel_matches_full_rebuild(corpus: Path) -> None:
 def test_worker_functions_parse_in_process() -> None:
     sv = _parse_sv_task("a.sv", "module a;\nendmodule\n", [])
     assert any(n.kind.value == "module" for n in sv.nodes)
-    vhdl = _parse_vhdl_task(
-        "b.vhd", "entity b is\nend entity;\n", "work"
-    )
+    vhdl = _parse_vhdl_task("b.vhd", "entity b is\nend entity;\n", "work")
     assert any(n.kind.value == "entity" for n in vhdl.nodes)
 
 

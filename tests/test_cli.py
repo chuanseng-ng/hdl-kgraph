@@ -221,9 +221,7 @@ def test_metrics_communities_json(project: Path) -> None:
     assert payload["betweenness_approximate"] is False
 
 
-def test_metrics_notes_sampled_betweenness(
-    project: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_metrics_notes_sampled_betweenness(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from hdl_kgraph.graph import metrics as metrics_mod
 
     monkeypatch.setattr(metrics_mod, "BETWEENNESS_EXACT_MAX_NODES", 1)

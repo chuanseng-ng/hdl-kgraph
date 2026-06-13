@@ -417,9 +417,7 @@ def _execute(
     # expanded texts stay in memory at once.
     pending: deque[_PendingUnit] = deque()
     with contextlib.ExitStack() as stack:
-        executor = (
-            stack.enter_context(ProcessPoolExecutor(max_workers=jobs)) if jobs > 1 else None
-        )
+        executor = stack.enter_context(ProcessPoolExecutor(max_workers=jobs)) if jobs > 1 else None
         for index, found in enumerate(discovered, start=1):
             # Skipped/reused files advance the counter too: it always reaches total.
             tick(index, len(discovered))
@@ -441,9 +439,7 @@ def _execute(
             ir = _reuse_unit(found, reuse, preprocessor, processed, consumed)
             if ir is not None:
                 if found.language is Language.VHDL:
-                    vhdl_file_libs[found.relpath] = _library_for(
-                        found.path, options.vhdl_libraries
-                    )
+                    vhdl_file_libs[found.relpath] = _library_for(found.path, options.vhdl_libraries)
                 pending.append(_PendingUnit(found=found, ir=ir, reused=True))
             elif found.language is Language.VHDL:
                 # VHDL has no SV preprocessor pass; route by configured library.
