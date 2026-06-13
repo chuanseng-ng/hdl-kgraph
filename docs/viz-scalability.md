@@ -213,14 +213,18 @@ this is Phase 1 for a reason.
   draws the collapsed view (supernode radius ∝ √member-count) and **double-click
   expands a community in place** to its members — visible entities and edges are
   resolved from the `expanded` set each toggle and re-fed to a live simulation
-  (bounded supernode counts, so no `[layout]` extra needed). `--collapse` is
-  projection-level, so it cannot combine with `--full`. **Search auto-expands**
-  every community containing a match (and re-collapses those it opened once the
-  query clears), so hits hidden inside collapsed subsystems are reachable. Tests:
-  super-edge weights match projection sums, representative labels, payload
-  round-trip, the template drill-down + search-expand branches, and the `--full`
-  rejection. **Deferred:** two-level aggregation in `--full` mode (leaf → unit →
-  community) and precomputed member offsets for the expand animation.
+  (bounded supernode counts, so no `[layout]` extra needed). With **`--full` it
+  is two-level**: communities of units, each unit expandable to its leaf nodes
+  (`aggregate_full` + `metrics.unit_membership`). The client resolves every node
+  to the outermost still-collapsed group in its ancestry (community, then unit);
+  double-click drills in, double-click a leaf re-collapses its innermost group,
+  and double-click empty space collapses everything. **Search auto-expands**
+  every group on the way to a match (and re-collapses those it opened once the
+  query clears), so hits hidden inside collapsed subsystems/units are reachable.
+  Tests: super-edge weights match projection sums, two-level counts/labels,
+  representative labels, payload round-trips, and the template drill-down /
+  two-level / search-expand branches. **Deferred:** precomputed member offsets
+  for the expand animation (the only Phase 3 item left).
 - **Phase 4 — payload guards** (split for reviewability):
   - **4a — inline size guard** — **done.** `render_html` measures the raw
     payload and raises above `MAX_INLINE_BYTES` (`viz/__init__.py`) with an

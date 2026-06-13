@@ -326,14 +326,17 @@ def test_visualize_collapse_writes_aggregated_html(project: Path, tmp_path: Path
     assert '"collapse": true' in html or '"collapse":true' in html
 
 
-def test_visualize_collapse_rejects_full(project: Path, tmp_path: Path) -> None:
+def test_visualize_collapse_full_two_level(project: Path, tmp_path: Path) -> None:
+    # --collapse --full now produces the two-level aggregation (payload shape is
+    # unit-tested in test_visualize.py); here just confirm the CLI writes it.
     out = tmp_path / "g.html"
     result = CliRunner().invoke(
         main, ["visualize", "--collapse", "--full", "-o", str(out), *db_args(project)]
     )
-    assert result.exit_code != 0
-    assert "cannot be combined with --full" in result.output
-    assert not out.exists()
+    assert result.exit_code == 0, result.output
+    html = out.read_text()
+    assert html.startswith("<!DOCTYPE html>")
+    assert '"unitnodes"' in html
 
 
 def test_metrics_lists_hubs(project: Path) -> None:

@@ -34,7 +34,7 @@ import networkx as nx
 from hdl_kgraph.graph import analysis, clocks, metrics
 from hdl_kgraph.graph.analysis import HierarchyNode
 from hdl_kgraph.schema import Language, NodeKind
-from hdl_kgraph.viz.aggregate import aggregate
+from hdl_kgraph.viz.aggregate import aggregate, aggregate_full
 from hdl_kgraph.viz.layout import compute_layout, layout_available
 
 _DATA_MARKER = "/*__DATA__*/"
@@ -262,9 +262,9 @@ def render_html(
     and ``auto`` fall back to ``live`` when the ``[layout]`` extra is missing.
 
     *collapse* renders the **aggregated** view (viz-scalability Phase 3): one
-    supernode per Louvain community of the module projection, expandable in the
-    browser. It aggregates the projection, so it cannot be combined with
-    *full*; the collapse view always uses the live tier.
+    supernode per Louvain community, expandable in the browser. With *full* it
+    is two-level — communities of units, each unit expandable to its leaf nodes.
+    The collapse view always uses the live tier.
 
     Payloads larger than :data:`COMPRESS_OVER_BYTES` (raw JSON) are gzip+base64
     compressed inline and decoded client-side; smaller ones stay plain JSON. The
@@ -275,16 +275,11 @@ def render_html(
     over-cap size.
 
     Returns a :class:`RenderResult` describing the resolved tier. Raises
-    :class:`ValueError` when *top* names no module or entity, when *collapse* is
-    combined with *full*, or when the payload exceeds the inline cap and
-    *force_inline* is false.
+    :class:`ValueError` when *top* names no module or entity, or when the
+    payload exceeds the inline cap and *force_inline* is false.
     """
     if layout not in LAYOUT_MODES:
         raise ValueError(f"layout must be one of {LAYOUT_MODES}, got {layout!r}")
-    if collapse and full:
-        raise ValueError(
-            "collapse aggregates the module projection; it cannot be combined with --full"
-        )
 
     # Communities (seeded Louvain) drive both subsystem coloring and the
     # community-stacked precomputed layout; compute once and share.
@@ -328,13 +323,27 @@ def render_html(
         layout_mode=decision.layout,
     )
     if collapse:
-        # Aggregate the projection into one supernode per community; the client
-        # draws those collapsed and expands them in place on double-click.
+        # Aggregate into one supernode per community; the client draws those
+        # collapsed and expands them in place on double-click.
         ranked = metrics.module_metrics(g).modules
-        aggregation = aggregate(proj, comm_of, ranked)
         payload["collapse"] = True
-        payload["supernodes"] = aggregation.supernodes
-        payload["superlinks"] = aggregation.superlinks
+        if full:
+            # Two-level: communities of units, units of leaves. Tag every leaf
+            # with its owning unit (and that unit's community) so the client can
+            # resolve the two collapse levels; units keep their own community.
+            unit_of = metrics.unit_membership(g)
+            full_agg = aggregate_full(comm_of, ranked, unit_of)
+            payload["supernodes"] = full_agg.supernodes
+            payload["unitnodes"] = full_agg.unitnodes
+            for node in payload["nodes"]:
+                nid = node["id"]
+                owner = nid if nid in comm_of else unit_of.get(nid, "")
+                node["unit"] = owner
+                node["community"] = comm_of.get(owner, "")
+        else:
+            aggregation = aggregate(proj, comm_of, ranked)
+            payload["supernodes"] = aggregation.supernodes
+            payload["superlinks"] = aggregation.superlinks
     # Above the threshold, gzip+base64 the payload so large-but-compressible
     # designs still embed (Phase 4b); the client decodes via DecompressionStream.
     # Smaller graphs stay plain JSON so the artifact is human-inspectable.

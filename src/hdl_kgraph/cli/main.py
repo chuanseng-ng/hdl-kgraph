@@ -1068,8 +1068,9 @@ def metrics_cmd(db_path: Path | None, as_json: bool, top_n: int, show_communitie
 @click.option(
     "--collapse",
     is_flag=True,
-    help="Aggregate the module projection into one supernode per community "
-    "(double-click to expand in the browser); cannot be combined with --full.",
+    help="Aggregate into one supernode per community (double-click to expand in "
+    "the browser). With --full it is two-level: communities of units, each "
+    "expandable to its leaf nodes.",
 )
 @click.option("--open", "open_browser", is_flag=True, help="Open the result in a browser.")
 def visualize(

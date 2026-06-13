@@ -60,6 +60,25 @@ class MetricsResult:
     betweenness_approximate: bool = False  # sampled with k=BETWEENNESS_SAMPLES
 
 
+def unit_membership(g: nx.MultiDiGraph) -> dict[str, str]:
+    """Map every **non-unit** node to its owning design unit.
+
+    Reuses the same ownership walk as the projection (architectures -> entity,
+    declares-parents up to a unit). Units themselves are omitted (they are the
+    unit level, not leaves of it); nodes that resolve to no unit (e.g. top-level
+    packages) are omitted too. Used by the two-level ``--collapse --full``
+    aggregation (viz-scalability Phase 3) to group leaves under their unit.
+    """
+    out: dict[str, str] = {}
+    for node_id, data in g.nodes(data=True):
+        if data["kind"] in _UNIT_KINDS:
+            continue
+        owner = _unit_of(g, node_id)
+        if owner is not None:
+            out[node_id] = owner
+    return out
+
+
 def _unit_of(g: nx.MultiDiGraph, node_id: str) -> str | None:
     """The projection unit declaring *node_id* (architectures -> entity)."""
     seen: set[str] = set()
