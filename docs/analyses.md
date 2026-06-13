@@ -15,6 +15,7 @@ hdl-kgraph lint                    # unconnected ports, undriven/unread signals,
                                    #   dead modules, redundant parameter overrides
 hdl-kgraph metrics --communities   # fan-in/out, hubs/bridges, Louvain subsystems
 hdl-kgraph visualize -o graph.html # self-contained interactive HTML
+hdl-kgraph export --format graphml # GraphML/GEXF/JSON for Gephi, Cytoscape
 ```
 
 All of these take `--json` for scripting.
@@ -78,3 +79,9 @@ force-directed graph with node-kind / edge-kind / clock-domain filters.
 - `--top NAME` roots the hierarchy view at a module (an unknown name is an
   error, like `tree`).
 - Scaling strategy for very large designs: [viz-scalability.md](viz-scalability.md).
+
+`export` is the escape hatch for designs too large for the inline HTML
+artifact: `--format graphml|gexf|json` writes the graph for Gephi
+(OpenOrd/ForceAtlas2) or Cytoscape, which handle graphs the browser cannot.
+Enums, the line span, and free-form `attrs` are flattened to scalar
+attributes (`attrs` is preserved losslessly as an `attrs_json` string).
