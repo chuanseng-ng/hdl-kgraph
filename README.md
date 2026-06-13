@@ -57,8 +57,8 @@ warnings and why files were skipped.
 **Incremental updates.** `update` re-parses only changed files plus their
 include/macro dependents — one edit in a 2000-file design lands in under a
 second — and `watch` does it on every save burst. `detect-changes`
-(exit codes: 0 clean, 1 dirty, 2 error) and `impact` answer "what changed,
-and what does it affect?" in CI.
+(exit codes: 0 clean, 1 dirty, 2 error; diffs against git, svn, or Perforce)
+and `impact` answer "what changed, and what does it affect?" in CI.
 → [docs/incremental.md](docs/incremental.md)
 
 **Mixed Verilog/VHDL designs link into one hierarchy.** `tree` and `query`

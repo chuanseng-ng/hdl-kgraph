@@ -46,7 +46,7 @@ from hdl_kgraph.config import (
 )
 from hdl_kgraph.discovery import DEFAULT_MAX_FILE_SIZE_KB, SUFFIXES
 from hdl_kgraph.graph import analysis, clocks, lint, metrics, uvm
-from hdl_kgraph.incremental import detect_git_changes, dirty_closure
+from hdl_kgraph.incremental import dirty_closure
 from hdl_kgraph.pipeline import (
     BuildReport,
     UpdateReport,
@@ -58,6 +58,7 @@ from hdl_kgraph.pipeline import (
 )
 from hdl_kgraph.schema import EdgeKind, Language, NodeKind
 from hdl_kgraph.storage.sqlite_store import SchemaVersionError, SqliteStore
+from hdl_kgraph.vcs import detect_vcs, detect_vcs_changes
 
 _db_option = click.option(
     "--db",
@@ -472,6 +473,31 @@ def update(
     "the last build's content hashes.",
 )
 @click.option(
+    "--svn",
+    "svn_rev",
+    is_flag=False,
+    flag_value="BASE",
+    default=None,
+    metavar="[REV]",
+    help="Diff the svn working copy against a revision (default BASE).",
+)
+@click.option(
+    "--p4",
+    "p4_rev",
+    is_flag=False,
+    flag_value="have",
+    default=None,
+    metavar="[CL]",
+    help="List Perforce workspace changes (opened + reconciled local edits).",
+)
+@click.option(
+    "--vcs",
+    "use_vcs",
+    is_flag=True,
+    help="Diff against the repo's auto-detected VCS (git/svn/p4) vs its "
+    "default ref, instead of the last build's content hashes.",
+)
+@click.option(
     "--closure",
     is_flag=True,
     help="Also list unchanged files dirtied through include/macro dependencies.",
@@ -489,12 +515,17 @@ def detect_changes(
     max_file_size: int | None,
     as_json: bool,
     git_ref: str | None,
+    svn_rev: str | None,
+    p4_rev: str | None,
+    use_vcs: bool,
     closure: bool,
 ) -> None:
-    """List build inputs that changed since the last build (or a git ref).
+    """List build inputs that changed since the last build (or a VCS ref).
 
     Prints one ``M``/``A``/``D`` line per modified/added/deleted file
-    (``~`` for closure-dirtied files with --closure). Exit codes follow the
+    (``~`` for closure-dirtied files with --closure). Diff against version
+    control with --git/--svn/--p4 (each takes an optional ref), or --vcs to
+    auto-detect which VCS the tree uses. Exit codes follow the
     ``git diff --exit-code`` convention so scripts can tell the cases apart:
     0 nothing changed, 1 changes detected, 2 error (missing database, bad
     config, ...).
@@ -514,9 +545,26 @@ def detect_changes(
         )
         base = source.resolve()
         base = base.parent if base.is_file() else base
-        if git_ref is not None:
+        explicit = [
+            (vcs, ref)
+            for vcs, ref in (("git", git_ref), ("svn", svn_rev), ("p4", p4_rev))
+            if ref is not None
+        ]
+        if len(explicit) > 1:
+            raise click.ClickException("choose only one of --git/--svn/--p4")
+        if explicit or use_vcs:
+            if explicit:
+                vcs, ref = explicit[0]
+            else:  # bare --vcs: auto-detect the tree's VCS, default ref
+                detected = detect_vcs(base)
+                if detected is None:
+                    raise click.ClickException(
+                        "could not detect a VCS (no .git/.svn, no P4 environment); "
+                        "pass --git/--svn/--p4"
+                    )
+                vcs, ref = detected, None
             try:
-                changes = detect_git_changes(base, git_ref, SUFFIXES)
+                changes = detect_vcs_changes(base, vcs, ref, SUFFIXES)
             except RuntimeError as exc:
                 raise click.ClickException(str(exc)) from exc
         else:
