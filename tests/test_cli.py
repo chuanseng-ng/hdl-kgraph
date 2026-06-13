@@ -313,6 +313,29 @@ def test_visualize_force_inline_flag_accepted(project: Path, tmp_path: Path) -> 
     assert out.read_text().startswith("<!DOCTYPE html>")
 
 
+def test_visualize_collapse_writes_aggregated_html(project: Path, tmp_path: Path) -> None:
+    # Phase-3 collapsed view: the artifact embeds the supernode aggregation
+    # (payload shape is unit-tested in test_visualize.py).
+    out = tmp_path / "g.html"
+    result = CliRunner().invoke(
+        main, ["visualize", "--collapse", "-o", str(out), *db_args(project)]
+    )
+    assert result.exit_code == 0, result.output
+    html = out.read_text()
+    assert html.startswith("<!DOCTYPE html>")
+    assert '"collapse": true' in html or '"collapse":true' in html
+
+
+def test_visualize_collapse_rejects_full(project: Path, tmp_path: Path) -> None:
+    out = tmp_path / "g.html"
+    result = CliRunner().invoke(
+        main, ["visualize", "--collapse", "--full", "-o", str(out), *db_args(project)]
+    )
+    assert result.exit_code != 0
+    assert "cannot be combined with --full" in result.output
+    assert not out.exists()
+
+
 def test_metrics_lists_hubs(project: Path) -> None:
     result = CliRunner().invoke(main, ["metrics", "--limit", "0", *db_args(project)])
     assert result.exit_code == 0, result.output

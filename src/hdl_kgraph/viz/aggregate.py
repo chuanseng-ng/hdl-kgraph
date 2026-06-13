@@ -1,0 +1,83 @@
+"""Community aggregation for the collapsed ``visualize`` view (viz-scalability
+Phase 3).
+
+The collapsed view shows one **supernode per Louvain community** (subsystem
+suggestion) instead of every design unit, so a large projection reads as a
+handful of subsystems rather than a hairball; the client expands a community in
+place on double-click. This module builds that aggregation from data already
+computed for the payload — the module projection
+(:func:`hdl_kgraph.graph.metrics.module_projection`), the community partition
+(:func:`hdl_kgraph.graph.metrics.communities`, stringified as ``comm_of``), and
+the hub ranking (:func:`hdl_kgraph.graph.metrics.module_metrics`). Pure Python,
+no new dependencies.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import networkx as nx
+
+from hdl_kgraph.graph.metrics import ModuleMetrics
+
+
+@dataclass
+class Aggregation:
+    """Collapsed view of the projection: communities and the edges between them."""
+
+    #: One per community: ``{"id": label, "label": repr_name, "count": members}``.
+    supernodes: list[dict]
+    #: Summed cross-community edge weights: ``{"source", "target", "weight"}``.
+    superlinks: list[dict]
+
+
+def _key(label: str) -> tuple[int, object]:
+    """Order community labels numerically (they are stringified ints) but stay
+    safe for any other label."""
+    return (0, int(label)) if label.isdigit() else (1, label)
+
+
+def aggregate(
+    proj: nx.DiGraph,
+    comm_of: dict[str, str],
+    ranked: list[ModuleMetrics],
+) -> Aggregation:
+    """Build the collapsed community view of *proj*.
+
+    *comm_of* maps each projection node id to its community label; *ranked* is
+    the hubs-first metrics ranking used to name each community after its most
+    central member. Nodes without a community are skipped (they have no
+    supernode to belong to).
+    """
+    # Representative label per community: the first member seen in hub order, so
+    # the most central unit names the subsystem.
+    label_of: dict[str, str] = {}
+    for m in ranked:
+        c = comm_of.get(m.node_id)
+        if c is not None and c not in label_of:
+            label_of[c] = m.name
+
+    counts: dict[str, int] = {}
+    for node_id in proj.nodes():
+        c = comm_of.get(node_id)
+        if c is not None:
+            counts[c] = counts.get(c, 0) + 1
+
+    supernodes = [
+        {"id": c, "label": label_of.get(c, c), "count": counts[c]} for c in sorted(counts, key=_key)
+    ]
+
+    # Sum projection edge weights over each ordered cross-community pair;
+    # intra-community edges stay hidden until that community is expanded.
+    weights: dict[tuple[str, str], int] = {}
+    for u, v, data in proj.edges(data=True):
+        cu, cv = comm_of.get(u), comm_of.get(v)
+        if cu is None or cv is None or cu == cv:
+            continue
+        weights[(cu, cv)] = weights.get((cu, cv), 0) + int(data.get("weight", 1))
+
+    superlinks = [
+        {"source": s, "target": t, "weight": w}
+        for (s, t), w in sorted(weights.items(), key=lambda kv: (_key(kv[0][0]), _key(kv[0][1])))
+    ]
+    return Aggregation(supernodes=supernodes, superlinks=superlinks)

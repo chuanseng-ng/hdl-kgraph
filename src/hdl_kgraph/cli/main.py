@@ -1065,6 +1065,12 @@ def metrics_cmd(db_path: Path | None, as_json: bool, top_n: int, show_communitie
     is_flag=True,
     help="Write the HTML even if the payload exceeds the inline size limit.",
 )
+@click.option(
+    "--collapse",
+    is_flag=True,
+    help="Aggregate the module projection into one supernode per community "
+    "(double-click to expand in the browser); cannot be combined with --full.",
+)
 @click.option("--open", "open_browser", is_flag=True, help="Open the result in a browser.")
 def visualize(
     db_path: Path | None,
@@ -1074,6 +1080,7 @@ def visualize(
     title: str | None,
     layout: str,
     force_inline: bool,
+    collapse: bool,
     open_browser: bool,
 ) -> None:
     """Render a self-contained interactive HTML view of the graph.
@@ -1082,7 +1089,8 @@ def visualize(
     open it. Two views: a collapsible hierarchy and a force-directed graph
     with node-kind / edge-kind / clock-domain filters. Large designs route to
     a precomputed 'static' layout so the graph view paints without a
-    client-side simulation freeze (see docs/viz-scalability.md).
+    client-side simulation freeze; ``--collapse`` shows one supernode per
+    subsystem instead of every unit (see docs/viz-scalability.md).
     """
     from hdl_kgraph.viz import render_html
 
@@ -1099,6 +1107,7 @@ def visualize(
             title=title,
             layout=layout,
             force_inline=force_inline,
+            collapse=collapse,
         )
     except ValueError as exc:  # --top names nothing: error out, like `tree`
         raise click.ClickException(str(exc)) from exc
