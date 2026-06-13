@@ -5,6 +5,8 @@ hygiene and a precomputed-layout tier; the small fixture graphs here stay in
 the unchanged "live" tier, so the original asserts hold by construction.
 """
 
+import base64
+import gzip
 import json
 from pathlib import Path
 
@@ -33,11 +35,21 @@ def graph(fixtures_dir: Path):
     return build_graph(irs)
 
 
+def _embedded_data(html: str) -> tuple[str, str]:
+    """Return ``(encoding, body)`` of the embedded ``#graph-data`` script."""
+    start = html.index('<script id="graph-data"')
+    gt = html.index(">", start) + 1
+    end = html.index("</script>", gt)
+    open_tag = html[start:gt]
+    encoding = "gzip+base64" if 'data-encoding="gzip+base64"' in open_tag else "json"
+    return encoding, html[gt:end]
+
+
 def _embedded_payload(html: str) -> dict:
-    marker = '<script id="graph-data" type="application/json">'
-    start = html.index(marker) + len(marker)
-    end = html.index("</script>", start)
-    return json.loads(html[start:end])
+    encoding, body = _embedded_data(html)
+    if encoding == "gzip+base64":
+        return json.loads(gzip.decompress(base64.b64decode(body)))
+    return json.loads(body)
 
 
 def test_render_writes_self_contained_html(graph, tmp_path: Path) -> None:
@@ -247,6 +259,7 @@ def test_oversized_payload_is_refused(graph, tmp_path: Path, monkeypatch) -> Non
         render_html(graph, tmp_path / "g.html")
     message = str(exc.value)
     assert "--force-inline" in message and "--full" in message
+    assert "export" in message  # Phase 5 escape hatch is one of the suggestions
     assert not (tmp_path / "g.html").exists()  # nothing written on refusal
 
 
@@ -263,3 +276,72 @@ def test_small_graph_under_default_cap_has_no_note(graph, tmp_path: Path) -> Non
     # Regression: the default cap never trips a normal design.
     result = render_html(graph, tmp_path / "g.html")
     assert result.note == ""
+
+
+# ---------------------------------------------------------------------------
+# viz-scalability Phase 4b: inline-payload gzip compression.
+# ---------------------------------------------------------------------------
+
+
+def test_small_payload_stays_plain_json(graph, tmp_path: Path) -> None:
+    # Under the (default) threshold the payload stays human-inspectable JSON.
+    result = render_html(graph, tmp_path / "g.html")
+    assert result.compressed is False
+    encoding, _ = _embedded_data(result.path.read_text())
+    assert encoding == "json"
+    assert _embedded_payload(result.path.read_text())["nodes"]  # plain parse works
+
+
+def test_large_payload_is_gzip_compressed(graph, tmp_path: Path, monkeypatch) -> None:
+    # Shrink the threshold instead of building a huge graph: any real payload
+    # then takes the gzip+base64 path and must round-trip back to the same data.
+    monkeypatch.setattr("hdl_kgraph.viz.COMPRESS_OVER_BYTES", 1)
+    result = render_html(graph, tmp_path / "g.html")
+    assert result.compressed is True
+    assert "gzip-compressed" in result.note
+    html = result.path.read_text()
+    encoding, _ = _embedded_data(html)
+    assert encoding == "gzip+base64"
+    payload = _embedded_payload(html)  # base64 -> gunzip -> json
+    assert {"df_top", "df_sub"} <= {n["name"] for n in payload["nodes"]}
+
+
+def test_template_has_decompression_branch(graph, tmp_path: Path) -> None:
+    # The client-side async decode path must always be present in the template,
+    # regardless of which encoding a given render uses.
+    html = render_html(graph, tmp_path / "g.html").path.read_text()
+    assert "DecompressionStream" in html
+    assert "async function loadGraphData" in html
+
+
+def test_compressed_render_is_deterministic(graph, tmp_path: Path, monkeypatch) -> None:
+    # gzip mtime=0 keeps the compressed bytes byte-identical across runs.
+    monkeypatch.setattr("hdl_kgraph.viz.COMPRESS_OVER_BYTES", 1)
+    a = render_html(graph, tmp_path / "a.html").path.read_text()
+    b = render_html(graph, tmp_path / "b.html").path.read_text()
+    assert a == b
+
+
+def test_compression_lets_oversized_payload_embed(graph, tmp_path: Path, monkeypatch) -> None:
+    # The guard measures the *embedded* (post-compression) size, so a payload
+    # that would be refused raw can still embed once gzipped.
+    monkeypatch.setattr("hdl_kgraph.viz.COMPRESS_OVER_BYTES", 10**12)  # force plain JSON
+    raw_html = render_html(graph, tmp_path / "raw.html", full=True).path.read_text()
+    raw_size = len(_embedded_data(raw_html)[1])
+
+    monkeypatch.setattr("hdl_kgraph.viz.COMPRESS_OVER_BYTES", 1)  # force compression
+    comp = render_html(graph, tmp_path / "comp.html", full=True)
+    comp_size = len(_embedded_data(comp.path.read_text())[1])
+    assert comp.compressed and comp_size < raw_size  # gzip actually shrank it
+
+    # Cap below the raw size but at/above the compressed size: the raw JSON
+    # would be refused, but the gzip payload fits and is written.
+    monkeypatch.setattr("hdl_kgraph.viz.MAX_INLINE_BYTES", raw_size - 1)
+    ok = render_html(graph, tmp_path / "ok.html", full=True)
+    assert ok.path.is_file() and ok.compressed
+
+    # Same cap with compression disabled -> refused, proving compression is what
+    # let it through.
+    monkeypatch.setattr("hdl_kgraph.viz.COMPRESS_OVER_BYTES", 10**12)
+    with pytest.raises(ValueError, match="inline limit"):
+        render_html(graph, tmp_path / "no.html", full=True)

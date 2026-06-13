@@ -72,10 +72,29 @@
   </div>
 </main>
 <script>/*__D3__*/</script>
-<script id="graph-data" type="application/json">/*__DATA__*/</script>
+<script id="graph-data" type="application/json" data-encoding="/*__ENC__*/">/*__DATA__*/</script>
 <script>
 "use strict";
-const DATA = JSON.parse(document.getElementById("graph-data").textContent);
+/* The payload is inlined either as plain JSON or, for large designs, as
+   gzip+base64 (viz-scalability Phase 4b) decoded here via DecompressionStream.
+   That decode is async, so the whole viewer runs inside the async IIFE below. */
+async function loadGraphData() {
+  const el = document.getElementById("graph-data");
+  const text = el.textContent;
+  if (el.dataset.encoding !== "gzip+base64") return JSON.parse(text);
+  if (typeof DecompressionStream === "undefined") {
+    document.body.innerHTML = '<p style="padding:1em;font-family:monospace">'
+      + 'This graph is gzip-compressed and this browser lacks DecompressionStream. '
+      + 'Open it in a current browser, or re-export with <code>hdl-kgraph export</code>.</p>';
+    throw new Error("DecompressionStream unavailable");
+  }
+  const bytes = Uint8Array.from(atob(text), c => c.charCodeAt(0));
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+  return JSON.parse(await new Response(stream).text());
+}
+
+(async function main() {
+const DATA = await loadGraphData();
 document.getElementById("title").textContent = DATA.title || "hdl-kgraph";
 document.title = DATA.title || "hdl-kgraph";
 
@@ -436,6 +455,7 @@ document.getElementById("search").addEventListener("input", e => {
   for (const el of document.querySelectorAll("#hier .mod, #hier .inst"))
     el.style.background = q && el.textContent.toLowerCase().includes(q) ? "#4c3a1e" : "";
 });
+})();
 </script>
 </body>
 </html>

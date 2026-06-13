@@ -1,12 +1,12 @@
 # Visualization scalability for very large designs
 
-**Status: Phases 1–2 + 4a + 5 delivered; Phases 3, 4b, 6 parked — post-M6.**
+**Status: Phases 1–2 + 4 + 5 delivered; Phases 3, 6 parked — post-M6.**
 This work does not gate the MVP (M1–M4) or the v0.6 (M6) release. The
 foundation — renderer hygiene (Phase 1), the precomputed-layout "static" tier
-with auto-routing (Phase 2), the inline-payload size guard (Phase 4a), and the
-GraphML/GEXF/JSON export escape hatch (Phase 5) — has shipped; the remaining
-phases are recorded here so the trade-off analysis is not lost and they can be
-picked up when a real design outgrows the static tier.
+with auto-routing (Phase 2), the inline-payload size guard and gzip compression
+(Phase 4), and the GraphML/GEXF/JSON export escape hatch (Phase 5) — has
+shipped; the remaining phases are recorded here so the trade-off analysis is
+not lost and they can be picked up when a real design outgrows the static tier.
 
 ## Problem statement
 
@@ -216,11 +216,17 @@ this is Phase 1 for a reason.
     `--force-inline` flag overrides and the `RenderResult.note` flags the
     over-cap size. Pure Python, no template change. Tests shrink the cap to
     exercise refusal/override/no-op.
-  - **4b — compression (parked)**: gzip + base64 + a client
-    `DecompressionStream` decode branch (async template bootstrap); columnar
-    encoding only if it still earns its complexity once gzip lands. Tests:
-    Python-side round-trip of the compressed payload; small graphs still embed
-    plain JSON.
+  - **4b — compression** — **done.** Above `COMPRESS_OVER_BYTES` (`viz/__init__.py`)
+    the payload is gzip+base64-encoded inline (`mtime=0` for byte-identical
+    determinism) and decoded client-side via `DecompressionStream` in an async
+    template bootstrap; smaller graphs stay plain JSON. The size guard now
+    measures the *embedded* (post-compression) bytes, so compressible designs
+    that 4a would have refused now embed. Old browsers lacking
+    `DecompressionStream` get an in-page message pointing at `export`. Columnar
+    encoding stays parked — gzip already captures most of the win, so it is not
+    worth the added complexity. Tests cover the compressed round-trip,
+    determinism, the plain-JSON path for small graphs, and that compression
+    lets an otherwise-over-cap payload embed.
 - **Phase 5 — export escape hatch** — **done.** `hdl-kgraph export
   --format graphml|gexf|json` in `src/hdl_kgraph/export.py`: `_sanitize`
   copies the graph with scalar-only attributes (enums → `.value`, the
