@@ -80,8 +80,11 @@ force-directed graph with node-kind / edge-kind / clock-domain filters.
   responsive on large designs; `--full` embeds every node and edge.
 - `--top NAME` roots the hierarchy view at a module (an unknown name is an
   error, like `tree`).
-- A payload past the inline size limit is refused with guidance (drop
-  `--full` or narrow with `--top`); `--force-inline` writes it anyway.
+- Large payloads are gzip-compressed inline automatically (decoded in the
+  browser via `DecompressionStream`); small graphs stay plain JSON.
+- A payload still past the inline size limit *after compression* is refused
+  with guidance (drop `--full`, narrow with `--top`, or `export`);
+  `--force-inline` writes it anyway.
 - Scaling strategy for very large designs: [viz-scalability.md](viz-scalability.md).
 
 `export` is the escape hatch for designs too large for the inline HTML

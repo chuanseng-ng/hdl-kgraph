@@ -21,6 +21,8 @@ color/filter by subsystem.
 
 from __future__ import annotations
 
+import base64
+import gzip
 import json
 from dataclasses import dataclass
 from importlib import resources
@@ -36,6 +38,7 @@ from hdl_kgraph.viz.layout import compute_layout, layout_available
 
 _DATA_MARKER = "/*__DATA__*/"
 _D3_MARKER = "/*__D3__*/"
+_ENC_MARKER = "/*__ENC__*/"
 
 #: Layout tiers (viz-scalability Phase 2). Below the live thresholds the
 #: client runs ``d3.forceSimulation`` as before; above them we ship
@@ -55,6 +58,13 @@ STATIC_MAX_NODES = 50_000
 #: (viz-scalability Phase 4a.)
 MAX_INLINE_BYTES = 75 * 1024 * 1024
 
+#: Raw-JSON size above which the inlined payload is gzip+base64 compressed
+#: (viz-scalability Phase 4b) so large-but-compressible designs still embed
+#: rather than being refused. Below it the payload stays plain JSON so the
+#: artifact is human-inspectable and opens in any browser. Module-global so
+#: tests can monkeypatch it, like :data:`MAX_INLINE_BYTES`.
+COMPRESS_OVER_BYTES = 2 * 1024 * 1024
+
 #: Accepted ``--layout`` values.
 LAYOUT_MODES = ("auto", "live", "static")
 
@@ -68,6 +78,7 @@ class RenderResult:
     node_count: int
     edge_count: int
     note: str  # one-line routing explanation for the CLI ("" when unremarkable)
+    compressed: bool = False  # whether the inlined payload is gzip+base64 (Phase 4b)
 
 
 def _resolve_layout(requested: str, n_nodes: int, n_edges: int, layout_ok: bool) -> RenderResult:
@@ -247,10 +258,13 @@ def render_html(
     coordinates, and ``"auto"`` (default) routes by node/edge count. ``static``
     and ``auto`` fall back to ``live`` when the ``[layout]`` extra is missing.
 
-    The raw inlined payload is capped at :data:`MAX_INLINE_BYTES`; above it the
-    command raises :class:`ValueError` with guidance (drop ``--full``, narrow
-    with ``--top``, or ``export``) unless *force_inline* is set, in which case
-    the file is written and the returned note flags the over-cap size.
+    Payloads larger than :data:`COMPRESS_OVER_BYTES` (raw JSON) are gzip+base64
+    compressed inline and decoded client-side; smaller ones stay plain JSON. The
+    *embedded* (post-compression) payload is capped at :data:`MAX_INLINE_BYTES`;
+    above it the command raises :class:`ValueError` with guidance (drop
+    ``--full``, narrow with ``--top``, or ``export``) unless *force_inline* is
+    set, in which case the file is written and the returned note flags the
+    over-cap size.
 
     Returns a :class:`RenderResult` describing the resolved tier. Raises
     :class:`ValueError` when *top* names no module or entity, or when the
@@ -295,24 +309,47 @@ def render_html(
         positions=positions,
         layout_mode=decision.layout,
     )
-    # Guard the inline payload size before writing anything: a huge --full
-    # design would otherwise emit an HTML file no browser can open.
-    raw = json.dumps(payload)
-    size = len(raw.encode("utf-8"))
+    # Above the threshold, gzip+base64 the payload so large-but-compressible
+    # designs still embed (Phase 4b); the client decodes via DecompressionStream.
+    # Smaller graphs stay plain JSON so the artifact is human-inspectable.
+    raw_bytes = json.dumps(payload).encode("utf-8")
+    if len(raw_bytes) > COMPRESS_OVER_BYTES:
+        # mtime=0 keeps the gzip header byte-identical across runs (determinism).
+        gz = gzip.compress(raw_bytes, compresslevel=9, mtime=0)
+        encoding = "gzip+base64"
+        embedded = base64.b64encode(gz).decode("ascii")  # base64 has no "</"
+    else:
+        encoding = "json"
+        # "</" must not appear verbatim inside an inline <script> payload.
+        embedded = raw_bytes.decode("utf-8").replace("</", "<\\/")
+
+    # The guard measures the *embedded* size before writing anything: a huge
+    # design would otherwise emit an HTML file no browser can open. Compression
+    # directly widens what fits, so the embedded bytes are what must clear it.
+    size = len(embedded.encode("utf-8"))
     if size > MAX_INLINE_BYTES and not force_inline:
         raise ValueError(
             f"graph payload is {size / 1e6:.0f} MB, over the "
             f"{MAX_INLINE_BYTES / 1e6:.0f} MB inline limit — drop --full, "
-            f"narrow with --top, or pass --force-inline to write it anyway"
+            f"narrow with --top, use `hdl-kgraph export`, or pass "
+            f"--force-inline to write it anyway"
         )
+    decision.compressed = encoding == "gzip+base64"
     if size > MAX_INLINE_BYTES:
         decision.note = (
             f"payload {size / 1e6:.0f} MB exceeds the "
             f"{MAX_INLINE_BYTES / 1e6:.0f} MB inline limit (--force-inline)"
         )
-    # "</" must not appear verbatim inside an inline <script> payload.
-    data = raw.replace("</", "<\\/")
-    html = template.replace(_D3_MARKER, d3, 1).replace(_DATA_MARKER, data, 1)
+    elif decision.compressed:
+        decision.note = (
+            f"payload gzip-compressed: {len(raw_bytes) / 1e6:.0f} MB raw → "
+            f"{size / 1e6:.0f} MB inlined"
+        )
+    html = (
+        template.replace(_D3_MARKER, d3, 1)
+        .replace(_ENC_MARKER, encoding, 1)
+        .replace(_DATA_MARKER, embedded, 1)
+    )
     out_path = Path(out_path)
     out_path.write_text(html, encoding="utf-8")
     decision.path = out_path
