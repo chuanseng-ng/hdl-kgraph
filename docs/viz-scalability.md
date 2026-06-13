@@ -214,12 +214,13 @@ this is Phase 1 for a reason.
   expands a community in place** to its members — visible entities and edges are
   resolved from the `expanded` set each toggle and re-fed to a live simulation
   (bounded supernode counts, so no `[layout]` extra needed). `--collapse` is
-  projection-level, so it cannot combine with `--full`. Tests: super-edge
-  weights match projection sums, representative labels, payload round-trip, the
-  template drill-down branch, and the `--full` rejection. **Deferred:** two-level
-  aggregation in `--full` mode (leaf → unit → community), search auto-expanding
-  the community of a hit, and precomputed member offsets for the expand
-  animation.
+  projection-level, so it cannot combine with `--full`. **Search auto-expands**
+  every community containing a match (and re-collapses those it opened once the
+  query clears), so hits hidden inside collapsed subsystems are reachable. Tests:
+  super-edge weights match projection sums, representative labels, payload
+  round-trip, the template drill-down + search-expand branches, and the `--full`
+  rejection. **Deferred:** two-level aggregation in `--full` mode (leaf → unit →
+  community) and precomputed member offsets for the expand animation.
 - **Phase 4 — payload guards** (split for reviewability):
   - **4a — inline size guard** — **done.** `render_html` measures the raw
     payload and raises above `MAX_INLINE_BYTES` (`viz/__init__.py`) with an
@@ -249,7 +250,7 @@ this is Phase 1 for a reason.
   (`tests/test_export.py`) cover the GraphML/GEXF/JSON round-trips, attr
   flattening, the unknown-format error, and a CLI smoke.
 - **Phase 6 — WebGL (explicit non-goal for now)**: only if real-world
-  feedback shows tiers 0–2 insufficient, vendor sigma.js + graphology (MIT,
+  feedback shows tiers 0–5 insufficient, vendor sigma.js + graphology (MIT,
   consistent with the ISC-D3 precedent) behind a `--renderer webgl` flag. The
   payload contract from Phases 2–4 is renderer-agnostic by design, so this
   stays a bounded add-on rather than a rewrite.
