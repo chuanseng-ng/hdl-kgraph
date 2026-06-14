@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from hdl_kgraph.pipeline import run_build, run_update
+from hdl_kgraph.pipeline import default_db_path, run_build, run_update
 from hdl_kgraph.storage.sqlite_store import SqliteStore
 
 
@@ -27,6 +27,7 @@ def _signature(graph) -> tuple[list, list]:
         (
             node_id,
             data["kind"].value,
+            data["name"],
             data.get("qualified_name", ""),
             data.get("file", ""),
             tuple(data.get("line_span", (0, 0))),
@@ -43,7 +44,7 @@ def _signature(graph) -> tuple[list, list]:
 
 
 def _graph(root: Path):
-    graph, _, _ = SqliteStore(root / ".hdl-kgraph" / "graph.db").load()
+    graph, _, _ = SqliteStore(default_db_path(root)).load()
     return graph
 
 
