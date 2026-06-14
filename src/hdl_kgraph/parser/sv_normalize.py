@@ -20,9 +20,7 @@ still maps to the same original source line.
 
 from __future__ import annotations
 
-_IDENT_CHARS = frozenset(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$"
-)
+_IDENT_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$")
 
 
 def _prev_significant(text: str, index: int) -> int:
