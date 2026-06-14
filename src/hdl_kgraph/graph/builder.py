@@ -225,6 +225,38 @@ def _add_edge(g: nx.MultiDiGraph, edge: Edge) -> None:
     g.add_edge(edge.src, edge.dst, kind=edge.kind, confidence=edge.confidence, attrs=edge.attrs)
 
 
+def ensure_node(g: nx.MultiDiGraph, node: Node) -> None:
+    """Add *node* if absent, preserving the existing one otherwise.
+
+    The public entry point for post-link stages (M7 enrichment) that add
+    nodes the parsers never emitted, keeping the "no attribute-less networkx
+    node" invariant — every node added through here carries the full data set.
+    """
+    if node.id not in g:
+        _add_node(g, node)
+
+
+def add_or_upgrade_edge(g: nx.MultiDiGraph, edge: Edge, *, upgrade: bool = True) -> bool:
+    """Add *edge*, or (when *upgrade*) upgrade a matching existing edge in place.
+
+    "Matching" is same ``(src, dst, kind)``. An upgrade raises the stored
+    edge's ``confidence`` to ``edge.confidence`` (never lowers it) and merges
+    ``edge.attrs`` over the existing attrs — the mechanism M7 uses to promote
+    a heuristic edge to elaboration confidence and stamp its provenance.
+    Endpoints must already exist (enrichment calls :func:`ensure_node` first);
+    returns ``True`` when an existing edge was upgraded, ``False`` when a new
+    edge was added.
+    """
+    if upgrade and g.has_edge(edge.src, edge.dst):
+        for _key, data in g[edge.src][edge.dst].items():
+            if data.get("kind") is edge.kind:
+                data["confidence"] = max(data.get("confidence", 0.0), edge.confidence)
+                data["attrs"] = {**data.get("attrs", {}), **edge.attrs}
+                return True
+    _add_edge(g, edge)
+    return False
+
+
 class _Linker:
     def __init__(self, file_irs: list[FileIR]) -> None:
         self.graph = nx.MultiDiGraph()

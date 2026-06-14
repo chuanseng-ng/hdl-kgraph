@@ -18,6 +18,16 @@ Every edge carries a ``confidence`` score describing how it was derived:
 References that cannot be resolved at all become stub nodes with
 ``attrs["unresolved"] = True`` so the graph stays connected and queries never
 dead-end silently.
+
+Edge provenance (M7 semantic enrichment)
+----------------------------------------
+Edges derived or confirmed by a native-frontend elaboration backend (pyslang,
+GHDL) carry ``attrs["source"] = "elaborated"`` and ``attrs["backend"]`` naming
+the backend; their confidence is upgraded to ``1.0``. The tree-sitter baseline
+leaves ``attrs["source"]`` absent, which reads as ``"heuristic"``. When
+elaboration contradicts a heuristic edge, the heuristic edge is annotated with
+``attrs["contradicted_by"]`` rather than being deleted (see
+:mod:`hdl_kgraph.enrich`).
 """
 
 from __future__ import annotations

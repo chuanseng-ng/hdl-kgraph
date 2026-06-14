@@ -15,6 +15,9 @@ Single-file, local-first storage of the knowledge graph:
 * ``file_irs`` — per-unit pass-1 IR, macro-event log, and spliced-header
   list (JSON via :mod:`hdl_kgraph.storage.ir_codec`); only units parsed
   standalone get rows. ``update`` re-links unchanged units from here.
+* ``discrepancies`` — M7 enrichment findings: where native-frontend
+  elaboration disagreed with the heuristic graph (only populated by
+  ``build --enrich``). Surfaced by ``hdl-kgraph discrepancies``.
 
 ``save()`` is a full rewrite, written to a temp file and atomically swapped
 into place with ``os.replace`` — concurrent readers (CLI queries, the MCP
@@ -41,9 +44,10 @@ from pathlib import Path
 import networkx as nx
 
 from hdl_kgraph import __version__
+from hdl_kgraph.enrich.base import Discrepancy
 from hdl_kgraph.schema import EdgeKind, Language, NodeKind
 
-SCHEMA_VERSION = "5"  # v5: files table gained per-file parse error details
+SCHEMA_VERSION = "6"  # v6: discrepancies table (M7 enrichment); edge source attrs
 
 # How long a reader waits on a residual write lock before giving up.
 _BUSY_TIMEOUT_MS = 5_000
@@ -90,6 +94,16 @@ CREATE TABLE IF NOT EXISTS file_irs (
   ir           TEXT NOT NULL,
   macro_events TEXT NOT NULL DEFAULT '[]',
   included     TEXT NOT NULL DEFAULT '[]'
+);
+CREATE TABLE IF NOT EXISTS discrepancies (
+  kind       TEXT NOT NULL,
+  backend    TEXT NOT NULL,
+  detail     TEXT NOT NULL DEFAULT '',
+  node_id    TEXT NOT NULL DEFAULT '',
+  src        TEXT NOT NULL DEFAULT '',
+  dst        TEXT NOT NULL DEFAULT '',
+  heuristic  TEXT NOT NULL DEFAULT '',
+  elaborated TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -140,6 +154,7 @@ class SqliteStore:
         root: Path,
         units: dict[str, StoredUnit] | None = None,
         options_hash: str = "",
+        discrepancies: list[Discrepancy] | None = None,
     ) -> None:
         """Write the full graph to a sibling temp file, then swap it into place.
 
@@ -214,6 +229,22 @@ class SqliteStore:
                         json.dumps(data["attrs"], sort_keys=True, default=list),
                     )
                     for src, dst, data in graph.edges(data=True)
+                ],
+            )
+            conn.executemany(
+                "INSERT INTO discrepancies VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        d.kind,
+                        d.backend,
+                        d.detail,
+                        d.node_id,
+                        d.src,
+                        d.dst,
+                        d.heuristic,
+                        d.elaborated,
+                    )
+                    for d in (discrepancies or [])
                 ],
             )
             conn.commit()
@@ -310,6 +341,27 @@ class SqliteStore:
                 path: StoredUnit(ir=ir, macro_events=events, included=included)
                 for path, ir, events, included in conn.execute("SELECT * FROM file_irs")
             }
+
+    def load_discrepancies(self) -> list[Discrepancy]:
+        """The M7 enrichment findings (empty for a non-enriched build)."""
+        with self._connect() as conn:
+            self._check_version(conn)
+            return [
+                Discrepancy(
+                    kind=row[0],
+                    backend=row[1],
+                    detail=row[2],
+                    node_id=row[3],
+                    src=row[4],
+                    dst=row[5],
+                    heuristic=row[6],
+                    elaborated=row[7],
+                )
+                for row in conn.execute(
+                    "SELECT kind, backend, detail, node_id, src, dst, heuristic, elaborated "
+                    "FROM discrepancies"
+                )
+            ]
 
     def load(self) -> tuple[nx.MultiDiGraph, list[FileMeta], dict[str, str]]:
         """Load (graph, file metadata, meta key/values) from the database."""

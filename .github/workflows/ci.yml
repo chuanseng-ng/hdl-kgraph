@@ -76,7 +76,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e .[dev,mcp,watch]
-      - name: Upgrade the tree-sitter stack past the pyproject caps
-        run: pip install --upgrade tree-sitter tree-sitter-systemverilog tree-sitter-vhdl
-      - run: pip list | grep tree
+      - name: Upgrade the tree-sitter and native-frontend stacks past the pyproject caps
+        run: pip install --upgrade tree-sitter tree-sitter-systemverilog tree-sitter-vhdl pyslang pyVHDLModel
+      - run: pip list | grep -E 'tree|slang|VHDLModel'
       - run: pytest

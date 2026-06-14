@@ -43,6 +43,8 @@ from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import networkx as nx
+
 from hdl_kgraph.config import BuildOptions
 from hdl_kgraph.discovery import (
     DEFAULT_MAX_FILE_SIZE_KB,
@@ -51,6 +53,8 @@ from hdl_kgraph.discovery import (
     discover_from_paths,
     glob_sources,
 )
+from hdl_kgraph.enrich import EnrichmentInput, available_backends, run_enrichment
+from hdl_kgraph.enrich.base import Discrepancy
 from hdl_kgraph.graph.builder import build_graph
 from hdl_kgraph.ids import file_node_id, library_node_id
 from hdl_kgraph.incremental import (
@@ -136,6 +140,12 @@ class BuildReport:
     file_error_details: dict[str, list[str]] = field(default_factory=dict)
     preproc_warnings: list[str] = field(default_factory=list)  # full warning text
     incdirs: list[str] = field(default_factory=list)  # effective `include search path
+    # M7 semantic enrichment (only populated when `build --enrich` ran).
+    enriched: bool = False
+    enrich_backends: list[str] = field(default_factory=list)
+    edges_upgraded: int = 0
+    discrepancy_count: int = 0
+    enrich_diagnostics: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -223,6 +233,10 @@ def options_hash(base: Path, options: BuildOptions, inputs: _Inputs) -> str:
         "max_file_size_kb": options.max_file_size_kb,
         "vhdl_libraries": sorted((name, rel(p)) for name, p in options.vhdl_libraries.items()),
         "filelists": [rel(p) for p in options.filelists],
+        # Enrichment rewrites the graph, so toggling it (or its backend set)
+        # must invalidate an incremental reuse of a non-enriched build.
+        "enrich": options.enrich,
+        "enrich_backends": sorted(options.enrich_backends),
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
@@ -510,6 +524,24 @@ def _execute(
         1 for _, data in graph.nodes(data=True) if data["attrs"].get("unresolved")
     )
 
+    # -- pass 3 (M7): opt-in native-frontend enrichment ------------------------
+    discrepancies: list[Discrepancy] = []
+    if options.enrich:
+        # The compilation-unit set, not the raw discovery: a header spliced
+        # into an earlier unit (``consumed``) must not also be handed to the
+        # native frontend as a standalone top, or it double-defines its
+        # contents and breaks elaboration.
+        enrich_files = [
+            f.path
+            for f in discovered
+            if f.skipped_reason is None
+            and f.relpath not in consumed
+            and f.language in (Language.VERILOG, Language.SYSTEMVERILOG)
+        ]
+        discrepancies = _enrich(graph, base, options, inputs, enrich_files, report, progress)
+        report.node_count = graph.number_of_nodes()
+        report.edge_count = graph.number_of_edges()
+
     progress(f"writing {db_path}")
     SqliteStore(db_path).save(
         graph,
@@ -517,8 +549,46 @@ def _execute(
         root=base,
         units=units,
         options_hash=options_hash(base, options, inputs),
+        discrepancies=discrepancies,
     )
     return report
+
+
+def _enrich(
+    graph: nx.MultiDiGraph,
+    base: Path,
+    options: BuildOptions,
+    inputs: _Inputs,
+    enrich_files: list[Path],
+    report: BuildReport,
+    progress: ProgressFn,
+) -> list[Discrepancy]:
+    """Run the M7 enrichment pass over the linked graph (mutated in place).
+
+    *enrich_files* is the standalone compilation-unit set (consumed headers
+    already excluded by the caller).
+    """
+    backends = available_backends(options.enrich_backends or None)
+    if not backends:
+        report.warnings.append(
+            "enrichment requested but no backend is available (install the slang/ghdl dependencies)"
+        )
+        return []
+    progress(f"pass 3: enriching via {', '.join(b.name for b in backends)}")
+    enrich_input = EnrichmentInput(
+        files=enrich_files,
+        defines=inputs.defines,
+        incdirs=inputs.incdirs,
+        tops=list(options.top),
+        base=base,
+    )
+    enrich_report = run_enrichment(graph, enrich_input, backends)
+    report.enriched = True
+    report.enrich_backends = enrich_report.backends
+    report.edges_upgraded = enrich_report.edges_upgraded
+    report.discrepancy_count = len(enrich_report.discrepancies)
+    report.enrich_diagnostics = enrich_report.diagnostics
+    return enrich_report.discrepancies
 
 
 def _reuse_unit(

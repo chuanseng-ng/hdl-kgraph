@@ -91,6 +91,14 @@ _jobs_option = click.option(
     "builds, otherwise one per CPU up to a cap; 1 = always serial).",
 )
 
+_enrich_option = click.option(
+    "--enrich",
+    is_flag=True,
+    help="Run native-frontend elaboration (pyslang) to upgrade heuristic edges "
+    "to elaboration-accurate facts and record discrepancies (M7). Slower; "
+    "re-runs whole-design elaboration on every update.",
+)
+
 
 class _ProgressRenderer:
     """Default-on pipeline progress on stderr (so stdout reports stay clean).
@@ -156,7 +164,8 @@ def _emit_json(payload: Any) -> None:
     click.echo(json.dumps(payload, indent=2, default=_json_default))
 
 
-def _load(db_path: Path | None) -> tuple[nx.MultiDiGraph, list, dict[str, str]]:
+def _resolve_db(db_path: Path | None) -> Path:
+    """The database path to read, defaulting to the nearest one upward."""
     if db_path is None:
         db_path = find_db(Path.cwd())
         if db_path is None:
@@ -166,8 +175,12 @@ def _load(db_path: Path | None) -> tuple[nx.MultiDiGraph, list, dict[str, str]]:
             )
     if not db_path.is_file():
         raise click.ClickException(f"database not found: {db_path}")
+    return db_path
+
+
+def _load(db_path: Path | None) -> tuple[nx.MultiDiGraph, list, dict[str, str]]:
     try:
-        return SqliteStore(db_path).load()
+        return SqliteStore(_resolve_db(db_path)).load()
     except SchemaVersionError as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -327,6 +340,17 @@ def _echo_build_report(report: BuildReport, verbose: bool = False) -> None:
     click.echo(f"  nodes: {report.node_count}  edges: {report.edge_count}")
     if report.unresolved_count:
         click.echo(f"  unresolved: {report.unresolved_count}")
+    if report.enriched:
+        backends = ", ".join(report.enrich_backends) or "(no matching files)"
+        click.echo(f"  enriched via {backends}: {report.edges_upgraded} edge(s) upgraded")
+        if report.discrepancy_count:
+            click.echo(
+                f"  discrepancies: {report.discrepancy_count} "
+                "(`hdl-kgraph discrepancies` lists them)"
+            )
+        if verbose:
+            for diag in report.enrich_diagnostics:
+                click.echo(f"      {diag}")
     if not verbose and (report.error_files or report.preproc_warning_count):
         click.echo("  (per-file details: re-run with -v, or `hdl-kgraph status --errors`)")
 
@@ -371,6 +395,7 @@ def _echo_file_diagnostics(files: list, as_json: bool = False) -> None:
 @_input_options
 @_verbose_option
 @_jobs_option
+@_enrich_option
 def build(
     source: Path,
     db_path: Path | None,
@@ -384,12 +409,14 @@ def build(
     max_file_size: int | None,
     verbose: bool,
     jobs: int | None,
+    enrich: bool,
 ) -> None:
     """Build the knowledge graph from HDL sources under SOURCE."""
     options = _resolve_options(
         source, filelists, defines, incdirs, libs, config_path, no_config, excludes, max_file_size
     )
     options.jobs = jobs
+    options.enrich = options.enrich or enrich
     renderer = _ProgressRenderer()
     report = run_build(
         source, db_path=db_path, options=options, progress=renderer.stage, tick=renderer.tick
@@ -420,6 +447,7 @@ def _echo_update_report(report: UpdateReport, verbose: bool = False) -> None:
 @_input_options
 @_verbose_option
 @_jobs_option
+@_enrich_option
 @click.option("--full", is_flag=True, help="Force a full rebuild.")
 def update(
     source: Path,
@@ -434,6 +462,7 @@ def update(
     max_file_size: int | None,
     verbose: bool,
     jobs: int | None,
+    enrich: bool,
     full: bool,
 ) -> None:
     """Incrementally update the graph: re-parse only changed files.
@@ -447,6 +476,7 @@ def update(
         source, filelists, defines, incdirs, libs, config_path, no_config, excludes, max_file_size
     )
     options.jobs = jobs
+    options.enrich = options.enrich or enrich
     renderer = _ProgressRenderer()
     report = run_update(
         source,
@@ -820,6 +850,37 @@ def status(db_path: Path | None, as_json: bool, show_errors: bool) -> None:
         click.echo(f"          {count:6} {kind}")
     if stubs:
         click.echo(f"unresolved: {len(stubs)}")
+
+
+@main.command()
+@_db_option
+@_json_option
+def discrepancies(db_path: Path | None, as_json: bool) -> None:
+    """List where native-frontend elaboration disagreed with the heuristic graph.
+
+    Populated by ``build --enrich`` (M7). Each finding names the kind of
+    disagreement (e.g. ``instance_count`` for a generate loop the tree-sitter
+    tier counted as one instance), the design node, and the heuristic vs
+    elaborated values.
+    """
+    try:
+        items = SqliteStore(_resolve_db(db_path)).load_discrepancies()
+    except SchemaVersionError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if as_json:
+        _emit_json([dataclasses.asdict(d) for d in items])
+        return
+    if not items:
+        click.echo("no discrepancies (run `hdl-kgraph build --enrich` to record them)")
+        return
+    by_kind = Counter(d.kind for d in items)
+    click.echo(f"{len(items)} discrepancy finding(s):")
+    for kind, count in by_kind.most_common():
+        click.echo(f"  {count:6} {kind}")
+    for d in items:
+        click.echo(f"[{d.kind}] {d.detail} (via {d.backend})")
+        if d.heuristic or d.elaborated:
+            click.echo(f"    heuristic: {d.heuristic or '-'}  elaborated: {d.elaborated or '-'}")
 
 
 def _lint_config(
