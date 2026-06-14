@@ -2,8 +2,10 @@
 
 The headline acceptance criterion: on a parameterized generate loop, the
 enriched graph's instance count matches elaborated reality, while a plain build
-(enrichment off) still works and produces the heuristic graph. pyslang is a
-core dependency, so these run unconditionally — no ``importorskip`` guard.
+(enrichment off) still works and produces the heuristic graph. pyslang is the
+optional ``enrich`` extra, so this module is skipped when it is absent; CI
+installs the extra (see .github/workflows/ci.yml). Graceful-degradation tests
+that must run *without* the extra live in ``test_enrich_optional.py``.
 """
 
 from __future__ import annotations
@@ -13,6 +15,8 @@ from pathlib import Path
 
 import networkx as nx
 import pytest
+
+pytest.importorskip("pyslang", reason="pyslang (the `enrich` extra) is required for these tests")
 
 from hdl_kgraph.config import BuildOptions
 from hdl_kgraph.enrich import (
