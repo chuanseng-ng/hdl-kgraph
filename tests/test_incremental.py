@@ -280,6 +280,40 @@ def test_vhdl_design_falls_back_to_full_link(tmp_path: Path) -> None:
     assert "VHDL" in (report.build.incremental_link_skipped or "")
 
 
+def test_reused_signal_stub_child_keeps_declaring_edge(tmp_path: Path) -> None:
+    """A clean unit's reused DRIVES edge can point at a synthesized SIGNAL stub
+    child; its declaring DECLARES edge must survive the incremental relink."""
+    (tmp_path / "m.sv").write_text(
+        "module m;\n  logic a;\n  assign undeclared_sig = a;\nendmodule\n"
+    )
+    (tmp_path / "other.sv").write_text("module other;\nendmodule\n")
+    run_build(tmp_path)
+    (tmp_path / "other.sv").write_text("module other;\n  logic z;\nendmodule\n")  # unrelated edit
+    run_update(tmp_path)
+    inc = _graph(tmp_path)
+    run_build(tmp_path)
+    full = _graph(tmp_path)
+    assert set(inc.nodes) == set(full.nodes)
+
+    def edges(g):
+        return sorted((u, v, d["kind"].value) for u, v, d in g.edges(data=True))
+
+    assert edges(inc) == edges(full)
+
+
+def test_removing_last_vhdl_file_falls_back_to_full_link(tmp_path: Path) -> None:
+    (tmp_path / "ent.vhd").write_text(
+        "entity ent is end entity;\narchitecture rtl of ent is begin end architecture;\n"
+    )
+    (tmp_path / "m.sv").write_text("module m;\nendmodule\n")
+    run_build(tmp_path)
+    (tmp_path / "ent.vhd").unlink()  # remove the last VHDL file
+    report = run_update(tmp_path)
+    assert report.build is not None
+    assert report.build.incremental_link is False
+    assert "VHDL" in (report.build.incremental_link_skipped or "")
+
+
 def test_incremental_link_safe_reasons() -> None:
     from hdl_kgraph.incremental import incremental_link_safe
 

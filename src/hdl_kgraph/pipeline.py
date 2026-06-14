@@ -348,12 +348,17 @@ def _link_pass2(
             reason = "bind/configuration directives not supported yet"
         else:
             prior_graph, _, _ = store.load()
-            changed = changed_target_names(prior_graph, irs, dirty_files)
-            affected = {src for _, src, _ in affected_clean_refs(prior_ref_index, changed)}
-            report.incremental_link = True
-            return link_incremental(
-                irs, prior_graph, dirty_files, affected, warnings=report.warnings
-            )
+            # Removing the last .vhd makes `has_vhdl` false, but the prior graph
+            # still holds VHDL nodes/edges the SV-only linker can't relink.
+            if any(data["language"] is Language.VHDL for _, data in prior_graph.nodes(data=True)):
+                reason = "VHDL incremental link not supported yet"
+            else:
+                changed = changed_target_names(prior_graph, irs, dirty_files)
+                affected = {src for _, src, _ in affected_clean_refs(prior_ref_index, changed)}
+                report.incremental_link = True
+                return link_incremental(
+                    irs, prior_graph, dirty_files, affected, warnings=report.warnings
+                )
     report.incremental_link_skipped = reason
     return link_graph(irs, warnings=report.warnings)
 

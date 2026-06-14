@@ -995,6 +995,20 @@ def _copy_prior_node(linker: _Linker, prior_graph: nx.MultiDiGraph, node_id: str
     ``unresolved:`` stubs and stub children a reused edge may reference."""
     if node_id in linker.node_obj:
         return
+    # A reused edge may point straight at a synthesized child (e.g. a SIGNAL
+    # stub created for an undeclared scoped ref, or a stub PORT). Its declaring
+    # parent is not in any IR, so restore the incoming DECLARES too, or the
+    # child is orphaned and the graph diverges from a full build.
+    parent_decl = next(
+        (
+            (parent, edata)
+            for parent, _, edata in prior_graph.in_edges(node_id, data=True)
+            if edata["kind"] is EdgeKind.DECLARES
+        ),
+        None,
+    )
+    if parent_decl is not None:
+        _copy_prior_node(linker, prior_graph, parent_decl[0])
     data = prior_graph.nodes[node_id]
     node = Node(
         id=node_id,
@@ -1009,6 +1023,13 @@ def _copy_prior_node(linker: _Linker, prior_graph: nx.MultiDiGraph, node_id: str
     _add_node(linker.graph, node)
     linker.node_obj[node_id] = node
     linker.node_file[node_id] = node.file
+    if parent_decl is not None and linker.parent.get(node_id) != parent_decl[0]:
+        parent_id, edata = parent_decl
+        linker._emit_edge(
+            parent_id, node_id, EdgeKind.DECLARES, edata["confidence"], dict(edata["attrs"])
+        )
+        linker.children[parent_id].append(node)
+        linker.parent[node_id] = parent_id
     for _, child, edata in prior_graph.out_edges(node_id, data=True):
         if edata["kind"] is EdgeKind.DECLARES:
             _copy_prior_node(linker, prior_graph, child)
