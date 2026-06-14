@@ -296,6 +296,57 @@ def test_compute_layout_covers_all_nodes_at_scale() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Category-of-interest filter (#98): --kinds / --exclude-kinds.
+# ---------------------------------------------------------------------------
+
+
+def test_exclude_kinds_drops_nodes_and_dangling_edges(graph, tmp_path: Path) -> None:
+    # The full payload normally carries signals and processes; excluding them
+    # must remove those nodes and every edge that touched them.
+    html = render_html(
+        graph, tmp_path / "g.html", full=True, exclude_kinds=frozenset({"signal", "port"})
+    ).path.read_text()
+    payload = _embedded_payload(html)
+    kinds = {n["kind"] for n in payload["nodes"]}
+    assert "signal" not in kinds and "port" not in kinds
+    ids = {n["id"] for n in payload["nodes"]}
+    assert all(link["source"] in ids and link["target"] in ids for link in payload["links"])
+
+
+def test_include_kinds_keeps_only_requested(graph, tmp_path: Path) -> None:
+    html = render_html(
+        graph, tmp_path / "g.html", full=True, include_kinds=frozenset({"module", "instance"})
+    ).path.read_text()
+    payload = _embedded_payload(html)
+    assert {n["kind"] for n in payload["nodes"]} <= {"module", "instance"}
+    assert payload["nodes"]  # the fixture has modules, so the plot is non-empty
+
+
+def test_kinds_filter_reduces_node_set(graph, tmp_path: Path) -> None:
+    # The filter must actually shrink the graph the layout is solved over.
+    unfiltered = _embedded_payload(
+        render_html(graph, tmp_path / "a.html", full=True).path.read_text()
+    )
+    filtered = _embedded_payload(
+        render_html(
+            graph, tmp_path / "b.html", full=True, exclude_kinds=frozenset({"signal"})
+        ).path.read_text()
+    )
+    assert len(filtered["nodes"]) < len(unfiltered["nodes"])
+
+
+def test_unknown_kind_is_a_clean_cli_error() -> None:
+    from click.testing import CliRunner
+
+    from hdl_kgraph.cli.main import main
+
+    result = CliRunner().invoke(main, ["visualize", "--kinds", "bogus"])
+    assert result.exit_code != 0
+    assert "unknown node kind" in result.output
+    assert "bogus" in result.output
+
+
+# ---------------------------------------------------------------------------
 # viz-scalability Phase 4a: inline-payload size guard.
 # ---------------------------------------------------------------------------
 

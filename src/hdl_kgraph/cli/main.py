@@ -1190,6 +1190,22 @@ def metrics_cmd(db_path: Path | None, as_json: bool, top_n: int, show_communitie
     "the browser). With --full it is two-level: communities of units, each "
     "expandable to its leaf nodes.",
 )
+@click.option(
+    "--kinds",
+    "include_kinds",
+    multiple=True,
+    metavar="KIND",
+    help="Plot only these node kinds (repeatable, e.g. --kinds module --kinds "
+    "instance); layout is solved over just these. Most useful with --full.",
+)
+@click.option(
+    "--exclude-kinds",
+    "exclude_kinds",
+    multiple=True,
+    metavar="KIND",
+    help="Drop these node kinds before plotting (repeatable, e.g. "
+    "--exclude-kinds signal --exclude-kinds port).",
+)
 @click.option("--open", "open_browser", is_flag=True, help="Open the result in a browser.")
 def visualize(
     db_path: Path | None,
@@ -1200,6 +1216,8 @@ def visualize(
     layout: str,
     force_inline: bool,
     collapse: bool,
+    include_kinds: tuple[str, ...],
+    exclude_kinds: tuple[str, ...],
     open_browser: bool,
 ) -> None:
     """Render a self-contained interactive HTML view of the graph.
@@ -1211,8 +1229,21 @@ def visualize(
     a precomputed 'static' layout so the graph view paints without a
     client-side simulation freeze; ``--collapse`` shows one supernode per
     subsystem instead of every unit (see docs/viz-scalability.md).
+
+    ``--kinds`` / ``--exclude-kinds`` restrict the plot to the node kinds of
+    interest so the layout is solved over a smaller, more compact graph (e.g.
+    ``--kinds module --kinds instance`` or ``--exclude-kinds signal``).
     """
+    from hdl_kgraph.schema import NodeKind
     from hdl_kgraph.viz import render_html
+
+    valid_kinds = {k.value for k in NodeKind}
+    unknown = sorted({k for k in (*include_kinds, *exclude_kinds) if k not in valid_kinds})
+    if unknown:
+        raise click.ClickException(
+            f"unknown node kind(s): {', '.join(unknown)}. "
+            f"Valid kinds: {', '.join(sorted(valid_kinds))}"
+        )
 
     graph, _, meta = _load(db_path)
     if title is None:
@@ -1228,6 +1259,8 @@ def visualize(
             layout=layout,
             force_inline=force_inline,
             collapse=collapse,
+            include_kinds=frozenset(include_kinds) if include_kinds else None,
+            exclude_kinds=frozenset(exclude_kinds),
         )
     except ValueError as exc:  # --top names nothing: error out, like `tree`
         raise click.ClickException(str(exc)) from exc
