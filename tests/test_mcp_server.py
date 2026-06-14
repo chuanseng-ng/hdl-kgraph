@@ -194,3 +194,14 @@ def test_locked_database_is_a_clear_retriable_error(
         blocker.execute("ROLLBACK")
         blocker.close()
     assert _call(server, "find_module", {"name": "simple_counter"})["total"] == 1
+
+
+def test_create_server_token_configures_http_auth(project: Path) -> None:
+    # A token wires a bearer-token verifier onto the server; no token leaves the
+    # HTTP transport unauthenticated as before (#69). stdio ignores it either way.
+    from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
+
+    db = project / ".hdl-kgraph" / "graph.db"
+    assert create_server(db).auth is None
+    authed = create_server(db, token="s3cret")
+    assert isinstance(authed.auth, StaticTokenVerifier)

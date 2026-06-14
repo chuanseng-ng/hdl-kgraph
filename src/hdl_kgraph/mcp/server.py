@@ -265,8 +265,14 @@ Start with get_hierarchy() or find_module() to orient yourself.
 """
 
 
-def create_server(db_path: Path) -> FastMCP:
-    """Build the fastmcp server with all nine tools over *db_path*."""
+def create_server(db_path: Path, *, token: str | None = None) -> FastMCP:
+    """Build the fastmcp server with all nine tools over *db_path*.
+
+    When *token* is given, the HTTP transport requires it as a bearer token
+    (clients send ``Authorization: Bearer <token>``); requests without it are
+    rejected. stdio is a local pipe with no network surface, so it needs none.
+    See issue #69 and docs/mcp.md.
+    """
     try:
         from fastmcp import FastMCP
     except ImportError:
@@ -274,8 +280,16 @@ def create_server(db_path: Path) -> FastMCP:
             "fastmcp is not installed; install the MCP extra: pip install 'hdl-kgraph[mcp]'"
         ) from None
 
+    auth = None
+    if token is not None:
+        from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
+
+        # One accepted opaque token mapped to a fixed identity — enough to gate
+        # the read-only HTTP surface without standing up an OAuth/JWT provider.
+        auth = StaticTokenVerifier({token: {"client_id": "hdl-kgraph", "scopes": []}})
+
     ctx = GraphContext(db_path)
-    mcp: FastMCP = FastMCP(name="hdl-kgraph", instructions=_INSTRUCTIONS)
+    mcp: FastMCP = FastMCP(name="hdl-kgraph", instructions=_INSTRUCTIONS, auth=auth)
 
     @mcp.tool
     def find_module(name: str, limit: int = 20) -> dict[str, Any]:
