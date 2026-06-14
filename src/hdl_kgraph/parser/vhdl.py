@@ -79,8 +79,12 @@ VHDL_LANGUAGE = TSLanguage(tree_sitter_vhdl.language())
 
 DEFAULT_LIBRARY = "work"
 
-_RESET_NAME_RE = re.compile(r"rst|reset|clr|clear", re.IGNORECASE)
-_CLOCK_NAME_RE = re.compile(r"clk|clock", re.IGNORECASE)
+# Anchored to whole `_`-delimited tokens (optionally with an `_n`/`_b` polarity
+# suffix) so control names like ``rst``/``rst_n``/``sys_clk`` match but data names
+# that merely contain the substring (``clear_count``, ``reset_value``,
+# ``restart_addr``) do not. See issue #76.
+_RESET_NAME_RE = re.compile(r"(?:^|_)(?:rst|reset|clr|clear)(?:_?n|_?b)?$", re.IGNORECASE)
+_CLOCK_NAME_RE = re.compile(r"(?:^|_)(?:clk|clock)(?:_?n|_?b)?$", re.IGNORECASE)
 
 
 def _line_span(node: TSNode) -> tuple[int, int]:

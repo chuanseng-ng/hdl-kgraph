@@ -39,6 +39,37 @@ def test_suffix_sets_disjoint() -> None:
 
 @pytest.mark.parametrize(("backend", "milestone"), STUB_BACKENDS_AND_MILESTONES)
 def test_stubs_fail_loudly(backend: type, milestone: str) -> None:
-    """Unimplemented backends raise NotImplementedError naming their milestone."""
+    """Unimplemented backends raise UnsupportedBackendError naming their milestone.
+
+    The error subclasses ``NotImplementedError`` (so legacy call sites keep
+    working) but is a distinct, catchable type a future router can handle.
+    """
+    from hdl_kgraph.parser.base import UnsupportedBackendError
+
     with pytest.raises(NotImplementedError, match=milestone):
         backend().parse(Path("x"), "")
+    with pytest.raises(UnsupportedBackendError, match=milestone):
+        backend().parse(Path("x"), "")
+
+
+def test_unimplemented_suffixes_stay_out_of_discovery_routing() -> None:
+    """The stub backends' suffixes must not be discoverable until implemented.
+
+    The crash they would otherwise raise is only unreachable because discovery
+    never routes these suffixes to a parser (issue #77). Lock that in: a build
+    only ever dispatches suffixes in ``discovery.SUFFIXES`` to SV/VHDL.
+    """
+    from hdl_kgraph import discovery
+
+    for backend, _ in STUB_BACKENDS_AND_MILESTONES:
+        assert not (backend.suffixes & discovery.SUFFIXES), backend.__name__
+
+
+def test_filelist_routes_unsupported_suffix_to_skip(tmp_path: Path) -> None:
+    """A constraints/script file with no parser is skipped, never parsed."""
+    from hdl_kgraph.discovery import check_file
+
+    sdc = tmp_path / "constraints.sdc"
+    sdc.write_text("create_clock -period 10 [get_ports clk]\n")
+    found = check_file(sdc, tmp_path)
+    assert found.skipped_reason == "unsupported"

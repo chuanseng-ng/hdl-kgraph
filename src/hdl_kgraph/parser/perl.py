@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from hdl_kgraph.parser.base import FileIR
+from hdl_kgraph.parser.base import FileIR, UnsupportedBackendError
 
 SUFFIXES = frozenset({".pl", ".pm"})
 
@@ -30,4 +30,4 @@ class PerlParser:
     suffixes = SUFFIXES
 
     def parse(self, path: Path, text: str) -> FileIR:
-        raise NotImplementedError("Perl codegen scanning lands in milestone M10")
+        raise UnsupportedBackendError("Perl codegen scanning lands in milestone M10")

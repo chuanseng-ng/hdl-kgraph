@@ -530,6 +530,25 @@ def _execute(
                             future=executor.submit(_parse_vhdl_task, found.relpath, text, library),
                         )
                     )
+            elif found.language not in (Language.SYSTEMVERILOG, Language.VERILOG):
+                # A suffix that reached discovery but has no pass-1 dispatch
+                # branch (a not-yet-implemented backend wired into SUFFIXES
+                # without a handler): skip-with-warning rather than silently
+                # mis-parsing it as SystemVerilog. See issue #77.
+                report.skipped["unsupported"] = report.skipped.get("unsupported", 0) + 1
+                report.warnings.append(
+                    f"no pass-1 parser for {found.relpath} ({found.language.value}); skipped"
+                )
+                files_meta.append(
+                    FileMeta(
+                        path=found.relpath,
+                        language=found.language,
+                        content_hash=found.content_hash,
+                        size_bytes=found.size_bytes,
+                        skipped_reason="unsupported",
+                    )
+                )
+                continue
             else:
                 pp = preprocessor.preprocess(found.path)
                 processed.add(found.relpath)

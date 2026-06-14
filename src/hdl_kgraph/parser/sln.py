@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from hdl_kgraph.parser.base import FileIR
+from hdl_kgraph.parser.base import FileIR, UnsupportedBackendError
 
 SUFFIXES = frozenset({".sln"})
 
@@ -28,4 +28,4 @@ class SlnParser:
     suffixes = SUFFIXES
 
     def parse(self, path: Path, text: str) -> FileIR:
-        raise NotImplementedError("SLN parsing lands in milestone M10")
+        raise UnsupportedBackendError("SLN parsing lands in milestone M10")
