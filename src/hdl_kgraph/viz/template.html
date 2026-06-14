@@ -61,6 +61,15 @@
   <span class="tab active" data-tab="hier">hierarchy</span>
   <span class="tab" data-tab="graph">graph</span>
   <input id="search" type="search" placeholder="find by name…">
+  <label id="depth-label" title="How many relationship hops to highlight around a search match">
+    hops
+    <select id="search-depth">
+      <option value="0">0</option>
+      <option value="1" selected>1</option>
+      <option value="2">2</option>
+      <option value="3">3</option>
+    </select>
+  </label>
 </header>
 <main>
   <div id="sidebar">
@@ -209,6 +218,11 @@ const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 const tooltip = document.getElementById("tooltip");
 let width = 0, height = 0, transform = d3.zoomIdentity, query = "";
+/* Search highlighting (#97): the searched node, its n-hop neighbors, and the
+   relationship lines between them. matchSet = direct name matches; nearById =
+   id -> hop distance for everything within searchDepth hops; null when no
+   query is active (the unfiltered look is unchanged). */
+let searchDepth = 1, matchSet = null, nearById = null, adjacency = null;
 
 /* Phase-1 draw-loop budgets (viz-scalability): cap labels per frame and draw
    a weight-prioritized edge sample past a threshold so pan/zoom stays
@@ -361,6 +375,49 @@ function nodeVisible(n) {
   if (n.community !== "" && DATA.communities.length && !activeComms.has(n.community)) return false;
   return true;
 }
+
+/* A link endpoint is an id string before the simulation binds it and a node
+   object after; normalize to the id either way. */
+function endpointId(e) { return e && typeof e === "object" ? e.id : e; }
+
+/* Undirected adjacency over the current links, rebuilt whenever the graph does
+   (collapse expand/collapse swaps the node/link sets). */
+function buildAdjacency() {
+  adjacency = new Map();
+  const add = (a, b) => {
+    let s = adjacency.get(a);
+    if (!s) { s = new Set(); adjacency.set(a, s); }
+    s.add(b);
+  };
+  for (const l of links) {
+    const s = endpointId(l.source), t = endpointId(l.target);
+    add(s, t); add(t, s);
+  }
+}
+
+/* Recompute the search highlight: the name matches plus every node within
+   searchDepth hops (BFS over the adjacency), keyed by hop distance so draw()
+   can fade neighbors by how far they sit from the match. */
+function computeHighlight(q) {
+  if (!q) { matchSet = null; nearById = null; return; }
+  if (!adjacency) buildAdjacency();
+  matchSet = new Set();
+  for (const n of nodes) if (n.name.toLowerCase().includes(q)) matchSet.add(n.id);
+  nearById = new Map();
+  let frontier = [];
+  for (const id of matchSet) { nearById.set(id, 0); frontier.push(id); }
+  for (let depth = 1; depth <= searchDepth && frontier.length; depth++) {
+    const next = [];
+    for (const id of frontier) {
+      for (const nb of adjacency.get(id) || []) {
+        if (nearById.has(nb)) continue;
+        nearById.set(nb, depth);
+        next.push(nb);
+      }
+    }
+    frontier = next;
+  }
+}
 function draw() {
   ctx.save();
   ctx.clearRect(0, 0, width, height);
@@ -392,7 +449,18 @@ function draw() {
     drawn = drawn.slice(0, MAX_DRAWN_EDGES);
   }
   const batches = new Map();  // "dash:widthBucket" -> {dash, width, path}
+  /* Relationship lines between the searched node and its highlighted neighbors
+     are stroked in an accent colour on top, so the search shows how the hit
+     connects to the rest of the graph, not just where it sits (#97). */
+  const relPath = new Path2D();
+  let hasRel = false;
   for (const l of drawn) {
+    if (nearById && nearById.has(endpointId(l.source)) && nearById.has(endpointId(l.target))) {
+      relPath.moveTo(l.source.x, l.source.y);
+      relPath.lineTo(l.target.x, l.target.y);
+      hasRel = true;
+      continue;
+    }
     const dash = l.confidence < 0.8 ? 1 : 0;
     const width = Math.round(Math.min(2.5, 0.6 + (l.weight || 1) * 0.3) * 2) / 2;
     const key = dash + ":" + width;
@@ -401,13 +469,19 @@ function draw() {
     b.path.moveTo(l.source.x, l.source.y);
     b.path.lineTo(l.target.x, l.target.y);
   }
-  ctx.strokeStyle = "#3b4657";
+  // Dim the background edges while a search is active so the accent stands out.
+  ctx.strokeStyle = q ? "#2a2f3a" : "#3b4657";
   for (const b of batches.values()) {
     ctx.setLineDash(b.dash ? [4, 3] : []);
     ctx.lineWidth = b.width;
     ctx.stroke(b.path);
   }
   ctx.setLineDash([]);
+  if (hasRel) {
+    ctx.strokeStyle = "#ebcb8b";
+    ctx.lineWidth = 1.75;
+    ctx.stroke(relPath);
+  }
 
   /* Nodes: cull off-screen, cap labels drawn per frame (search hits always
      labeled and counted first). */
@@ -417,19 +491,24 @@ function draw() {
     if (!nodeVisible(n)) continue;
     shown++;
     if (!inView(n.x, n.y)) continue;
-    const hit = q && n.name.toLowerCase().includes(q);
-    const r = radiusOf(n) + (hit ? 3 : 0);
+    // A direct name match, a highlighted neighbor (within searchDepth hops), or
+    // neither. Matches grow most and keep their colour; neighbors grow a little
+    // and stay coloured; everything else dims while a search is active (#97).
+    const hit = q && matchSet ? matchSet.has(n.id) : false;
+    const near = q && nearById ? nearById.has(n.id) : false;
+    const r = radiusOf(n) + (hit ? 3 : near ? 1.5 : 0);
     ctx.beginPath();
     ctx.arc(n.x, n.y, r, 0, 2 * Math.PI);
-    ctx.fillStyle = q && !hit ? "#3b4657"
+    ctx.fillStyle = q && !near ? "#3b4657"
       : colorByCommunity && n.community !== "" ? commColor(n.community)
       : color(n.kind);
     ctx.fill();
     if (n.group) { ctx.strokeStyle = "#eceff4"; ctx.lineWidth = 1.5; ctx.stroke(); }
+    else if (hit) { ctx.strokeStyle = "#ebcb8b"; ctx.lineWidth = 1.6; ctx.stroke(); }
     else if (n.unresolved) { ctx.strokeStyle = "#bf616a"; ctx.lineWidth = 1.4; ctx.stroke(); }
-    if ((labelZoom || hit || n.group) && labels < MAX_LABELS) {
+    if ((labelZoom || hit || near || n.group) && labels < MAX_LABELS) {
       labels++;
-      ctx.fillStyle = hit ? "#ffd479" : "#9aa3b2";
+      ctx.fillStyle = hit ? "#ffd479" : near ? "#d8dee9" : "#9aa3b2";
       ctx.font = "10px monospace";
       ctx.fillText(n.name, n.x + r + 3, n.y + 3);
     }
@@ -518,6 +597,7 @@ d3.select(canvas)
 function rebuild() {
   snapshotPositions();  // remember where everything is before the graph changes
   buildGraph();
+  adjacency = null;  // node/link sets changed; rebuild the neighbor index lazily
   sim.nodes(nodes);
   sim.force("link").links(links);
   sim.alpha(0.6).restart();
@@ -617,9 +697,16 @@ document.getElementById("search").addEventListener("input", e => {
   const q = query.toLowerCase();
   // In collapse mode, reveal hits hidden inside collapsed communities first;
   // rebuild restarts the sim (which redraws), else just redraw the highlight.
-  if (syncSearchExpansion(q)) rebuild(); else draw();
+  // A rebuild swaps node/link sets, so recompute the highlight after it.
+  if (syncSearchExpansion(q)) { rebuild(); computeHighlight(q); draw(); }
+  else { computeHighlight(q); draw(); }
   for (const el of document.querySelectorAll("#hier .mod, #hier .inst"))
     el.style.background = q && el.textContent.toLowerCase().includes(q) ? "#4c3a1e" : "";
+});
+document.getElementById("search-depth").addEventListener("change", e => {
+  searchDepth = +e.target.value;
+  computeHighlight(query.toLowerCase());
+  draw();
 });
 })();
 </script>

@@ -75,7 +75,11 @@ for `dead-module` (CLI flags are additive).
 the graph data embedded, so it opens air-gapped and can be attached to a
 review or bug report as-is. The page opens on a collapsible hierarchy view;
 a second tab is a force-directed graph with node-kind / edge-kind / community
-filters and a "colour by community" toggle (Louvain subsystems).
+filters and a "colour by community" toggle (Louvain subsystems). Searching by
+name highlights the matched node, its neighbors out to the chosen number of
+relationship hops (the "hops" selector next to the search box, default 1), and
+the relationship lines between them, dimming the rest of the graph so a node's
+local context stands out.
 
 - The default payload is the module-level projection, which stays
   responsive on large designs; `--full` embeds every node and edge.
