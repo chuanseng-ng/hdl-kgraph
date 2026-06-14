@@ -8,7 +8,7 @@ instances, ports, parameters, signals, classes, packages, and the
 relationships between them — design hierarchy, port connectivity, package
 imports, class inheritance, clock domains, and more.
 
-> **Status: alpha (v0.7).** Milestones M1–M6 are in: SystemVerilog/Verilog
+> **Status: alpha (v0.7).** Milestones M1–M7 are in: SystemVerilog/Verilog
 > and VHDL extraction with mixed-language linking, the SV preprocessor and
 > real-world build inputs (`.f` filelists, defines, `hdl-kgraph.toml`),
 > incremental rebuilds and watch mode, the clock/reset/CDC/lint/metrics
@@ -60,8 +60,8 @@ warnings and why files were skipped.
 → [docs/build-inputs.md](docs/build-inputs.md)
 
 **Incremental updates.** `update` re-parses only changed files plus their
-include/macro dependents — one edit in a 2000-file design lands in under a
-second — and `watch` does it on every save burst. `detect-changes`
+include/macro dependents — one edit in a 2000-file design lands in about
+1.3 s (budget < 1.5 s) — and `watch` does it on every save burst. `detect-changes`
 (exit codes: 0 clean, 1 dirty, 2 error; diffs against git, svn, or Perforce)
 and `impact` answer "what changed, and what does it affect?" in CI.
 → [docs/incremental.md](docs/incremental.md)
@@ -109,7 +109,7 @@ full list, the confidence convention, and the schema pointers live in
 | M4 (v0.4) | Incremental updates, watch mode, impact analysis |
 | M5 (v0.5) | Clock/reset/CDC analyses, lint checks, visualization |
 | M6 (v0.6) | MCP server for AI assistants |
-| M7 (v0.7) | Semantic enrichment via native frontends (pyslang elaboration; GHDL/VHDL planned) |
+| M7 (v0.7) | Semantic enrichment via native frontends (pyslang + GHDL elaboration) |
 | M8 (v1.0) | C/C++/Python boundary (DPI-C, cocotb), stable API |
 | M9 (v1.x) | Chisel/FIRRTL, Amaranth, SpinalHDL |
 | M10 (v1.x) | Tcl/SDC/UPF constraints, Perl scripting, SLN portable stimulus |

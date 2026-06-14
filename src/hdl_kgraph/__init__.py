@@ -3,4 +3,4 @@
 See ROADMAP.md for the milestone plan and the graph schema overview.
 """
 
-__version__ = "0.7.4"
+__version__ = "0.7.5"
