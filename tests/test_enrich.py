@@ -15,7 +15,12 @@ import networkx as nx
 import pytest
 
 from hdl_kgraph.config import BuildOptions
-from hdl_kgraph.enrich import EnrichmentInput, available_backends, run_enrichment
+from hdl_kgraph.enrich import (
+    EnrichmentInput,
+    available_backends,
+    run_enrichment,
+    summarize_enrichment,
+)
 from hdl_kgraph.enrich.base import Capabilities, EnrichmentResult
 from hdl_kgraph.enrich.stub_backend import StubBackend
 from hdl_kgraph.graph.builder import add_or_upgrade_edge, ensure_node
@@ -266,3 +271,89 @@ def test_cli_discrepancies_empty_without_enrich(project: Path) -> None:
     result = runner.invoke(main, ["discrepancies", *db])
     assert result.exit_code == 0
     assert "no discrepancies" in result.output
+
+
+# -- enrichment report -------------------------------------------------------
+
+
+def test_summarize_enrichment_reconstructs_delta(project: Path) -> None:
+    run_build(project, options=BuildOptions(enrich=True))
+    graph, _, _ = _db(project).load()
+    summary = summarize_enrichment(graph)
+    assert summary.enriched
+    assert summary.backends == ["slang"]
+    assert summary.nodes_added == 4  # four unrolled u_leaf iterations
+    assert summary.generates_unrolled == 1
+    # Each iteration adds a DECLARES + INSTANTIATES edge touching the elab node.
+    assert summary.edges_added == 8
+    assert summary.edges_upgraded >= 1
+
+
+def test_summarize_enrichment_empty_on_default_build(project: Path) -> None:
+    run_build(project)  # no enrich
+    graph, _, _ = _db(project).load()
+    summary = summarize_enrichment(graph)
+    assert not summary.enriched
+    assert summary.nodes_added == 0
+    assert summary.edges_upgraded == 0
+
+
+def test_cli_enriched_reports_summary_and_discrepancies(project: Path) -> None:
+    from click.testing import CliRunner
+
+    from hdl_kgraph.cli.main import main
+
+    runner = CliRunner()
+    assert runner.invoke(main, ["build", str(project), "--enrich"]).exit_code == 0
+    db = ["--db", str(project / ".hdl-kgraph" / "graph.db")]
+
+    result = runner.invoke(main, ["enriched", *db])
+    assert result.exit_code == 0, result.output
+    assert "enrichment via slang" in result.output
+    assert "nodes added:        4" in result.output
+    assert "generates unrolled: 1" in result.output
+    assert "instance_count" in result.output
+
+
+def test_cli_enriched_json_shape(project: Path) -> None:
+    import json
+
+    from click.testing import CliRunner
+
+    from hdl_kgraph.cli.main import main
+
+    runner = CliRunner()
+    assert runner.invoke(main, ["build", str(project), "--enrich"]).exit_code == 0
+    db = ["--db", str(project / ".hdl-kgraph" / "graph.db")]
+
+    result = runner.invoke(main, ["enriched", *db, "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["summary"]["enriched"] is True
+    assert payload["summary"]["nodes_added"] == 4
+    assert payload["discrepancies"][0]["kind"] == "instance_count"
+
+
+def test_cli_enriched_not_enriched_message(project: Path) -> None:
+    from click.testing import CliRunner
+
+    from hdl_kgraph.cli.main import main
+
+    runner = CliRunner()
+    assert runner.invoke(main, ["build", str(project)]).exit_code == 0
+    db = ["--db", str(project / ".hdl-kgraph" / "graph.db")]
+    result = runner.invoke(main, ["enriched", *db])
+    assert result.exit_code == 0
+    assert "not enriched" in result.output
+
+
+def test_cli_build_enrich_verbose_shows_summary(project: Path) -> None:
+    from click.testing import CliRunner
+
+    from hdl_kgraph.cli.main import main
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["build", str(project), "--enrich", "-v"])
+    assert result.exit_code == 0, result.output
+    assert "nodes added:" in result.output
+    assert "generates unrolled:" in result.output
