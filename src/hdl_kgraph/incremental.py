@@ -123,12 +123,27 @@ def is_build_input(relpath: str, suffixes: frozenset[str]) -> bool:
     return path.suffix in suffixes or path.suffix in EXTRA_SUFFIXES or path.name == CONFIG_FILENAME
 
 
+def reject_option_like_ref(ref: str, tool: str) -> None:
+    """Guard against argument injection via a VCS ref/revision.
+
+    The ref is passed to ``git``/``svn`` as a positional argument, but a value
+    that begins with ``-`` (e.g. ``--output=…``, ``-G<regex>``) would be parsed
+    as an *option* instead of a revision. No legal git refname or svn revision
+    begins with ``-``, so reject such values rather than hand them to the tool.
+    Raises ``RuntimeError`` (the same error type the backends already normalize
+    failures to) so the CLI maps it to its "error" exit code.
+    """
+    if not ref or ref.startswith("-"):
+        raise RuntimeError(f"{tool}: refusing ref {ref!r}: looks like an option, not a revision")
+
+
 def detect_git_changes(base: Path, ref: str, suffixes: frozenset[str]) -> ChangeSet:
     """Diff the working tree against *ref*, filtered to build inputs.
 
-    Raises ``RuntimeError`` when git is unavailable or *base* is not inside
-    a work tree.
+    Raises ``RuntimeError`` when *ref* looks like an option, when git is
+    unavailable, or when *base* is not inside a work tree.
     """
+    reject_option_like_ref(ref, "git")
     try:
         diff = subprocess.run(
             ["git", "diff", "--name-status", ref, "--"],
