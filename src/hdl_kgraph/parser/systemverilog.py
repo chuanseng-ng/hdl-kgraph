@@ -69,6 +69,7 @@ from tree_sitter import Parser as TSParser
 from hdl_kgraph.ids import decl_node_id, file_node_id
 from hdl_kgraph.parser.base import FileIR, UnresolvedRef, error_snippet
 from hdl_kgraph.parser.preprocessor import LineOrigin
+from hdl_kgraph.parser.sv_normalize import normalize_sv_source
 from hdl_kgraph.schema import (
     CONFIDENCE_AMBIGUOUS,
     CONFIDENCE_HEURISTIC,
@@ -1185,7 +1186,9 @@ class SystemVerilogParser:
             language=language,
         )
         ir.nodes.append(file_node)
-        source = text.encode()
+        # Work around tree-sitter grammar gaps (e.g. function-call size casts)
+        # before parsing; line-count-preserving, so *line_map* stays valid.
+        source = normalize_sv_source(text).encode()
         try:
             tree = self._parser.parse(source)
             walker = _Walker(ir, relpath, language, source, line_map)

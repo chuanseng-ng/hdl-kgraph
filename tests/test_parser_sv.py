@@ -157,6 +157,16 @@ def test_error_tolerance_partial_results(parser, fixtures_dir) -> None:
     assert "survives.ok" in nodes_of(ir, NodeKind.PORT)
 
 
+def test_function_call_size_casts_parse(parser, fixtures_dir) -> None:
+    # $clog2(...)'(value) is rejected by the bundled grammar unless the casting
+    # type is parenthesized; the parser normalizes the source first.
+    ir = parse(parser, fixtures_dir, "clog2_cast.sv")
+    assert ir.parse_error_count == 0
+    assert "clog2_cast" in nodes_of(ir, NodeKind.MODULE)
+    signals = {n.name for n in ir.nodes if n.kind is NodeKind.PORT}
+    assert {"q_head", "q_count"} <= signals
+
+
 def test_parse_errors_carry_location_and_snippet(parser, fixtures_dir) -> None:
     ir = parse(parser, fixtures_dir, "broken.sv")
     assert ir.parse_errors
