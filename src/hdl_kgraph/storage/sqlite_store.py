@@ -50,9 +50,10 @@ import networkx as nx
 
 from hdl_kgraph import __version__
 from hdl_kgraph.enrich.base import Discrepancy
+from hdl_kgraph.graph.builder import RefRecord
 from hdl_kgraph.schema import EdgeKind, Language, NodeKind
 
-SCHEMA_VERSION = "6"  # v6: discrepancies table (M7 enrichment); edge source attrs
+SCHEMA_VERSION = "7"  # v7: ref_index table (incremental link, #64)
 
 # How long a reader waits on a residual write lock before giving up.
 _BUSY_TIMEOUT_MS = 5_000
@@ -110,6 +111,15 @@ CREATE TABLE IF NOT EXISTS discrepancies (
   heuristic  TEXT NOT NULL DEFAULT '',
   elaborated TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS ref_index (
+  file        TEXT NOT NULL,
+  src_id      TEXT NOT NULL,
+  edge_kind   TEXT NOT NULL,
+  target_name TEXT NOT NULL,
+  scoped      INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_ref_index_target ON ref_index(target_name);
+CREATE INDEX IF NOT EXISTS idx_ref_index_file ON ref_index(file);
 """
 
 
@@ -199,6 +209,10 @@ def _discrepancy_row(d: Discrepancy) -> tuple[object, ...]:
     return (d.kind, d.backend, d.detail, d.node_id, d.src, d.dst, d.heuristic, d.elaborated)
 
 
+def _ref_index_row(rec: RefRecord) -> tuple[object, ...]:
+    return (rec.file, rec.src_id, rec.edge_kind.value, rec.target_name, int(rec.scoped))
+
+
 def _meta_rows(root: Path, options_hash: str) -> list[tuple[str, str]]:
     return [
         ("schema_version", SCHEMA_VERSION),
@@ -228,6 +242,7 @@ class SqliteStore:
         units: dict[str, StoredUnit] | None = None,
         options_hash: str = "",
         discrepancies: list[Discrepancy] | None = None,
+        ref_records: list[RefRecord] | None = None,
     ) -> None:
         """Write the full graph to a sibling temp file, then swap it into place.
 
@@ -270,6 +285,10 @@ class SqliteStore:
                 "INSERT INTO discrepancies VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 [_discrepancy_row(d) for d in (discrepancies or [])],
             )
+            conn.executemany(
+                "INSERT INTO ref_index VALUES (?, ?, ?, ?, ?)",
+                [_ref_index_row(r) for r in (ref_records or [])],
+            )
             conn.commit()
             # Fold the WAL back into the main file so the temp database is a
             # self-contained single file ready for the atomic swap.
@@ -293,6 +312,7 @@ class SqliteStore:
         units: dict[str, StoredUnit] | None = None,
         options_hash: str = "",
         discrepancies: list[Discrepancy] | None = None,
+        ref_records: list[RefRecord] | None = None,
     ) -> None:
         """Write only the rows that changed since the stored build, in place.
 
@@ -309,7 +329,7 @@ class SqliteStore:
         this is the contract ``test_update_graph_matches_full_rebuild`` pins.
         """
         if not self.db_path.is_file():
-            self.save(graph, files, root, units, options_hash, discrepancies)
+            self.save(graph, files, root, units, options_hash, discrepancies, ref_records)
             return
         conn = sqlite3.connect(self.db_path)
         conn.isolation_level = None  # we drive BEGIN/COMMIT explicitly
@@ -332,7 +352,9 @@ class SqliteStore:
                 return
             conn.execute("BEGIN IMMEDIATE")
             try:
-                stats = _apply_delta(conn, graph, files, root, units, options_hash, discrepancies)
+                stats = _apply_delta(
+                    conn, graph, files, root, units, options_hash, discrepancies, ref_records
+                )
                 conn.execute("COMMIT")
             except BaseException:
                 conn.execute("ROLLBACK")
@@ -460,6 +482,23 @@ class SqliteStore:
                 )
             ]
 
+    def load_ref_index(self) -> list[RefRecord]:
+        """All persisted pass-2 reference records (incremental-link reverse index)."""
+        with self._connect() as conn:
+            self._check_version(conn)
+            return [
+                RefRecord(
+                    file=row[0],
+                    src_id=row[1],
+                    edge_kind=EdgeKind(row[2]),
+                    target_name=row[3],
+                    scoped=bool(row[4]),
+                )
+                for row in conn.execute(
+                    "SELECT file, src_id, edge_kind, target_name, scoped FROM ref_index"
+                )
+            ]
+
     def load(self) -> tuple[nx.MultiDiGraph, list[FileMeta], dict[str, str]]:
         """Load (graph, file metadata, meta key/values) from the database."""
         with self._connect() as conn:
@@ -507,6 +546,7 @@ def _apply_delta(
     units: dict[str, StoredUnit] | None,
     options_hash: str,
     discrepancies: list[Discrepancy] | None,
+    ref_records: list[RefRecord] | None = None,
 ) -> dict[str, int]:
     """UPSERT/delete only the rows that differ from what is stored.
 
@@ -514,6 +554,7 @@ def _apply_delta(
     """
     units = units or {}
     discrepancies = discrepancies or []
+    ref_records = ref_records or []
 
     # -- nodes (PK id): UPSERT changed rows, delete vanished ids ---------------
     stored_nodes = {row[0]: row for row in conn.execute("SELECT * FROM nodes")}
@@ -559,6 +600,23 @@ def _apply_delta(
         "VALUES (?, ?, ?, ?)",
         {path: _file_ir_row(path, unit) for path, unit in units.items()},
     )
+
+    # -- ref_index (no PK; a multiset grouped by file) ------------------------
+    # Like edges, ref rows carry no key; replace per owning unit so a one-file
+    # edit rewrites only that unit's ref rows. Counter handles duplicate refs
+    # (a header spliced into several units).
+    stored_refs: defaultdict[str, Counter[tuple[object, ...]]] = defaultdict(Counter)
+    for row in conn.execute("SELECT file, src_id, edge_kind, target_name, scoped FROM ref_index"):
+        stored_refs[row[0]][row] += 1
+    new_refs: defaultdict[str, Counter[tuple[object, ...]]] = defaultdict(Counter)
+    for rec in ref_records:
+        new_refs[rec.file][_ref_index_row(rec)] += 1
+    for file in stored_refs.keys() | new_refs.keys():
+        if stored_refs.get(file) == new_refs.get(file):
+            continue
+        conn.execute("DELETE FROM ref_index WHERE file = ?", (file,))
+        rows = [row for row, count in new_refs.get(file, Counter()).items() for _ in range(count)]
+        conn.executemany("INSERT INTO ref_index VALUES (?, ?, ?, ?, ?)", rows)
 
     # -- discrepancies (small, enrich-only): refresh wholesale ----------------
     conn.execute("DELETE FROM discrepancies")

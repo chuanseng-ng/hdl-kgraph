@@ -162,13 +162,13 @@ def test_schema_version_mismatch_raises(store) -> None:
 
 
 def test_old_database_is_refused(store) -> None:
-    """The M7 discrepancies table bumped the schema to v6: an older (v5)
+    """The ref_index table (#64) bumped the schema to v7: an older (v6)
     database must be refused with the rebuild message — rebuild *is* the
     migration."""
-    assert SCHEMA_VERSION == "6"
+    assert SCHEMA_VERSION == "7"
     sqlite_store, _, _ = store
     with sqlite3.connect(sqlite_store.db_path) as conn:
-        conn.execute("UPDATE meta SET value = '5' WHERE key = 'schema_version'")
+        conn.execute("UPDATE meta SET value = '6' WHERE key = 'schema_version'")
     with pytest.raises(SchemaVersionError, match="hdl-kgraph build"):
         sqlite_store.load()
 
@@ -405,6 +405,33 @@ def test_save_incremental_falls_back_on_foreign_file(store) -> None:
     sqlite_store.save_incremental(graph, files, root=Path("."))  # must not raise
     loaded, _, _ = sqlite_store.load()
     assert "foreign.sv::module:fr" in loaded.nodes
+
+
+def test_ref_index_round_trips_and_writes_incrementally(store) -> None:
+    from hdl_kgraph.graph.builder import RefRecord
+
+    sqlite_store, graph, files = store
+    recs = [
+        RefRecord("a.sv", "a.sv::instance:u_b", EdgeKind.INSTANTIATES, "b", False),
+        RefRecord("a.sv", "a.sv::process:p", EdgeKind.DRIVES, "clk", True),
+        RefRecord("b.sv", "b.sv::module:b", EdgeKind.IMPORTS, "pkg", False),
+    ]
+    sqlite_store.save(graph, files, root=Path("."), ref_records=recs)
+    assert sorted(sqlite_store.load_ref_index(), key=lambda r: (r.file, r.src_id)) == sorted(
+        recs, key=lambda r: (r.file, r.src_id)
+    )
+
+    # An incremental write that drops a.sv's refs and adds c.sv's rewrites only
+    # those files' ref rows, leaving b.sv's untouched.
+    recs2 = [
+        RefRecord("b.sv", "b.sv::module:b", EdgeKind.IMPORTS, "pkg", False),
+        RefRecord("c.sv", "c.sv::instance:u_d", EdgeKind.INSTANTIATES, "d", False),
+    ]
+    sqlite_store.save_incremental(graph, files, root=Path("."), ref_records=recs2)
+    assert {(r.file, r.target_name) for r in sqlite_store.load_ref_index()} == {
+        ("b.sv", "pkg"),
+        ("c.sv", "d"),
+    }
 
 
 def test_save_incremental_creates_database_when_missing(tmp_path) -> None:

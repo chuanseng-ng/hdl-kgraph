@@ -208,6 +208,56 @@ def test_update_write_cost_scales_with_change(project: Path) -> None:
     assert written < total_nodes // 2
 
 
+def test_ref_index_scoping_is_superset_of_changed_pass2_edges(project: Path) -> None:
+    """Stage-0 substrate guard (#64-A): every pass-2 edge that differs between
+    two builds is owned by a reparsed file or surfaced by the reverse-index
+    lookup — so the incremental linker's re-resolution set never under-includes.
+    """
+    from hdl_kgraph.graph.builder import _PASS2_EDGE_KINDS
+    from hdl_kgraph.incremental import (
+        affected_clean_refs,
+        changed_definition_names,
+        definition_profiles,
+    )
+
+    db = project / ".hdl-kgraph" / "graph.db"
+    before = _graph(project)
+    ref_index_before = SqliteStore(db).load_ref_index()
+
+    (project / "leaf.sv").unlink()  # clean-file edge flip: mid still references leaf
+    run_build(project)
+    after = _graph(project)
+
+    changed = changed_definition_names(
+        definition_profiles(before.nodes(data=True)),
+        definition_profiles(after.nodes(data=True)),
+    )
+    assert (
+        next(iter(k for k in changed if k[1] == "leaf"), None) is not None
+    )  # (MODULE, "leaf") flipped
+    # Stage 1 re-resolves by src-node bucket (a CONNECTS ref also owns the
+    # DRIVES/READS it derives on the same instance), so coverage is src-level.
+    affected_srcs = {src for _, src, _ in affected_clean_refs(ref_index_before, changed)}
+    dirty = {"leaf.sv"}
+
+    def owning_file(node_id: str) -> str:
+        for g in (before, after):
+            if node_id in g.nodes:
+                return str(g.nodes[node_id].get("file", ""))
+        return ""
+
+    def pass2_edges(g):
+        return {
+            (u, v, d["kind"].value, d["confidence"], json.dumps(d["attrs"], sort_keys=True))
+            for u, v, d in g.edges(data=True)
+            if d["kind"] in _PASS2_EDGE_KINDS
+        }
+
+    for src, _dst, kind_value, _conf, _attrs in pass2_edges(before) ^ pass2_edges(after):
+        covered = owning_file(src) in dirty or src in affected_srcs
+        assert covered, f"pass-2 edge {src} {kind_value} not in dirty closure or affected refs"
+
+
 def test_update_graph_matches_full_rebuild(project: Path) -> None:
     path = project / "mid.sv"
     path.write_text(path.read_text().replace("u_leaf", "u_leaf2"))
