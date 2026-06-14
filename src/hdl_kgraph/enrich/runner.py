@@ -23,9 +23,10 @@ def available_backends(names: list[str] | None = None) -> list[EnrichmentBackend
     """The installed enrichment backends, optionally filtered to *names*.
 
     The registry is built lazily so importing this module never imports the
-    optional native frontends. ``slang`` (pyslang, a core pip dependency) covers
-    SystemVerilog/Verilog; ``ghdl`` (libghdl, present only with a GHDL install)
-    covers VHDL and is filtered out by :meth:`available` when GHDL is absent.
+    optional native frontends. ``slang`` (pyslang, the ``enrich`` pip extra)
+    covers SystemVerilog/Verilog; ``ghdl`` (libghdl, present only with a GHDL
+    install) covers VHDL. Each backend is filtered out by :meth:`available` when
+    its dependency is absent, so a build without the extra degrades cleanly.
     """
     from hdl_kgraph.enrich.ghdl_backend import GhdlBackend
     from hdl_kgraph.enrich.slang_backend import SlangBackend

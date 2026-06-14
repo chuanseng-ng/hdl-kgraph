@@ -15,8 +15,10 @@ and reconciles it with the heuristic graph:
 * an instantiation whose elaborated target differs from the heuristic guess is
   recorded as a ``wrong_target`` discrepancy.
 
-``pyslang`` is a core dependency, so it imports at module load. Elaboration of
-an incomplete or erroneous design never raises out of :meth:`enrich` — failures
+``pyslang`` is an optional dependency (the ``enrich`` extra), imported lazily
+inside the methods below so importing this module never requires it; the
+backend reports itself unavailable when it is absent. Elaboration of an
+incomplete or erroneous design never raises out of :meth:`enrich` — failures
 degrade to the heuristic graph and surface as diagnostics.
 
 Scope (v0.7 first cut): instance-count correction and ``INSTANTIATES``
@@ -52,7 +54,8 @@ class SlangBackend:
     suffixes = _SUFFIXES
 
     def available(self) -> bool:
-        # pyslang is a core dependency; the probe stays cheap and import-safe.
+        # pyslang is an optional dependency (the `enrich` extra); the probe
+        # stays cheap and import-safe so a bare install degrades gracefully.
         try:
             import pyslang  # noqa: F401
         except ImportError:

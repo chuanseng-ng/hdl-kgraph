@@ -14,8 +14,9 @@ imports, class inheritance, clock domains, and more.
 > incremental rebuilds and watch mode, the clock/reset/CDC/lint/metrics
 > analyses with an interactive visualization, and an MCP server so AI
 > assistants can query the design. M7 adds opt-in semantic enrichment
-> (`build --enrich`): the pyslang frontend elaborates the design — unrolling
-> parameterized generates so instance counts match reality — and records a
+> (`build --enrich`, `pip install 'hdl-kgraph[enrich]'`): the pyslang frontend
+> elaborates the design — unrolling parameterized generates so instance counts
+> match reality — and records a
 > [discrepancy report](docs/enrichment.md). `hdl-kgraph enriched` summarizes
 > exactly what enrichment changed vs the default build. See the
 > [roadmap](#roadmap-at-a-glance).

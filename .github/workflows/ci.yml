@@ -54,11 +54,11 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      # [mcp]/[watch] here, not in lint: the lint job proves the package
-      # imports and type-checks without the optional extras installed.
+      # [mcp]/[watch]/[enrich] here, not in lint: the lint job proves the
+      # package imports and type-checks without the optional extras installed.
       # Without [watch], the only real-observer test (tests/test_watch.py)
-      # silently skips on every run.
-      - run: pip install -e .[dev,mcp,watch]
+      # silently skips; without [enrich], the slang enrichment tests skip.
+      - run: pip install -e .[dev,mcp,watch,enrich]
       - run: pytest --cov=hdl_kgraph --cov-fail-under=85
 
   # Early-warning canary (ROADMAP Risks #1/#5): the tree-sitter stack is
@@ -75,7 +75,7 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
-      - run: pip install -e .[dev,mcp,watch]
+      - run: pip install -e .[dev,mcp,watch,enrich]
       - name: Upgrade the tree-sitter and native-frontend stacks past the pyproject caps
         run: pip install --upgrade tree-sitter tree-sitter-systemverilog tree-sitter-vhdl pyslang pyVHDLModel
       - run: pip list | grep -E 'tree|slang|VHDLModel'

@@ -582,7 +582,9 @@ def _enrich(
     backends = available_backends(options.enrich_backends or None)
     if not backends:
         report.warnings.append(
-            "enrichment requested but no backend is available (install the slang/ghdl dependencies)"
+            "enrichment requested but no backend is available. Install the SystemVerilog "
+            "frontend with: pip install 'hdl-kgraph[enrich]' (VHDL also needs the `ghdl` "
+            "system binary; see docs/enrichment.md)."
         )
         return []
     progress(f"pass 3: enriching via {', '.join(b.name for b in backends)}")

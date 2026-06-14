@@ -85,14 +85,21 @@ shown inline by `build --enrich -v`.
 
 ## Backends
 
-Enrichment backends ship in the **core install** (no optional extra to add):
+Enrichment backends require the optional **`enrich` extra**:
+
+```bash
+pip install 'hdl-kgraph[enrich]'
+```
 
 | Backend | Package | Status |
 |---|---|---|
 | `slang` (SystemVerilog/Verilog) | [`pyslang`](https://pypi.org/project/pyslang/) | shipping — generate unroll + `INSTANTIATES` confirmation |
 | `ghdl` (VHDL) | the `ghdl` binary (`pyGHDL`/`libghdl` ship with it) | shipping — binding confirmation + `wrong_target` + `for ... generate` unroll |
 
-`pyslang` is a core pip dependency, so `slang` works out of the box. **GHDL is a
+`pyslang` and `pyVHDLModel` are pulled in by the `enrich` extra (they are
+heavy native wheels and the default heuristic build never imports them). With
+the extra installed, `slang` works out of the box; without it, `build --enrich`
+prints an install hint and falls back to the heuristic graph. **GHDL is a
 system binary, not a pip package** — its `pyGHDL`/`libghdl` Python bindings are
 installed alongside it (`apt install ghdl` / `conda install ghdl` / `brew install
 ghdl`), so `ghdl` enrichment activates only when that binary is present and is
