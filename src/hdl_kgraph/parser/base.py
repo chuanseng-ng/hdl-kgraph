@@ -28,6 +28,18 @@ from hdl_kgraph.schema import CONFIDENCE_RESOLVED, Edge, EdgeKind, Node
 MAX_PARSE_ERRORS = 20
 
 
+class UnsupportedBackendError(NotImplementedError):
+    """Raised by a registered-but-not-yet-implemented parser backend.
+
+    Subclasses :class:`NotImplementedError` (so existing call sites keep
+    working) but is a distinct, greppable type a future suffix router can
+    catch to skip-with-warning instead of aborting the build. The stub
+    backends (SDC/UPF/Tcl/Perl/SLN) are intentionally kept out of the
+    discovery/pipeline routing path until implemented; this is the clean
+    error they raise if one is ever dispatched to directly. See issue #77.
+    """
+
+
 def error_snippet(text: str, limit: int = 50) -> str:
     """First line of *text*, trimmed to *limit* chars, for error messages."""
     first, _, rest = text.strip().partition("\n")

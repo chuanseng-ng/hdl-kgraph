@@ -135,3 +135,62 @@ def test_effective_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _effective_jobs(BuildOptions(), MIN_PARALLEL_FILES, big) == DEFAULT_JOBS_CAP
     monkeypatch.setattr(os, "cpu_count", lambda: 2)
     assert _effective_jobs(BuildOptions(), MIN_PARALLEL_FILES, big) == 2
+
+
+def test_worker_failure_is_isolated(corpus: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A parser-worker exception is recorded and skipped, not a full-build abort (#65)."""
+    from hdl_kgraph import pipeline
+
+    real = pipeline._parse_sv_task
+
+    def flaky(relpath, text, line_map):
+        if relpath.endswith("cond.sv"):
+            raise RuntimeError("simulated worker crash")
+        return real(relpath, text, line_map)
+
+    monkeypatch.setattr(pipeline, "_parse_sv_task", flaky)
+    report = run_build(corpus, options=BuildOptions(jobs=1))
+    # The build completed (partial), recorded the failure, and kept the rest.
+    assert report.worker_failures == 1
+    assert "cond.sv" in report.file_errors
+    assert any("worker failed" in w and "cond.sv" in w for w in report.warnings)
+    graph, _ = _load(report.db_path)
+    by_name: dict[str, list] = {}
+    for _, d in graph.nodes(data=True):
+        by_name.setdefault(d["name"], []).append(d)
+    assert "top" in by_name and "mid" in by_name  # other units still parsed
+    # The crashed unit was never parsed: top's dangling instantiation leaves a
+    # "cond" node, but only as an unresolved stub, never a real parsed MODULE.
+    cond_nodes = by_name.get("cond", [])
+    assert cond_nodes, "expected an unresolved `cond` stub from top's dangling instantiation"
+    assert all(d["attrs"].get("unresolved") for d in cond_nodes)
+
+
+def test_incremental_link_reresolves_few_refs(tmp_path: Path) -> None:
+    """An internal one-file edit re-resolves far fewer refs than the design total (#64/#65)."""
+    # Pure-SV design (a VHDL file would force the conservative full-link fallback).
+    (tmp_path / "leaf.sv").write_text(
+        "module leaf(input logic a, output logic y);\n  assign y = a;\nendmodule\n"
+    )
+    (tmp_path / "mid.sv").write_text(
+        "module mid(input logic a, output logic y);\n  leaf u_leaf(.a(a), .y(y));\nendmodule\n"
+    )
+    for i in range(6):
+        (tmp_path / f"unit{i}.sv").write_text(
+            f"module unit{i}(input logic a, output logic y);\n  mid u(.a(a), .y(y));\nendmodule\n"
+        )
+    (tmp_path / "top.sv").write_text(
+        "module top(input logic a, output logic y);\n  mid u_mid(.a(a), .y(y));\nendmodule\n"
+    )
+    run_build(tmp_path, options=BuildOptions(jobs=1))
+    leaf = tmp_path / "leaf.sv"
+    leaf.write_text(leaf.read_text().replace("assign y = a;", "assign y = ~a;"))
+    update = run_update(tmp_path, options=BuildOptions(jobs=1))
+    assert update.build is not None
+    assert update.build.incremental_link is True
+    total, reresolved = update.build.refs_total, update.build.refs_reresolved
+    assert total > 0
+    # The scoping invariant: editing one leaf re-resolves only its closure, not
+    # the whole design — re-resolving everything would defeat the point.
+    assert reresolved < total
+    assert reresolved * 2 <= total, f"reresolved {reresolved} of {total} refs is not well-scoped"

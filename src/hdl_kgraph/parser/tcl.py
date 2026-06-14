@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from hdl_kgraph.parser.base import FileIR
+from hdl_kgraph.parser.base import FileIR, UnsupportedBackendError
 
 SDC_SUFFIXES = frozenset({".sdc", ".xdc"})
 UPF_SUFFIXES = frozenset({".upf"})
@@ -39,7 +39,7 @@ class SdcParser:
     suffixes = SDC_SUFFIXES
 
     def parse(self, path: Path, text: str) -> FileIR:
-        raise NotImplementedError("SDC/XDC parsing lands in milestone M10")
+        raise UnsupportedBackendError("SDC/XDC parsing lands in milestone M10")
 
 
 class UpfParser:
@@ -48,7 +48,7 @@ class UpfParser:
     suffixes = UPF_SUFFIXES
 
     def parse(self, path: Path, text: str) -> FileIR:
-        raise NotImplementedError("UPF parsing lands in milestone M10")
+        raise UnsupportedBackendError("UPF parsing lands in milestone M10")
 
 
 class TclScriptParser:
@@ -57,4 +57,4 @@ class TclScriptParser:
     suffixes = SCRIPT_SUFFIXES
 
     def parse(self, path: Path, text: str) -> FileIR:
-        raise NotImplementedError("Tcl flow-script scanning lands in milestone M10")
+        raise UnsupportedBackendError("Tcl flow-script scanning lands in milestone M10")

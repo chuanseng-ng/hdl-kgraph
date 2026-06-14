@@ -73,6 +73,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -919,3 +920,187 @@ def build_graph(file_irs: list[FileIR], warnings: list[str] | None = None) -> nx
     callers that only need the graph.
     """
     return link_graph(file_irs, warnings)[0]
+
+
+def _node_from_data(node_id: str, data: Mapping[str, Any]) -> Node:
+    """Reconstruct a :class:`Node` from a stored graph node's attribute dict."""
+    return Node(
+        id=node_id,
+        kind=data["kind"],
+        name=data["name"],
+        qualified_name=data.get("qualified_name", ""),
+        file=data.get("file", ""),
+        line_span=data.get("line_span", (0, 0)),
+        language=data["language"],
+        attrs=dict(data["attrs"]),
+    )
+
+
+def link_incremental(
+    file_irs: list[FileIR],
+    prior_graph: nx.MultiDiGraph,
+    dirty_files: set[str],
+    affected_srcs: set[str],
+    warnings: list[str] | None = None,
+) -> tuple[nx.MultiDiGraph, list[RefRecord]]:
+    """Pass-2 link that re-resolves only the dirty closure + its neighborhood (#64).
+
+    The *prior_graph* (the previous resolved graph, loaded once) is **mutated in
+    place** rather than rebuilt: the clean units' nodes and reused pass-2 edges
+    already live in it, so the only work is to drop what changed and re-resolve
+    it. Concretely:
+
+    1. drop every node owned by a dirty/removed file (taking its incident edges
+       with it), every ``TEST_COVERS`` edge (re-derived globally below), and the
+       pass-2 edges of each *affected* clean src (``affected_srcs`` — clean refs
+       whose target name's definition set changed);
+    2. seed the resolution indexes from the surviving (clean) nodes and splice
+       the dirty units' fresh nodes/local edges back in;
+    3. re-resolve only the *live* refs (those in a dirty unit or owned by an
+       affected src) — every other src keeps its prior edges untouched;
+    4. garbage-collect stubs left with no referrer, then re-derive TEST_COVERS.
+
+    The result is byte-identical to :func:`link_graph` (the contract the #64-C
+    equivalence matrix + fuzz pin). Candidate *ordering* in ``definitions`` need
+    not match a full build: a multi-candidate name resolves to every candidate
+    (set-keyed via ``_emitted``) or to its unique local/non-conditional one, so
+    the emitted edge set is order-independent. Callers fall back to
+    :func:`link_graph` for cases this does not model (VHDL, binds/config,
+    enrichment).
+    """
+    linker = _Linker([])  # initialize the resolution indexes against an empty graph
+    linker.graph = prior_graph  # ...then bind and mutate the prior graph in place
+
+    # 1. Drop the changed surface: dirty/removed-file nodes (with their edges),
+    #    all TEST_COVERS, and the affected clean srcs' pass-2 edges.
+    prior_graph.remove_nodes_from(
+        [n for n, d in prior_graph.nodes(data=True) if d.get("file", "") in dirty_files]
+    )
+    stale_edges = [
+        (u, v, k)
+        for u, v, k, d in prior_graph.edges(keys=True, data=True)
+        if d["kind"] is EdgeKind.TEST_COVERS
+        or (d["kind"] in _PASS2_EDGE_KINDS and u in affected_srcs)
+    ]
+    prior_graph.remove_edges_from(stale_edges)
+
+    # 2a. Seed the indexes from the surviving clean nodes. Stubs (synthesized at
+    #     resolution time) carry no definition, matching a full build's
+    #     ``definitions`` (built only from parsed IR nodes).
+    for node_id, data in prior_graph.nodes(data=True):
+        node = _node_from_data(node_id, data)
+        linker.node_obj[node_id] = node
+        if not node.attrs.get("unresolved"):
+            linker.definitions[(node.kind, node.name)].append(node_id)
+            linker.definitions_ci[(node.kind, node.name.lower())].append(node_id)
+    for src, dst, data in prior_graph.edges(data=True):
+        if data["kind"] is EdgeKind.DECLARES:
+            linker.children[src].append(linker.node_obj[dst])
+            linker.parent[dst] = src
+    # node_file maps a ref's src to its *owning compilation unit* (ir.path),
+    # which _score()/_referrer_library() read for same-file/library context —
+    # not the node's own `file` attr, which differs for a node declared in a
+    # spliced include. Reconstruct it by first occurrence over the full IR set,
+    # exactly as _Linker.__init__ does, so re-resolved refs match a full build
+    # even when their src lives in an included header (#99 review).
+    for ir in file_irs:
+        for node in ir.nodes:
+            linker.node_file.setdefault(node.id, ir.path)
+
+    # 2b. Splice the dirty units' fresh nodes + local edges back in.
+    for ir in file_irs:
+        if ir.path not in dirty_files:
+            continue
+        for node in ir.nodes:
+            if node.id in linker.node_obj:
+                continue
+            _add_node(linker.graph, node)
+            linker.node_obj[node.id] = node
+            linker.definitions[(node.kind, node.name)].append(node.id)
+            linker.definitions_ci[(node.kind, node.name.lower())].append(node.id)
+    # Pass-1 edges that survived in the prior graph were already contributed by
+    # a clean unit (e.g. a header spliced into several units). Seed the dedup
+    # set with them so a dirty unit that re-splices the same clean include does
+    # not add a duplicate DECLARES/INCLUDES/macro edge — mirroring the
+    # first-occurrence dedup _Linker.__init__ does across all IRs (#99 review).
+    seen_local: set[tuple[str, str, EdgeKind]] = {
+        (u, v, d["kind"])
+        for u, v, d in prior_graph.edges(data=True)
+        if d["kind"] in _PASS1_EDGE_KINDS
+    }
+    for ir in file_irs:
+        if ir.path not in dirty_files:
+            continue
+        for edge in ir.local_edges:
+            key = (edge.src, edge.dst, edge.kind)
+            if key in seen_local:
+                continue
+            seen_local.add(key)
+            linker._ensure_endpoint(edge.src, edge.kind, edge.dst, ir.path)
+            linker._ensure_endpoint(edge.dst, edge.kind, edge.src, ir.path)
+            _add_edge(linker.graph, edge)
+            if edge.kind is EdgeKind.DECLARES:
+                linker.children[edge.src].append(linker.node_obj[edge.dst])
+                linker.parent[edge.dst] = edge.src
+
+    # 3. Record every ref for the ref_index; re-resolve only the live ones.
+    for ir in file_irs:
+        live_unit = ir.path in dirty_files
+        for ref in ir.unresolved_refs:
+            linker.ref_records.append(
+                RefRecord(
+                    file=ir.path,
+                    src_id=ref.src_id,
+                    edge_kind=ref.edge_kind,
+                    target_name=ref.target_name,
+                    scoped=ref.edge_kind in _SCOPED_REF_KINDS,
+                )
+            )
+            if live_unit or ref.src_id in affected_srcs:
+                linker._resolve(ref)
+
+    # 4. GC orphaned stubs, then re-derive TEST_COVERS over the spliced graph.
+    _gc_orphan_stubs(prior_graph)
+    for edge in derive_test_covers(linker.graph):
+        linker._emit_edge(edge.src, edge.dst, edge.kind, edge.confidence, edge.attrs)
+    if warnings is not None:
+        warnings.extend(linker.warnings)
+    return linker.graph, linker.ref_records
+
+
+def _gc_orphan_stubs(graph: nx.MultiDiGraph) -> None:
+    """Remove unresolved stubs no surviving/re-emitted ref points at any more.
+
+    A stub exists in a full build only because a ref resolved to it; after the
+    incremental re-resolution some prior stubs (e.g. for a module that was just
+    re-added, so its instances now resolve to the real node) are left with no
+    non-``DECLARES`` edge. Such a stub — and the stub-child subtree it hosts —
+    is dropped so the node set matches a full build exactly.
+    """
+    stubs = {n for n, d in graph.nodes(data=True) if d["attrs"].get("unresolved")}
+
+    def _anchored(node_id: str) -> bool:
+        return any(
+            d["kind"] is not EdgeKind.DECLARES
+            for _, _, d in (
+                *graph.in_edges(node_id, data=True),
+                *graph.out_edges(node_id, data=True),
+            )
+        )
+
+    keep: set[str] = set()
+    pending = [n for n in stubs if _anchored(n)]
+    while pending:  # a kept stub keeps its DECLARES parent/children (hosting chain)
+        node_id = pending.pop()
+        if node_id in keep:
+            continue
+        keep.add(node_id)
+        for u, v, d in (
+            *graph.in_edges(node_id, data=True),
+            *graph.out_edges(node_id, data=True),
+        ):
+            if d["kind"] is EdgeKind.DECLARES:
+                other = u if v == node_id else v
+                if other in stubs and other not in keep:
+                    pending.append(other)
+    graph.remove_nodes_from(stubs - keep)

@@ -84,3 +84,55 @@ def test_reset_tree_groups_by_net(graph) -> None:
     rst = next(g for g in groups if "rst_n" in g.reset_names and g.is_async)
     assert rst.process_ids  # the clk_a flop
     assert rst.min_confidence == 1.0
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "rst",
+        "RST",
+        "rst_n",
+        "rstn",
+        "reset",
+        "resetn",
+        "reset_b",
+        "clr",
+        "clear",
+        "sys_rst",
+        "cpu_rst_n",
+    ],
+)
+def test_reset_name_re_matches_control_names(name: str) -> None:
+    from hdl_kgraph.parser.systemverilog import _RESET_NAME_RE
+
+    assert _RESET_NAME_RE.search(name), name
+
+
+@pytest.mark.parametrize(
+    "name", ["clear_count", "reset_value", "restart_addr", "cluster", "data", "rst_count"]
+)
+def test_reset_name_re_rejects_data_names(name: str) -> None:
+    from hdl_kgraph.parser.systemverilog import _RESET_NAME_RE
+    from hdl_kgraph.parser.vhdl import _RESET_NAME_RE as VHDL_RESET_RE
+
+    # The substring patterns used to misfire on these data names (#76).
+    assert not _RESET_NAME_RE.search(name), name
+    assert not VHDL_RESET_RE.search(name), name
+
+
+@pytest.mark.parametrize(
+    "name,hit",
+    [
+        ("clk", True),
+        ("clock", True),
+        ("sys_clk", True),
+        ("clk_b", True),
+        ("clock_div", False),
+        ("clk_enable", False),
+        ("blockram", False),
+    ],
+)
+def test_vhdl_clock_name_re(name: str, hit: bool) -> None:
+    from hdl_kgraph.parser.vhdl import _CLOCK_NAME_RE
+
+    assert bool(_CLOCK_NAME_RE.search(name)) is hit, name
