@@ -95,6 +95,29 @@ def test_hierarchy_tree_embedded(graph, tmp_path: Path) -> None:
     assert any(child["module"] == "df_sub" for child in root["children"])
 
 
+def test_top_constrains_projection_graph(graph, tmp_path: Path) -> None:
+    # Regression for #59: --top must constrain the graph view, not just the
+    # hierarchy. The fixture has two independent designs; rooting at df_top
+    # must drop the unrelated two_clock_top/cdc_child design.
+    html = render_html(graph, tmp_path / "g.html", top="df_top").path.read_text()
+    payload = _embedded_payload(html)
+    names = {n["name"] for n in payload["nodes"]}
+    assert names == {"df_top", "df_sub"}
+    ids = {n["id"] for n in payload["nodes"]}
+    assert all(link["source"] in ids and link["target"] in ids for link in payload["links"])
+
+
+def test_top_constrains_full_graph(graph, tmp_path: Path) -> None:
+    # The full (every-node) graph view must honor --top as well.
+    html = render_html(graph, tmp_path / "g.html", full=True, top="df_top").path.read_text()
+    payload = _embedded_payload(html)
+    qualified = {n["name"] for n in payload["nodes"]}
+    assert any(name.startswith("df_top") for name in qualified)
+    assert not any("two_clock_top" in name or "cdc_child" in name for name in qualified)
+    ids = {n["id"] for n in payload["nodes"]}
+    assert all(link["source"] in ids and link["target"] in ids for link in payload["links"])
+
+
 def test_template_canvas_sizing_survives_embedded_viewers(graph, tmp_path: Path) -> None:
     # Embedded/iframe viewers can report devicePixelRatio 0 or zero client
     # sizes; sizing the bitmap from those values blanks the graph view while
