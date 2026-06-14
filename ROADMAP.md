@@ -185,6 +185,15 @@ affect?"
       full rebuild), then re-links pass 2 — **per-unit pass-1 IRs (plus macro
       event logs) persist in the `file_irs` table; unchanged units re-link
       without re-parsing**
+- [x] **Incremental pass-2 link (#64-B, v0.8): `update` re-resolves only the
+      dirty closure plus its resolution neighborhood (refs whose target name's
+      definition set changed, via the persisted `ref_index`), mutating the prior
+      resolved graph in place and reusing every other ref's edges. Byte-identical
+      to a full re-link (the #64-C equivalence matrix + fuzz gate it); SV/Verilog
+      only — VHDL / binds / `--enrich` fall back to a full re-link. Scales by
+      change, not design size (e.g. 7 of 2689 refs re-resolved on a 1-file edit);
+      a prior-graph read is the fixed cost, so on resolution-light designs it is
+      scale-headroom rather than a wall-time win.**
 - [x] `watch` via watchdog (debounced); `detect-changes` (vs git/svn/Perforce or last build)
 - [x] Impact radius: `impact <file|module>` → transitively affected modules via
       `INSTANTIATES`/`IMPORTS`/`INCLUDES`/`EXTENDS` (reverse `` `include `` and

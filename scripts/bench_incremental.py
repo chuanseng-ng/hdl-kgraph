@@ -77,6 +77,16 @@ def main() -> int:
             f"update:        {update_s:.2f}s "
             f"(re-parsed {len(update.reparsed)}, reused {update.build.reused_files})"
         )
+        # Pass-2 scoping (#64): an incremental link must re-resolve only the
+        # dirty closure, not every ref — a silent re-resolve-everything
+        # regression shows up here even when wall-time is noisy.
+        if update.build.incremental_link:
+            total = update.build.refs_total
+            rr = update.build.refs_reresolved
+            rr_pct = 100.0 * rr / total if total else 0.0
+            print(f"refs resolved: {rr} of {total} ({rr_pct:.2f}%) re-resolved (incremental link)")
+        else:
+            print(f"refs resolved: full re-link ({update.build.incremental_link_skipped})")
 
         # Fail closed: a missing stats dict means the incremental write path
         # never ran (e.g. it fell back to a full save()), which is exactly the

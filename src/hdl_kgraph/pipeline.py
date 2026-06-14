@@ -33,6 +33,7 @@ effective build inputs (defines, incdirs, filelist sets, library map — the
 from __future__ import annotations
 
 import contextlib
+import functools
 import hashlib
 import json
 import os
@@ -160,6 +161,13 @@ class BuildReport:
     incremental_link: bool = False
     # Reason the incremental linker fell back to a full re-link (None if not).
     incremental_link_skipped: str | None = None
+    # Parser-worker failures isolated to their unit (the build continued; #65).
+    worker_failures: int = 0
+    # Scoping telemetry for an incremental link: refs re-resolved this run vs
+    # total pass-2 refs. ``refs_reresolved ≪ refs_total`` is the #64 invariant
+    # (a silent re-resolve-everything regression shows up here). 0/0 on a full link.
+    refs_reresolved: int = 0
+    refs_total: int = 0
 
 
 @dataclass
@@ -308,7 +316,8 @@ class _PendingUnit:
     """One non-skipped unit awaiting finalization, kept in discovery order."""
 
     found: DiscoveredFile
-    ir: FileIR | None = None  # ready: reused or parsed inline
+    ir: FileIR | None = None  # ready: reused unit's decoded IR
+    thunk: Callable[[], FileIR] | None = None  # serial parse, deferred to result()
     future: Future[FileIR] | None = None  # in-flight pool parse
     pp: PreprocessedFile | None = None  # SV fresh parse: PreprocEmitter input
     reused: bool = False
@@ -317,7 +326,13 @@ class _PendingUnit:
         return self.future is None or self.future.done()
 
     def result(self) -> FileIR:
-        return self.ir if self.ir is not None else self.future.result()  # type: ignore[union-attr]
+        """Materialize the IR. Deferring the serial parse here routes both the
+        serial and pool paths through ``finalize``'s worker-failure guard (#65)."""
+        if self.ir is not None:
+            return self.ir
+        if self.thunk is not None:
+            return self.thunk()
+        return self.future.result()  # type: ignore[union-attr]
 
 
 def _link_pass2(
@@ -351,9 +366,16 @@ def _link_pass2(
             changed = changed_target_names(prior_graph, irs, dirty_files)
             affected = {src for _, src, _ in affected_clean_refs(prior_ref_index, changed)}
             report.incremental_link = True
-            return link_incremental(
+            graph, ref_records = link_incremental(
                 irs, prior_graph, dirty_files, affected, warnings=report.warnings
             )
+            # Telemetry: refs re-resolved this run vs total (the #64 scoping
+            # invariant). Mirrors link_incremental's own live-ref condition.
+            report.refs_total = len(ref_records)
+            report.refs_reresolved = sum(
+                1 for r in ref_records if r.file in dirty_files or r.src_id in affected
+            )
+            return graph, ref_records
     report.incremental_link_skipped = reason
     return link_graph(irs, warnings=report.warnings)
 
@@ -427,7 +449,33 @@ def _execute(
     def finalize(entry: _PendingUnit) -> None:
         """Per-unit accounting, called strictly in discovery order."""
         found = entry.found
-        ir = entry.result()
+        try:
+            ir = entry.result()
+        except Exception as exc:  # noqa: BLE001 — isolate any worker failure
+            # A parser-worker crash (e.g. a BrokenProcessPool from a segfaulting
+            # or OOM-killed child) or an unexpected task error is isolated to its
+            # unit: record it and continue so the rest of the build still produces
+            # a partial graph rather than aborting wholesale (#65).
+            detail = f"{type(exc).__name__}: {exc}"
+            report.worker_failures += 1
+            report.error_files += 1
+            report.parse_error_count += 1
+            report.file_errors[found.relpath] = 1
+            report.file_error_details[found.relpath] = [f"parser worker failed: {detail}"]
+            report.warnings.append(
+                f"parser worker failed on {found.relpath} ({detail}); unit skipped"
+            )
+            files_meta.append(
+                FileMeta(
+                    path=found.relpath,
+                    language=found.language,
+                    content_hash=found.content_hash,
+                    size_bytes=found.size_bytes,
+                    parse_error_count=1,
+                    parse_errors=[f"parser worker failed: {detail}"],
+                )
+            )
+            return
         file_warnings: list[str] = []
         if entry.reused:
             report.reused_files += 1
@@ -521,7 +569,10 @@ def _execute(
                 text = found.path.read_text(errors="replace")
                 if executor is None:
                     pending.append(
-                        _PendingUnit(found=found, ir=_parse_vhdl_task(found.relpath, text, library))
+                        _PendingUnit(
+                            found=found,
+                            thunk=functools.partial(_parse_vhdl_task, found.relpath, text, library),
+                        )
                     )
                 else:
                     pending.append(
@@ -557,7 +608,9 @@ def _execute(
                     pending.append(
                         _PendingUnit(
                             found=found,
-                            ir=_parse_sv_task(found.relpath, pp.text, pp.line_map),
+                            thunk=functools.partial(
+                                _parse_sv_task, found.relpath, pp.text, pp.line_map
+                            ),
                             pp=pp,
                         )
                     )
