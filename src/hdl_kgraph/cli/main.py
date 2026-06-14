@@ -1161,7 +1161,12 @@ def metrics_cmd(db_path: Path | None, as_json: bool, top_n: int, show_communitie
     help="Embed every node and edge (default: the module-level projection, "
     "which stays responsive on large designs).",
 )
-@click.option("--top", "top", default=None, help="Root the hierarchy view at this module.")
+@click.option(
+    "--top",
+    "top",
+    default=None,
+    help="Root the hierarchy and graph views at this module (constrains both to its subtree).",
+)
 @click.option("--title", default=None, help="Page title (default: the build root's name).")
 @click.option(
     "--layout",
