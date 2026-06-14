@@ -80,7 +80,7 @@ hdl-kgraph serve --mcp --http 0.0.0.0:8000      # now requires the token
 
 Clients then send it as a standard bearer credential:
 
-```
+```text
 Authorization: Bearer <token>
 ```
 
