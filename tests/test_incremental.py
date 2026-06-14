@@ -258,6 +258,37 @@ def test_ref_index_scoping_is_superset_of_changed_pass2_edges(project: Path) -> 
         assert covered, f"pass-2 edge {src} {kind_value} not in dirty closure or affected refs"
 
 
+def test_update_uses_incremental_link(project: Path) -> None:
+    path = project / "mid.sv"
+    path.write_text(path.read_text() + "// touched\n")
+    report = run_update(project)
+    assert report.build is not None
+    assert report.build.incremental_link is True
+    assert report.build.incremental_link_skipped is None
+
+
+def test_vhdl_design_falls_back_to_full_link(tmp_path: Path) -> None:
+    (tmp_path / "ent.vhd").write_text(
+        "entity ent is end entity;\narchitecture rtl of ent is begin end architecture;\n"
+    )
+    (tmp_path / "m.sv").write_text("module m;\nendmodule\n")
+    run_build(tmp_path)
+    (tmp_path / "m.sv").write_text("module m;\n  logic x;\nendmodule\n")
+    report = run_update(tmp_path)
+    assert report.build is not None
+    assert report.build.incremental_link is False
+    assert "VHDL" in (report.build.incremental_link_skipped or "")
+
+
+def test_incremental_link_safe_reasons() -> None:
+    from hdl_kgraph.incremental import incremental_link_safe
+
+    assert incremental_link_safe(False, False, False) is None
+    assert "enrichment" in (incremental_link_safe(True, False, False) or "")
+    assert "VHDL" in (incremental_link_safe(False, True, False) or "")
+    assert "bind" in (incremental_link_safe(False, False, True) or "")
+
+
 def test_update_graph_matches_full_rebuild(project: Path) -> None:
     path = project / "mid.sv"
     path.write_text(path.read_text().replace("u_leaf", "u_leaf2"))

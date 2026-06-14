@@ -30,6 +30,7 @@ import networkx as nx
 
 from hdl_kgraph.config import CONFIG_FILENAME
 from hdl_kgraph.graph.builder import DEFINITION_KINDS, RefRecord, ref_target_kinds
+from hdl_kgraph.parser.base import FileIR
 from hdl_kgraph.schema import EdgeKind, NodeKind
 
 _FILE_ID_PREFIX = "file:"
@@ -71,6 +72,45 @@ def changed_definition_names(
 ) -> set[DefKey]:
     """Definition names whose global profile changed between two builds."""
     return {key for key in prior.keys() | new.keys() if prior.get(key) != new.get(key)}
+
+
+def changed_target_names(
+    prior_graph: nx.MultiDiGraph, file_irs: list[FileIR], dirty_files: set[str]
+) -> set[DefKey]:
+    """``(kind, name)`` definitions touched by a dirty/removed file.
+
+    A conservative superset of the names whose resolution can change: any
+    definition declared in a reparsed/removed file (prior side from the stored
+    graph, new side from the fresh IRs). This intentionally over-includes (it
+    flags a module whose *children* changed, e.g. a port added, even though its
+    own node is unchanged) so a clean unit connecting to it re-resolves; the
+    precise profile diff is a later refinement (#64-D).
+    """
+    changed: set[DefKey] = set()
+    for _, data in prior_graph.nodes(data=True):
+        if data["kind"] in DEFINITION_KINDS and data.get("file", "") in dirty_files:
+            changed.add((data["kind"], data["name"]))
+    for ir in file_irs:
+        for node in ir.nodes:
+            if node.kind in DEFINITION_KINDS and node.file in dirty_files:
+                changed.add((node.kind, node.name))
+    return changed
+
+
+def incremental_link_safe(enrich: bool, has_vhdl: bool, has_binds: bool) -> str | None:
+    """Reason the incremental linker must defer to a full re-link, or None.
+
+    The SV MVP (#64-B) does not yet model VHDL library/architecture/config
+    scoping, SV bind / VHDL configuration binding state, or enrichment, so
+    those fall back to a full (still parse-incremental) re-link.
+    """
+    if enrich:
+        return "enrichment is not incremental"
+    if has_vhdl:
+        return "VHDL incremental link not supported yet"
+    if has_binds:
+        return "bind/configuration directives not supported yet"
+    return None
 
 
 def affected_clean_refs(
