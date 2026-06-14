@@ -7,7 +7,7 @@ The database is a derived cache that stays fresh as you edit.
 `update` re-parses only changed/added/removed files plus their dependents —
 files that `` `include `` an edited header or expand a macro it defines —
 and re-links everything else from stored parse results. One file edited in
-a 2000-file design updates in under a second; see
+a 2000-file design updates in about 1.3 s (budget < 1.5 s); see
 [benchmarks.md](benchmarks.md).
 
 A change to the effective build inputs (defines, incdirs, filelists,

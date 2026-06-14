@@ -1,6 +1,6 @@
 # Contributing to hdl-kgraph
 
-Thanks for your interest! The project is pre-alpha — see
+Thanks for your interest! The project is alpha — see
 [ROADMAP.md](ROADMAP.md) for what's planned and where help is most valuable.
 
 ## Dev setup
