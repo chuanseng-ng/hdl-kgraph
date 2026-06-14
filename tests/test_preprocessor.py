@@ -254,6 +254,35 @@ def test_include_cycle(tmp_path: Path) -> None:
     assert all(ev.resolved is not None for ev in pp.includes)
 
 
+def test_include_outside_build_root_skipped(tmp_path: Path) -> None:
+    # A `..` include that resolves to a real file outside the build root must be
+    # dropped, not spliced — otherwise it discloses out-of-tree source (#68).
+    root = tmp_path / "proj"
+    root.mkdir()
+    (tmp_path / "secret.svh").write_text("`define SECRET_WIRE wire leaked;\n")
+    unit = root / "unit.sv"
+    unit.write_text('`include "../secret.svh"\n`SECRET_WIRE\n')
+    pp = Preprocessor(base=root).preprocess(unit)
+    assert any("escapes the build root" in w for w in pp.warnings)
+    assert "wire leaked;" not in pp.text  # the out-of-tree header was not spliced
+    assert not pp.included_relpaths
+
+
+def test_include_via_trusted_incdir_outside_root_allowed(tmp_path: Path) -> None:
+    # An incdir the operator explicitly configured is a trusted allowlist entry,
+    # so a header found there is spliced even though it lives outside the root.
+    root = tmp_path / "proj"
+    root.mkdir()
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    (vendor / "defs.svh").write_text("`define VW wire vok;\n")
+    unit = root / "unit.sv"
+    unit.write_text('`include "defs.svh"\n`VW\n')
+    pp = Preprocessor(base=root, incdirs=[vendor]).preprocess(unit)
+    assert not any("escapes" in w for w in pp.warnings)
+    assert "wire vok;" in pp.text
+
+
 def test_macro_table_carries_across_files(tmp_path: Path) -> None:
     table = MacroTable()
     pre = Preprocessor(base=tmp_path, macros=table, branch_mode="both")

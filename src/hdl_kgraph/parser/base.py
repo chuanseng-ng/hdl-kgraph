@@ -40,6 +40,22 @@ class UnsupportedBackendError(NotImplementedError):
     """
 
 
+def within_root(path: Path, root: Path) -> bool:
+    """True if *path* resolves inside *root* (or equals it).
+
+    Used to confine filelist source/``-y``/``-v`` tokens, ``+incdir+`` dirs, and
+    ``\\`include`` resolution to the build root, so a crafted ``.f`` token —
+    ``..`` segments or a ``$VAR`` that expands to an absolute/out-of-tree path —
+    cannot pull in (and disclose the HDL structure of) files outside the tree
+    being analyzed. See issue #68.
+    """
+    try:
+        Path(path).resolve().relative_to(Path(root).resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def error_snippet(text: str, limit: int = 50) -> str:
     """First line of *text*, trimmed to *limit* chars, for error messages."""
     first, _, rest = text.strip().partition("\n")

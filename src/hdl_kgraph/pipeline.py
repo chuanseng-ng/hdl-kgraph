@@ -209,9 +209,9 @@ class _Inputs:
     filelists_read: int = 0
 
 
-def _resolve_inputs(options: BuildOptions) -> _Inputs:
+def _resolve_inputs(options: BuildOptions, base: Path) -> _Inputs:
     inputs = _Inputs(incdirs=list(options.incdirs))
-    inputs.filelists = [parse_filelist(path) for path in options.filelists]
+    inputs.filelists = [parse_filelist(path, root=base) for path in options.filelists]
     for fl in inputs.filelists:
         inputs.defines.update(flattened_defines(fl))
         inputs.incdirs.extend(flattened_incdirs(fl))
@@ -420,7 +420,7 @@ def _execute(
     # -- inputs: filelists, defines, include dirs -----------------------------
     if inputs is None:
         progress("resolving build inputs (filelists, defines, incdirs)")
-        inputs = _resolve_inputs(options)
+        inputs = _resolve_inputs(options, base)
     report.warnings.extend(inputs.warnings)
     report.filelists_read = inputs.filelists_read
     report.incdirs = [str(d) for d in inputs.incdirs]
@@ -815,7 +815,7 @@ def run_update(
     if meta.get("root") != str(base):
         return full_rebuild(f"build root changed (was {meta.get('root')})")
 
-    inputs = _resolve_inputs(options)
+    inputs = _resolve_inputs(options, base)
     if meta.get("options_hash") != options_hash(base, options, inputs):
         return full_rebuild("build options changed (defines/incdirs/sources/libraries)")
 
@@ -880,7 +880,7 @@ def scan_changes(root: Path, db_path: Path, options: BuildOptions | None = None)
         else DEFAULT_MAX_FILE_SIZE_KB
     )
     stored_hashes = SqliteStore(db_path).load_file_hashes()
-    inputs = _resolve_inputs(options)
+    inputs = _resolve_inputs(options, base)
     discovered = _discover(root, base, options, inputs, max_kb)
     current = _current_hashes(base, inputs, discovered)
     return diff_hashes(stored_hashes, current)

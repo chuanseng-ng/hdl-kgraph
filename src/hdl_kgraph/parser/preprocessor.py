@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Literal
 
 from hdl_kgraph.ids import decl_node_id, file_node_id, stub_node_id
-from hdl_kgraph.parser.base import FileIR
+from hdl_kgraph.parser.base import FileIR, within_root
 from hdl_kgraph.schema import (
     CONFIDENCE_AMBIGUOUS,
     CONFIDENCE_RESOLVED,
@@ -350,6 +350,14 @@ class Preprocessor:
         if resolved is None:
             self._pp.warnings.append(f'{relpath}:{line}: cannot resolve `include "{path_text}"')
             return
+        if not self._within_allowed(resolved):
+            # A `..`/absolute include path that resolved to a real file outside
+            # the build root (and outside every configured incdir) would splice
+            # (and disclose) out-of-tree source; drop it rather than read it (#68).
+            self._pp.warnings.append(
+                f'{relpath}:{line}: `include "{path_text}" escapes the build root, skipped'
+            )
+            return
         header_rel = self._relpath(resolved)
         event.resolved = header_rel  # the INCLUDES edge is real even if not spliced
         if resolved in include_stack:
@@ -372,6 +380,16 @@ class Preprocessor:
             if candidate.is_file():
                 return candidate
         return None
+
+    def _within_allowed(self, path: Path) -> bool:
+        """True if *path* is inside the build root or any configured incdir.
+
+        Confines ``\\`include`` resolution so a crafted ``..``/absolute path
+        cannot reach out-of-tree source, while still honoring incdirs the
+        operator explicitly trusted (e.g. shared vendor headers); see #68.
+        Filelist ``+incdir+`` dirs are already root-contained at parse time.
+        """
+        return any(within_root(path, root) for root in (self.base, *self.incdirs))
 
     # -- macro expansion -----------------------------------------------------------
 
