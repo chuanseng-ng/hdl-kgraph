@@ -60,7 +60,7 @@ from hdl_kgraph.enrich import (
     summarize_enrichment,
 )
 from hdl_kgraph.enrich.base import Discrepancy
-from hdl_kgraph.graph.builder import build_graph
+from hdl_kgraph.graph.builder import link_graph
 from hdl_kgraph.ids import file_node_id, library_node_id
 from hdl_kgraph.incremental import (
     ChangeSet,
@@ -530,7 +530,7 @@ def _execute(
         irs.append(_library_ir(vhdl_file_libs, options.vhdl_libraries))
 
     progress(f"pass 2: linking {len(irs)} unit(s) into the graph")
-    graph = build_graph(irs, warnings=report.warnings)
+    graph, ref_records = link_graph(irs, warnings=report.warnings)
     report.node_count = graph.number_of_nodes()
     report.edge_count = graph.number_of_edges()
     report.unresolved_count = sum(
@@ -567,6 +567,7 @@ def _execute(
         units=units,
         options_hash=options_hash(base, options, inputs),
         discrepancies=discrepancies,
+        ref_records=ref_records,
     )
     return report
 

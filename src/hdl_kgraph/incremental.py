@@ -20,16 +20,79 @@ full rebuild upstream.
 from __future__ import annotations
 
 import subprocess
+from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import networkx as nx
 
 from hdl_kgraph.config import CONFIG_FILENAME
+from hdl_kgraph.graph.builder import DEFINITION_KINDS, RefRecord, ref_target_kinds
 from hdl_kgraph.schema import EdgeKind, NodeKind
 
 _FILE_ID_PREFIX = "file:"
+
+#: A resolution-target name key: (target node kind, name).
+DefKey = tuple[NodeKind, str]
+
+
+def definition_profiles(nodes: Iterable[tuple[str, Mapping[str, Any]]]) -> dict[DefKey, tuple]:
+    """Map ``(kind, name)`` -> a hashable profile of its defining nodes.
+
+    The profile captures every node field pass-2 resolution reads
+    (``file``/``conditional``/``library``/``qualified_name``/``language``), so
+    two builds whose resolution of a name would differ have different profiles
+    for that name. Only :data:`DEFINITION_KINDS` participate — the kinds a
+    global-name ref can resolve to.
+    """
+    buckets: dict[DefKey, list[tuple[str, ...]]] = defaultdict(list)
+    for node_id, data in nodes:
+        kind = data["kind"]
+        if kind not in DEFINITION_KINDS:
+            continue
+        attrs = data.get("attrs") or {}
+        buckets[(kind, str(data["name"]))].append(
+            (
+                node_id,
+                str(data.get("file", "")),
+                str(bool(attrs.get("conditional"))),
+                str(attrs.get("library")),
+                str(data.get("qualified_name", "")),
+                getattr(data.get("language"), "value", str(data.get("language"))),
+            )
+        )
+    return {key: tuple(sorted(rows)) for key, rows in buckets.items()}
+
+
+def changed_definition_names(
+    prior: Mapping[DefKey, tuple], new: Mapping[DefKey, tuple]
+) -> set[DefKey]:
+    """Definition names whose global profile changed between two builds."""
+    return {key for key in prior.keys() | new.keys() if prior.get(key) != new.get(key)}
+
+
+def affected_clean_refs(
+    ref_records: Iterable[RefRecord], changed_names: set[DefKey]
+) -> set[tuple[str, str, EdgeKind]]:
+    """Refs that may resolve differently because a name they target changed.
+
+    Returns ``(file, src_id, edge_kind)`` keys for every ref whose
+    ``target_name`` has a changed definition of a kind the ref could resolve
+    to. This is the resolution neighborhood the incremental linker must
+    re-resolve in addition to the refs in reparsed files.
+    """
+    kinds_by_name: dict[str, set[NodeKind]] = defaultdict(set)
+    for kind, name in changed_names:
+        kinds_by_name[name].add(kind)
+    affected: set[tuple[str, str, EdgeKind]] = set()
+    for rec in ref_records:
+        kinds = kinds_by_name.get(rec.target_name)
+        if kinds and (ref_target_kinds(rec.edge_kind) & kinds):
+            affected.add((rec.file, rec.src_id, rec.edge_kind))
+    return affected
+
 
 #: Non-HDL inputs that still invalidate a build (filelists, config).
 EXTRA_SUFFIXES = frozenset({".f", ".vc"})

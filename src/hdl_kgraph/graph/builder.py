@@ -73,6 +73,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import Any
 
 import networkx as nx
@@ -138,6 +139,62 @@ _SCOPED_REF_KINDS = frozenset(
 #: Unit kinds that own the port/signal namespace scoped refs resolve in.
 _SCOPED_UNIT_KINDS = frozenset(
     {NodeKind.MODULE, NodeKind.INTERFACE, NodeKind.PROGRAM, NodeKind.ARCHITECTURE, NodeKind.ENTITY}
+)
+
+#: Edge kinds synthesized by pass-2 resolution (``link()`` / ``derive_test_covers``).
+#: The incremental linker (issue #64) deletes and re-emits these by src-node
+#: ownership; the rest come straight from a unit's IR (``local_edges``) and are
+#: replaced wholesale when that unit is re-ingested.
+_PASS2_EDGE_KINDS = frozenset(
+    {
+        EdgeKind.INSTANTIATES,
+        EdgeKind.CONNECTS,
+        EdgeKind.PARAMETERIZES,
+        EdgeKind.IMPORTS,
+        EdgeKind.EXTENDS,
+        EdgeKind.IMPLEMENTS,
+        EdgeKind.BINDS,
+        EdgeKind.USES_PACKAGE,
+        EdgeKind.DRIVES,
+        EdgeKind.READS,
+        EdgeKind.CLOCKED_BY,
+        EdgeKind.RESETS,
+        EdgeKind.ASSERTS_ON,
+        EdgeKind.COVERS,
+        EdgeKind.TEST_COVERS,
+    }
+)
+#: Edge kinds that come directly from a unit's IR, not from resolution.
+_PASS1_EDGE_KINDS = frozenset(
+    {EdgeKind.DECLARES, EdgeKind.INCLUDES, EdgeKind.DEFINES_MACRO, EdgeKind.USES_MACRO}
+)
+
+
+@dataclass(frozen=True)
+class RefRecord:
+    """One pass-2 reference, persisted in the ``ref_index`` table so an
+    incremental link can find which units reference a name without decoding
+    their IRs. ``file`` is the unit (``ir.path``) whose re-parse regenerates
+    this ref — the deletion key, mirroring ``file_irs``."""
+
+    file: str
+    src_id: str
+    edge_kind: EdgeKind
+    target_name: str
+    scoped: bool
+
+
+def ref_target_kinds(edge_kind: EdgeKind) -> frozenset[NodeKind]:
+    """Every node kind a ref of *edge_kind* could resolve to, across both
+    language perspectives (a superset — the safe basis for the reverse index)."""
+    same, cross = _REF_TARGET_KINDS.get(edge_kind, ((), ()))
+    return frozenset(same) | frozenset(cross)
+
+
+#: Node kinds that global-name pass-2 resolution can target (a name whose
+#: definition set among these changes can flip a clean ref's resolution).
+DEFINITION_KINDS: frozenset[NodeKind] = frozenset(
+    k for same, cross in _REF_TARGET_KINDS.values() for k in (*same, *cross)
 )
 
 _SIGNAL_KINDS = (NodeKind.PORT, NodeKind.SIGNAL)
@@ -281,6 +338,8 @@ class _Linker:
         self._scope_indices: dict[str, dict[str, list[Node]]] = {}
         # Edge endpoints no parser emitted as nodes (materialized as stubs).
         self.warnings: list[str] = []
+        # One record per pass-2 ref, keyed by owning unit, for the ref_index.
+        self.ref_records: list[RefRecord] = []
 
         seen_local: set[tuple[str, str, EdgeKind]] = set()
         for ir in file_irs:
@@ -342,6 +401,15 @@ class _Linker:
         deferred: list[UnresolvedRef] = []
         for ir in file_irs:
             for ref in ir.unresolved_refs:
+                self.ref_records.append(
+                    RefRecord(
+                        file=ir.path,
+                        src_id=ref.src_id,
+                        edge_kind=ref.edge_kind,
+                        target_name=ref.target_name,
+                        scoped=ref.edge_kind in _SCOPED_REF_KINDS,
+                    )
+                )
                 if ref.edge_kind is EdgeKind.BINDS:
                     self._resolve(ref)
                 else:
@@ -823,12 +891,15 @@ class _Linker:
         )
 
 
-def build_graph(file_irs: list[FileIR], warnings: list[str] | None = None) -> nx.MultiDiGraph:
+def link_graph(
+    file_irs: list[FileIR], warnings: list[str] | None = None
+) -> tuple[nx.MultiDiGraph, list[RefRecord]]:
     """Link per-file IRs into the global knowledge graph (pass 2).
 
-    *warnings* (when given) collects diagnostics for edge endpoints that no
-    parser emitted as a node — each is materialized as an unresolved stub so
-    the graph never carries attribute-less nodes.
+    Returns the graph plus the per-unit pass-2 reference records (for the
+    persisted ``ref_index``). *warnings* (when given) collects diagnostics for
+    edge endpoints that no parser emitted as a node — each is materialized as
+    an unresolved stub so the graph never carries attribute-less nodes.
     """
     linker = _Linker(file_irs)
     linker.link(file_irs)
@@ -838,4 +909,13 @@ def build_graph(file_irs: list[FileIR], warnings: list[str] | None = None) -> nx
         linker._emit_edge(edge.src, edge.dst, edge.kind, edge.confidence, edge.attrs)
     if warnings is not None:
         warnings.extend(linker.warnings)
-    return linker.graph
+    return linker.graph, linker.ref_records
+
+
+def build_graph(file_irs: list[FileIR], warnings: list[str] | None = None) -> nx.MultiDiGraph:
+    """Link per-file IRs into the global knowledge graph (pass 2).
+
+    Thin wrapper over :func:`link_graph` that discards the ref records, for
+    callers that only need the graph.
+    """
+    return link_graph(file_irs, warnings)[0]
