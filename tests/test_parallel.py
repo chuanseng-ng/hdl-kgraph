@@ -159,9 +159,11 @@ def test_worker_failure_is_isolated(corpus: Path, monkeypatch: pytest.MonkeyPatc
     for _, d in graph.nodes(data=True):
         by_name.setdefault(d["name"], []).append(d)
     assert "top" in by_name and "mid" in by_name  # other units still parsed
-    # The crashed unit was never parsed: any "cond" node is only an unresolved
-    # stub created by top's dangling instantiation, never a real MODULE.
-    assert all(d["attrs"].get("unresolved") for d in by_name.get("cond", []))
+    # The crashed unit was never parsed: top's dangling instantiation leaves a
+    # "cond" node, but only as an unresolved stub, never a real parsed MODULE.
+    cond_nodes = by_name.get("cond", [])
+    assert cond_nodes, "expected an unresolved `cond` stub from top's dangling instantiation"
+    assert all(d["attrs"].get("unresolved") for d in cond_nodes)
 
 
 def test_incremental_link_reresolves_few_refs(tmp_path: Path) -> None:

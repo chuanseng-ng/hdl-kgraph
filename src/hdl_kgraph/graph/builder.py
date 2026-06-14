@@ -990,7 +990,6 @@ def link_incremental(
     for node_id, data in prior_graph.nodes(data=True):
         node = _node_from_data(node_id, data)
         linker.node_obj[node_id] = node
-        linker.node_file[node_id] = node.file
         if not node.attrs.get("unresolved"):
             linker.definitions[(node.kind, node.name)].append(node_id)
             linker.definitions_ci[(node.kind, node.name.lower())].append(node_id)
@@ -998,6 +997,15 @@ def link_incremental(
         if data["kind"] is EdgeKind.DECLARES:
             linker.children[src].append(linker.node_obj[dst])
             linker.parent[dst] = src
+    # node_file maps a ref's src to its *owning compilation unit* (ir.path),
+    # which _score()/_referrer_library() read for same-file/library context —
+    # not the node's own `file` attr, which differs for a node declared in a
+    # spliced include. Reconstruct it by first occurrence over the full IR set,
+    # exactly as _Linker.__init__ does, so re-resolved refs match a full build
+    # even when their src lives in an included header (#99 review).
+    for ir in file_irs:
+        for node in ir.nodes:
+            linker.node_file.setdefault(node.id, ir.path)
 
     # 2b. Splice the dirty units' fresh nodes + local edges back in.
     for ir in file_irs:
@@ -1008,10 +1016,18 @@ def link_incremental(
                 continue
             _add_node(linker.graph, node)
             linker.node_obj[node.id] = node
-            linker.node_file[node.id] = ir.path
             linker.definitions[(node.kind, node.name)].append(node.id)
             linker.definitions_ci[(node.kind, node.name.lower())].append(node.id)
-    seen_local: set[tuple[str, str, EdgeKind]] = set()
+    # Pass-1 edges that survived in the prior graph were already contributed by
+    # a clean unit (e.g. a header spliced into several units). Seed the dedup
+    # set with them so a dirty unit that re-splices the same clean include does
+    # not add a duplicate DECLARES/INCLUDES/macro edge — mirroring the
+    # first-occurrence dedup _Linker.__init__ does across all IRs (#99 review).
+    seen_local: set[tuple[str, str, EdgeKind]] = {
+        (u, v, d["kind"])
+        for u, v, d in prior_graph.edges(data=True)
+        if d["kind"] in _PASS1_EDGE_KINDS
+    }
     for ir in file_irs:
         if ir.path not in dirty_files:
             continue

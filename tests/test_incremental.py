@@ -307,6 +307,37 @@ def test_update_graph_matches_full_rebuild(project: Path) -> None:
     assert edge_set(incremental) == edge_set(full)
 
 
+def test_editing_includer_of_clean_header_matches_full_rebuild(tmp_path: Path) -> None:
+    """Editing a unit that splices a *clean* header must not duplicate the
+    header's pass-1 edges in the incremental graph (#99 review)."""
+    (tmp_path / "common.svh").write_text("typedef logic [7:0] byte_t;\nlocalparam int W = 8;\n")
+    (tmp_path / "a.sv").write_text(
+        '`include "common.svh"\n'
+        "module a(input byte_t x, output byte_t y);\n  assign y = x;\nendmodule\n"
+    )
+    (tmp_path / "b.sv").write_text(
+        '`include "common.svh"\nmodule b(input byte_t x, output byte_t y);\n'
+        "  a u_a(.x(x), .y(y));\nendmodule\n"
+    )
+    run_build(tmp_path)
+    b = tmp_path / "b.sv"
+    b.write_text(b.read_text().replace("a u_a", "a u_aa"))  # internal edit, header untouched
+    report = run_update(tmp_path)
+    assert report.build is not None and report.build.incremental_link is True
+    incremental = _graph(tmp_path)
+    run_build(tmp_path)
+    full = _graph(tmp_path)
+    assert set(incremental.nodes) == set(full.nodes)
+
+    def edge_list(g):  # a list, so a duplicated edge fails the comparison
+        return sorted(
+            (u, v, d["kind"].value, d["confidence"], json.dumps(d["attrs"], sort_keys=True))
+            for u, v, d in g.edges(data=True)
+        )
+
+    assert edge_list(incremental) == edge_list(full)
+
+
 def test_changed_filelist_define_falls_back_to_full_rebuild(tmp_path: Path) -> None:
     (tmp_path / "a.sv").write_text("module a;\nendmodule\n")
     (tmp_path / "tb.f").write_text("+define+X=1\na.sv\n")
