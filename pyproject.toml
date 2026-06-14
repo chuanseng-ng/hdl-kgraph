@@ -117,7 +117,7 @@ ignore_missing_imports = true
 # following into the package and treat it as untyped — we use it behind the
 # `enrich/slang_backend.py` abstraction and validate it at runtime/tests.
 [[tool.mypy.overrides]]
-module = ["pyslang.*"]
+module = ["pyslang", "pyslang.*"]
 ignore_missing_imports = true
 follow_imports = "skip"
 follow_imports_for_stubs = true
