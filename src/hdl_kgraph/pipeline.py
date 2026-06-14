@@ -60,12 +60,15 @@ from hdl_kgraph.enrich import (
     summarize_enrichment,
 )
 from hdl_kgraph.enrich.base import Discrepancy
-from hdl_kgraph.graph.builder import link_graph
+from hdl_kgraph.graph.builder import RefRecord, link_graph, link_incremental
 from hdl_kgraph.ids import file_node_id, library_node_id
 from hdl_kgraph.incremental import (
     ChangeSet,
+    affected_clean_refs,
+    changed_target_names,
     diff_hashes,
     dirty_closure,
+    incremental_link_safe,
     newly_resolvable_includes,
 )
 from hdl_kgraph.parser.base import FileIR
@@ -153,6 +156,10 @@ class BuildReport:
     enrich_generates_unrolled: int = 0
     discrepancy_count: int = 0
     enrich_diagnostics: list[str] = field(default_factory=list)
+    # M4/#64: pass-2 link was incremental (re-resolved only the dirty closure).
+    incremental_link: bool = False
+    # Reason the incremental linker fell back to a full re-link (None if not).
+    incremental_link_skipped: str | None = None
 
 
 @dataclass
@@ -313,6 +320,44 @@ class _PendingUnit:
         return self.ir if self.ir is not None else self.future.result()  # type: ignore[union-attr]
 
 
+def _link_pass2(
+    irs: list[FileIR],
+    db_path: Path,
+    options: BuildOptions,
+    discovered: list[DiscoveredFile] | None,
+    incremental: bool,
+    dirty_files: set[str] | None,
+    report: BuildReport,
+) -> tuple[nx.MultiDiGraph, list[RefRecord]]:
+    """Pass-2 link, incrementally when safe (#64).
+
+    An incremental ``update`` re-resolves only the dirty closure plus its
+    resolution neighborhood and reuses the prior graph's edges for the rest;
+    anything the SV MVP doesn't model (VHDL, binds/config, enrichment) falls
+    back to a full ``link_graph`` over the same (parse-incremental) IRs.
+    """
+    if not incremental or dirty_files is None:
+        return link_graph(irs, warnings=report.warnings)
+    has_vhdl = any(f.language is Language.VHDL for f in (discovered or []))
+    has_binds = any(ref.edge_kind is EdgeKind.BINDS for ir in irs for ref in ir.unresolved_refs)
+    reason = incremental_link_safe(options.enrich, has_vhdl, has_binds)
+    if reason is None:
+        store = SqliteStore(db_path)
+        prior_ref_index = store.load_ref_index()
+        if any(r.edge_kind is EdgeKind.BINDS for r in prior_ref_index):
+            reason = "bind/configuration directives not supported yet"
+        else:
+            prior_graph, _, _ = store.load()
+            changed = changed_target_names(prior_graph, irs, dirty_files)
+            affected = {src for _, src, _ in affected_clean_refs(prior_ref_index, changed)}
+            report.incremental_link = True
+            return link_incremental(
+                irs, prior_graph, dirty_files, affected, warnings=report.warnings
+            )
+    report.incremental_link_skipped = reason
+    return link_graph(irs, warnings=report.warnings)
+
+
 def _execute(
     root: Path,
     db_path: Path | None,
@@ -324,6 +369,7 @@ def _execute(
     progress: ProgressFn | None = None,
     tick: TickFn | None = None,
     incremental: bool = False,
+    dirty_files: set[str] | None = None,
 ) -> BuildReport:
     """One pipeline run; units named in *reuse* re-link from their stored IR.
 
@@ -530,7 +576,9 @@ def _execute(
         irs.append(_library_ir(vhdl_file_libs, options.vhdl_libraries))
 
     progress(f"pass 2: linking {len(irs)} unit(s) into the graph")
-    graph, ref_records = link_graph(irs, warnings=report.warnings)
+    graph, ref_records = _link_pass2(
+        irs, db_path, options, discovered, incremental, dirty_files, report
+    )
     report.node_count = graph.number_of_nodes()
     report.edge_count = graph.number_of_edges()
     report.unresolved_count = sum(
@@ -723,6 +771,9 @@ def run_update(
     report.removed = changes.removed
 
     reuse = {path: unit for path, unit in stored_units.items() if path not in dirty}
+    # Files reparsed this run (dirty closure ∩ discovered) plus removed ones —
+    # the set whose pass-2 refs the incremental linker re-resolves.
+    dirty_files = set(report.reparsed) | set(report.removed)
     report.build = _execute(
         root,
         db_path,
@@ -737,6 +788,7 @@ def run_update(
         # delta write applies; save_incremental still self-checks and falls back
         # to a full rewrite if the database changed underneath us.
         incremental=True,
+        dirty_files=dirty_files,
     )
     report.elapsed_s = time.perf_counter() - started
     return report

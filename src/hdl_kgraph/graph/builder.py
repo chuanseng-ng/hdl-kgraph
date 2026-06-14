@@ -919,3 +919,101 @@ def build_graph(file_irs: list[FileIR], warnings: list[str] | None = None) -> nx
     callers that only need the graph.
     """
     return link_graph(file_irs, warnings)[0]
+
+
+def link_incremental(
+    file_irs: list[FileIR],
+    prior_graph: nx.MultiDiGraph,
+    dirty_files: set[str],
+    affected_srcs: set[str],
+    warnings: list[str] | None = None,
+) -> tuple[nx.MultiDiGraph, list[RefRecord]]:
+    """Pass-2 link that resolves only the dirty closure + its neighborhood (#64).
+
+    Nodes, local edges and the global ``definitions`` index are rebuilt from
+    the full *file_irs* in compile order — identical to :func:`link_graph`, so
+    candidate ordering and tie-breaks match a full build exactly. Only *live*
+    refs (those owned by a dirty file or whose ``src`` is in *affected_srcs*)
+    are re-resolved; every other src's pass-2 edges are reused verbatim from
+    *prior_graph*. ``TEST_COVERS`` is re-derived globally. The result is
+    byte-identical to :func:`link_graph` (the contract the #64-C equivalence
+    suite pins); callers fall back to :func:`link_graph` for cases this does
+    not cover (VHDL, binds/config, enrichment).
+    """
+    linker = _Linker(file_irs)
+    for ir in file_irs:
+        live_unit = ir.path in dirty_files
+        for ref in ir.unresolved_refs:
+            linker.ref_records.append(
+                RefRecord(
+                    file=ir.path,
+                    src_id=ref.src_id,
+                    edge_kind=ref.edge_kind,
+                    target_name=ref.target_name,
+                    scoped=ref.edge_kind in _SCOPED_REF_KINDS,
+                )
+            )
+            if live_unit or ref.src_id in affected_srcs:
+                linker._resolve(ref)
+
+    def _is_live(node_id: str) -> bool:
+        data = prior_graph.nodes.get(node_id)
+        file = data.get("file", "") if data is not None else ""
+        return file in dirty_files or node_id in affected_srcs
+
+    _splice_reused_edges(linker, prior_graph, _is_live)
+    for edge in derive_test_covers(linker.graph):
+        linker._emit_edge(edge.src, edge.dst, edge.kind, edge.confidence, edge.attrs)
+    if warnings is not None:
+        warnings.extend(linker.warnings)
+    return linker.graph, linker.ref_records
+
+
+def _splice_reused_edges(linker: _Linker, prior_graph: nx.MultiDiGraph, is_live: Any) -> None:
+    """Copy prior pass-2 edges whose src is unaffected into the new graph.
+
+    ``TEST_COVERS`` is excluded — it is re-derived globally so the heuristic
+    stays byte-identical. Stub (and stub-child) endpoints a reused edge points
+    at are copied from *prior_graph*, since they are synthesized at resolution
+    time and so are absent from the freshly-built node set.
+    """
+    for src, dst, data in prior_graph.edges(data=True):
+        kind = data["kind"]
+        if kind not in _PASS2_EDGE_KINDS or kind is EdgeKind.TEST_COVERS:
+            continue
+        if is_live(src):
+            continue  # this src is re-resolved fresh
+        if src not in linker.node_obj:
+            _copy_prior_node(linker, prior_graph, src)
+        if dst not in linker.node_obj:
+            _copy_prior_node(linker, prior_graph, dst)
+        linker._emit_edge(src, dst, kind, data["confidence"], dict(data["attrs"]))
+
+
+def _copy_prior_node(linker: _Linker, prior_graph: nx.MultiDiGraph, node_id: str) -> None:
+    """Copy a node (and its DECLARES subtree) from *prior_graph* — for the
+    ``unresolved:`` stubs and stub children a reused edge may reference."""
+    if node_id in linker.node_obj:
+        return
+    data = prior_graph.nodes[node_id]
+    node = Node(
+        id=node_id,
+        kind=data["kind"],
+        name=data["name"],
+        qualified_name=data.get("qualified_name", ""),
+        file=data.get("file", ""),
+        line_span=data.get("line_span", (0, 0)),
+        language=data["language"],
+        attrs=dict(data["attrs"]),
+    )
+    _add_node(linker.graph, node)
+    linker.node_obj[node_id] = node
+    linker.node_file[node_id] = node.file
+    for _, child, edata in prior_graph.out_edges(node_id, data=True):
+        if edata["kind"] is EdgeKind.DECLARES:
+            _copy_prior_node(linker, prior_graph, child)
+            linker._emit_edge(
+                node_id, child, EdgeKind.DECLARES, edata["confidence"], dict(edata["attrs"])
+            )
+            linker.children[node_id].append(linker.node_obj[child])
+            linker.parent[child] = node_id
