@@ -88,6 +88,13 @@ filters and a "colour by community" toggle (Louvain subsystems).
   so the graph view paints without a client-side freeze (needs the `[layout]`
   extra — `pip install 'hdl-kgraph[layout]'`), and `auto` routes by graph size.
   A missing `[layout]` extra falls back to `live`, never an error.
+- `--kinds KIND` / `--exclude-kinds KIND` (both repeatable) restrict the plot to
+  the node kinds of interest *before* the layout is solved, so positions are
+  computed over the smaller graph for a more compact view — e.g.
+  `--kinds module --kinds instance` or `--exclude-kinds signal --exclude-kinds port`.
+  Edges to a dropped node fall away with it. Most useful with `--full` (the
+  default projection is already module-level); an unknown kind is an error that
+  lists the valid kinds.
 - `--collapse` shows one supernode per subsystem (Louvain community) instead of
   every unit; double-click a supernode in the browser to expand it in place, and
   searching auto-expands the subsystem(s) containing a match. Adding `--full`

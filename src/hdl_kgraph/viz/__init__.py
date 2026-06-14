@@ -257,6 +257,8 @@ def render_html(
     layout: str = "auto",
     force_inline: bool = False,
     collapse: bool = False,
+    include_kinds: frozenset[str] | None = None,
+    exclude_kinds: frozenset[str] = frozenset(),
 ) -> RenderResult:
     """Render the graph to a single self-contained HTML file.
 
@@ -264,6 +266,14 @@ def render_html(
     simulation (the original behavior), ``"static"`` ships precomputed
     coordinates, and ``"auto"`` (default) routes by node/edge count. ``static``
     and ``auto`` fall back to ``live`` when the ``[layout]`` extra is missing.
+
+    *include_kinds* / *exclude_kinds* restrict the graph to the node kinds of
+    interest *before* communities, projection, and layout are computed, so the
+    positions are solved over the reduced node set for a more compact plot
+    (issue #98). A node is kept when its kind is in *include_kinds* (or
+    *include_kinds* is ``None``) and not in *exclude_kinds*; edges touching a
+    dropped node fall away with it. The filter is most useful with *full*, since
+    the default projection is already module-level.
 
     *collapse* renders the **aggregated** view (viz-scalability Phase 3): one
     supernode per Louvain community, expandable in the browser. With *full* it
@@ -284,6 +294,18 @@ def render_html(
     """
     if layout not in LAYOUT_MODES:
         raise ValueError(f"layout must be one of {LAYOUT_MODES}, got {layout!r}")
+
+    # Category-of-interest filter (#98): prune to the requested node kinds before
+    # anything else, so communities/projection/layout all solve over the smaller
+    # graph. subgraph() drops edges to removed nodes for free.
+    if include_kinds is not None or exclude_kinds:
+        keep = {
+            node_id
+            for node_id, data in g.nodes(data=True)
+            if (include_kinds is None or data["kind"].value in include_kinds)
+            and data["kind"].value not in exclude_kinds
+        }
+        g = g.subgraph(keep).copy()
 
     # Communities (seeded Louvain) drive both subsystem coloring and the
     # community-stacked precomputed layout; compute once and share.

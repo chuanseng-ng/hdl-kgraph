@@ -8,7 +8,7 @@ instances, ports, parameters, signals, classes, packages, and the
 relationships between them — design hierarchy, port connectivity, package
 imports, class inheritance, clock domains, and more.
 
-> **Status: alpha (v0.7).** Milestones M1–M7 are in: SystemVerilog/Verilog
+> **Status: alpha (v0.8).** Milestones M1–M7 are in: SystemVerilog/Verilog
 > and VHDL extraction with mixed-language linking, the SV preprocessor and
 > real-world build inputs (`.f` filelists, defines, `hdl-kgraph.toml`),
 > incremental rebuilds and watch mode, the clock/reset/CDC/lint/metrics
@@ -18,7 +18,11 @@ imports, class inheritance, clock domains, and more.
 > elaborates the design — unrolling parameterized generates so instance counts
 > match reality — and records a
 > [discrepancy report](docs/enrichment.md). `hdl-kgraph enriched` summarizes
-> exactly what enrichment changed vs the default build. See the
+> exactly what enrichment changed vs the default build. v0.8 makes the
+> incremental `update` re-resolve only the changed references — mutating the
+> prior resolved graph in place instead of re-linking the whole design
+> (SystemVerilog/Verilog; VHDL, binds, and `--enrich` fall back to a full
+> re-link), byte-identical to a full re-link. See the
 > [roadmap](#roadmap-at-a-glance).
 
 ## Why
@@ -85,7 +89,11 @@ warnings and why files were skipped.
 
 **Incremental updates.** `update` re-parses only changed files plus their
 include/macro dependents — one edit in a 2000-file design lands in about
-1.3 s (budget < 1.5 s) — and `watch` does it on every save burst. `detect-changes`
+1.3 s (budget < 1.5 s) — and `watch` does it on every save burst. As of v0.8
+the pass-2 link is incremental too: for SystemVerilog/Verilog it re-resolves
+only the references whose target changed and mutates the prior resolved graph
+in place (byte-identical to a full re-link; VHDL, binds, and `--enrich` fall
+back). `detect-changes`
 (exit codes: 0 clean, 1 dirty, 2 error; diffs against git, svn, or Perforce)
 and `impact` answer "what changed, and what does it affect?" in CI.
 → [docs/incremental.md](docs/incremental.md)
@@ -99,6 +107,7 @@ scored ≤0.8, never 1.0.
 drivers/readers, UVM topology, graph-level lint checks, fan-in/out and
 hub/bridge metrics, and a self-contained interactive HTML visualization
 (`visualize`: hierarchy + force-directed views, community filters,
+`--kinds`/`--exclude-kinds` to plot only the categories of interest,
 `--collapse` for subsystem supernodes, `--layout` tiers for large designs).
 → [docs/analyses.md](docs/analyses.md)
 
@@ -130,7 +139,7 @@ full list, the confidence convention, and the schema pointers live in
 | M1 (v0.1) | SystemVerilog/Verilog structural graph + CLI |
 | M2 (v0.2) | Preprocessor, `.f` filelists, includes |
 | M3 (v0.3) | VHDL + mixed-language linking |
-| M4 (v0.4) | Incremental updates, watch mode, impact analysis |
+| M4 (v0.4) | Incremental updates, watch mode, impact analysis (v0.8: incremental pass-2 link) |
 | M5 (v0.5) | Clock/reset/CDC analyses, lint checks, visualization |
 | M6 (v0.6) | MCP server for AI assistants |
 | M7 (v0.7) | Semantic enrichment via native frontends (pyslang + GHDL elaboration) |
