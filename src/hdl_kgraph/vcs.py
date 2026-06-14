@@ -30,7 +30,12 @@ import os
 import subprocess
 from pathlib import Path
 
-from hdl_kgraph.incremental import ChangeSet, detect_git_changes, is_build_input
+from hdl_kgraph.incremental import (
+    ChangeSet,
+    detect_git_changes,
+    is_build_input,
+    reject_option_like_ref,
+)
 
 __all__ = [
     "detect_vcs",
@@ -107,6 +112,7 @@ def detect_svn_changes(base: Path, rev: str | None, suffixes: frozenset[str]) ->
     if rev is None or rev == "BASE":
         entries = _parse_svn_status(_run(["svn", "status"], base, "svn"))
     else:
+        reject_option_like_ref(rev, "svn")
         entries = _parse_svn_summarize(_run(["svn", "diff", "--summarize", "-r", rev], base, "svn"))
         # ``summarize`` only sees committed state; add live unversioned files.
         entries += [

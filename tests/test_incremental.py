@@ -249,3 +249,12 @@ def test_detect_git_changes(tmp_path: Path) -> None:
     assert changes.changed == ["a.sv"]
     assert changes.added == ["new.svh"]
     assert changes.removed == []
+
+
+@pytest.mark.parametrize("ref", ["--output=/tmp/pwn", "-Gsecret", "", "-"])
+def test_detect_git_changes_rejects_option_like_ref(tmp_path: Path, ref: str) -> None:
+    """A ref that looks like an option is rejected before git ever runs."""
+    from hdl_kgraph.discovery import SUFFIXES
+
+    with pytest.raises(RuntimeError, match="looks like an option"):
+        detect_git_changes(tmp_path, ref, SUFFIXES)

@@ -24,6 +24,7 @@ from hdl_kgraph.vcs import (
     detect_p4_changes,
     detect_svn_changes,
     detect_vcs,
+    detect_vcs_changes,
 )
 
 
@@ -126,3 +127,13 @@ def test_detect_p4_changes_rejects_nondefault_rev(tmp_path: Path) -> None:
     # rather than silently reporting workspace state against the wrong baseline.
     with pytest.raises(RuntimeError, match="changelist is not supported"):
         detect_p4_changes(tmp_path, "12345", SUFFIXES)
+
+
+@pytest.mark.parametrize("rev", ["--config-dir=/tmp/evil", "-rphony", "-"])
+def test_detect_svn_changes_rejects_option_like_rev(tmp_path: Path, rev: str) -> None:
+    """A revision that looks like an svn option is rejected before svn runs."""
+    with pytest.raises(RuntimeError, match="looks like an option"):
+        detect_svn_changes(tmp_path, rev, SUFFIXES)
+    # Same guard via the public dispatcher.
+    with pytest.raises(RuntimeError, match="looks like an option"):
+        detect_vcs_changes(tmp_path, "svn", rev, SUFFIXES)
