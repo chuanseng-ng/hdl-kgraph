@@ -321,7 +321,15 @@ class SqliteStore:
                 conn.close()
                 self.save(graph, files, root, units, options_hash, discrepancies)
                 return
-            conn.execute("PRAGMA journal_mode = WAL")
+            mode = conn.execute("PRAGMA journal_mode = WAL").fetchone()
+            if mode is None or str(mode[0]).lower() != "wal":
+                # WAL could not be enabled (e.g. a filesystem without shared-
+                # memory support). An in-place BEGIN IMMEDIATE here could block
+                # a concurrent reader, so fall back to the full save(), whose
+                # os.replace swap is non-blocking regardless of journal mode.
+                conn.close()
+                self.save(graph, files, root, units, options_hash, discrepancies)
+                return
             conn.execute("BEGIN IMMEDIATE")
             try:
                 stats = _apply_delta(conn, graph, files, root, units, options_hash, discrepancies)
@@ -351,10 +359,15 @@ class SqliteStore:
     def _check_version(self, conn: sqlite3.Connection) -> dict[str, str]:
         try:
             meta = dict(conn.execute("SELECT key, value FROM meta"))
-        except sqlite3.OperationalError as exc:
-            if "no such table" not in str(exc):
-                raise  # e.g. 'database is locked' — not a schema problem
-            # pre-schema or foreign database
+        except sqlite3.DatabaseError as exc:
+            # OperationalError is a DatabaseError subclass: re-raise transient
+            # problems (e.g. 'database is locked'), but remap a missing meta
+            # table ('no such table') or a non-SQLite/foreign file ('file is
+            # not a database') to the schema error so callers fall back to a
+            # full rebuild.
+            message = str(exc).lower()
+            if "no such table" not in message and "not a database" not in message:
+                raise
             raise SchemaVersionError(f"{self.db_path} is not an hdl-kgraph database") from exc
         version = meta.get("schema_version")
         if version != SCHEMA_VERSION:

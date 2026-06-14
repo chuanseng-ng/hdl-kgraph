@@ -387,6 +387,26 @@ def test_save_incremental_falls_back_on_schema_mismatch(store) -> None:
     assert "fallback.sv::module:fb" in loaded.nodes
 
 
+def test_foreign_file_is_refused_as_schema_error(tmp_path) -> None:
+    """A non-SQLite file at the db path raises sqlite3.DatabaseError on read;
+    it must be remapped to SchemaVersionError so callers rebuild instead of
+    crashing."""
+    db = tmp_path / ".hdl-kgraph" / "graph.db"
+    db.parent.mkdir(parents=True)
+    db.write_bytes(b"this is plainly not a sqlite database\n" * 4)
+    with pytest.raises(SchemaVersionError, match="not an hdl-kgraph database"):
+        SqliteStore(db).load()
+
+
+def test_save_incremental_falls_back_on_foreign_file(store) -> None:
+    sqlite_store, graph, files = store
+    sqlite_store.db_path.write_bytes(b"garbage where a database should be\n")
+    _add_module(graph, "foreign.sv::module:fr", "fr")
+    sqlite_store.save_incremental(graph, files, root=Path("."))  # must not raise
+    loaded, _, _ = sqlite_store.load()
+    assert "foreign.sv::module:fr" in loaded.nodes
+
+
 def test_save_incremental_creates_database_when_missing(tmp_path) -> None:
     parser = SystemVerilogParser()
     graph = build_graph([parser.parse(Path("m.sv"), "module m; endmodule\n")])

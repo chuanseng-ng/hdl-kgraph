@@ -78,17 +78,26 @@ def main() -> int:
             f"(re-parsed {len(update.reparsed)}, reused {update.build.reused_files})"
         )
 
+        # Fail closed: a missing stats dict means the incremental write path
+        # never ran (e.g. it fell back to a full save()), which is exactly the
+        # regression this benchmark guards — never let it count as zero writes.
+        stats_present = {
+            "nodes_upserted",
+            "nodes_deleted",
+            "edge_srcs_rewritten",
+        } <= captured.keys()
         node_writes = captured.get("nodes_upserted", 0) + captured.get("nodes_deleted", 0)
         pct = 100.0 * node_writes / build.node_count if build.node_count else 0.0
         print(
             f"write volume:  {node_writes} node rows + "
             f"{captured.get('edge_srcs_rewritten', 0)} edge-src buckets "
             f"({pct:.2f}% of {build.node_count} nodes)"
+            + ("" if stats_present else "  [!] no incremental write stats captured")
         )
 
         time_ok = update_s < args.target_s
         # The real point of #63: writes scale with the change, not the design.
-        write_ok = node_writes < build.node_count * 0.05
+        write_ok = stats_present and node_writes < build.node_count * 0.05
         verdict = "PASS" if time_ok and write_ok else "FAIL"
         print(f"target:        update < {args.target_s:.1f}s and write < 5% of graph -> {verdict}")
         return 0 if verdict == "PASS" else 1
