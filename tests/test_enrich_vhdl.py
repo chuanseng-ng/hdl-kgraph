@@ -19,7 +19,12 @@ import pytest
 from hdl_kgraph.config import BuildOptions
 from hdl_kgraph.enrich import available_backends
 from hdl_kgraph.enrich.base import Capabilities, EnrichmentResult
-from hdl_kgraph.enrich.ghdl_backend import GhdlBackend, _reconcile
+from hdl_kgraph.enrich.ghdl_backend import (
+    GhdlBackend,
+    _generate_count,
+    _reconcile,
+    _walk_statements,
+)
 from hdl_kgraph.graph.builder import ensure_node
 from hdl_kgraph.ids import elab_node_id
 from hdl_kgraph.pipeline import run_build
@@ -27,7 +32,7 @@ from hdl_kgraph.schema import EdgeKind, Language, Node, NodeKind
 from hdl_kgraph.storage.sqlite_store import SqliteStore
 
 ghdl = pytest.mark.skipif(
-    shutil.which("ghdl") is None or importlib.util.find_spec("pyGHDL") is None,
+    shutil.which("ghdl") is None or importlib.util.find_spec("pyGHDL.libghdl") is None,
     reason="ghdl binary and pyGHDL bindings required for the VHDL enrichment backend",
 )
 
@@ -119,6 +124,76 @@ def test_reconcile_unrolls_generate() -> None:
     new_ids = {n.id for n in result.new_nodes}
     assert elab_node_id(NodeKind.INSTANCE, "gen_top.g_leaf(0).u_leaf") in new_ids
     assert len([n for n in result.new_nodes if n.kind is NodeKind.INSTANCE]) == 4
+
+
+# -- unconditional: static generate-range folding (no GHDL needed) -----------
+
+
+class _AscendingRangeExpression:
+    def __init__(self, left: int, right: int) -> None:
+        self.LeftBound, self.RightBound = left, right
+
+
+class _DescendingRangeExpression:
+    def __init__(self, left: int, right: int) -> None:
+        self.LeftBound, self.RightBound = left, right
+
+
+class _ForGenerateStatement:
+    """Stand-in whose class name carries 'For'/'Generate' for the walker."""
+
+    def __init__(self, label: str, rng: object, body: list[object]) -> None:
+        self.Label, self.Range, self.Statements = label, rng, body
+
+
+class _EntityInstantiation:
+    def __init__(self, label: str, entity: str) -> None:
+        self.Label, self.Entity = label, entity
+
+
+def _gen_stmt(rng: object) -> _ForGenerateStatement:
+    return _ForGenerateStatement("g", rng, [])
+
+
+def test_generate_count_respects_direction_and_null_ranges() -> None:
+    assert _generate_count(_gen_stmt(_AscendingRangeExpression(0, 3))) == 4
+    assert _generate_count(_gen_stmt(_DescendingRangeExpression(3, 0))) == 4
+    # Null ranges elaborate zero bodies, not four.
+    assert _generate_count(_gen_stmt(_AscendingRangeExpression(3, 0))) == 0
+    assert _generate_count(_gen_stmt(_DescendingRangeExpression(0, 3))) == 0
+
+
+# -- unconditional: ambiguous-label safe degradation -------------------------
+
+
+def test_walk_statements_flags_label_reused_across_scopes() -> None:
+    # `u_x` binds `foo` at top level and `bar` inside a generate: legal VHDL the
+    # syntactic graph cannot tell apart, so the label is marked ambiguous.
+    stmts = [
+        _EntityInstantiation("u_x", "foo"),
+        _ForGenerateStatement(
+            "g", _AscendingRangeExpression(0, 1), [_EntityInstantiation("u_x", "bar")]
+        ),
+    ]
+    collected: dict[str, tuple[str, list[str]]] = {}
+    ambiguous: set[str] = set()
+    _walk_statements(stmts, ["top"], collected, ambiguous)
+    assert "u_x" in ambiguous
+
+
+def test_walk_statements_same_entity_duplicate_is_not_ambiguous() -> None:
+    # The legitimate generate-unroll case: one label, one entity, many paths.
+    stmts = [
+        _ForGenerateStatement(
+            "g", _AscendingRangeExpression(0, 3), [_EntityInstantiation("u_leaf", "leaf")]
+        ),
+    ]
+    collected: dict[str, tuple[str, list[str]]] = {}
+    ambiguous: set[str] = set()
+    _walk_statements(stmts, ["gen_top"], collected, ambiguous)
+    assert ambiguous == set()
+    entity, paths = collected["u_leaf"]
+    assert entity == "leaf" and len(paths) == 4
 
 
 def test_reconcile_skips_systemverilog_instances() -> None:

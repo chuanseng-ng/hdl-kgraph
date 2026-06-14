@@ -32,7 +32,6 @@ foldable ranges. Generic-value (``PARAMETERIZES``) and type/width
 from __future__ import annotations
 
 import shutil
-from collections import defaultdict
 from typing import Any
 
 import networkx as nx
@@ -58,6 +57,7 @@ class GhdlBackend:
     suffixes = _SUFFIXES
 
     def available(self) -> bool:
+        """Whether the ``ghdl`` binary and its ``pyGHDL.libghdl`` bindings exist."""
         # GHDL is a system binary; pyGHDL/libghdl ship with it, not via pip.
         # Both must be present, and the probe must never raise.
         if shutil.which("ghdl") is None:
@@ -70,6 +70,7 @@ class GhdlBackend:
             return False
 
     def capabilities(self) -> Capabilities:
+        """The elaborated facts this backend derives for VHDL."""
         return Capabilities(
             resolves_params=True,  # VHDL generics resolved by analysis
             unrolls_generates=True,  # for ... generate over static ranges
@@ -78,6 +79,7 @@ class GhdlBackend:
         )
 
     def enrich(self, inp: EnrichmentInput, graph: nx.MultiDiGraph) -> EnrichmentResult:
+        """Analyse *inp* with GHDL and return a delta over *graph* (never raises)."""
         result = EnrichmentResult()
         try:
             bindings = _elaborate(inp, result)
@@ -142,27 +144,40 @@ def _elaborate(inp: EnrichmentInput, result: EnrichmentResult) -> _BindingMap | 
             if not arch_name:
                 continue
             arch_key = (entity_name, arch_name)
-            collected: defaultdict[str, tuple[str, list[str]]] = defaultdict(lambda: ("", []))
-            _walk_statements(
-                _iter(arch, "Statements"), arch_key, [entity_name or arch_name], collected, result
-            )
+            # Seed the hierarchical path with entity(architecture) so elaborated
+            # node ids stay distinct across multiple architectures of one entity.
+            seed = f"{entity_name}({arch_name})" if entity_name else arch_name
+            collected: dict[str, tuple[str, list[str]]] = {}
+            ambiguous: set[str] = set()
+            _walk_statements(_iter(arch, "Statements"), [seed], collected, ambiguous)
             for label, (entity, paths) in collected.items():
+                if label in ambiguous:
+                    # The tree-sitter tier collapses generate scopes, so a label
+                    # reused at top level and inside a generate (binding different
+                    # entities) cannot be matched per-scope — degrade rather than
+                    # apply a wrong binding to every like-named instance.
+                    result.diagnostics.append(
+                        f"ghdl: {arch_key[0]}({arch_key[1]}).{label} is ambiguous across "
+                        "scopes; left to the heuristic graph"
+                    )
+                    continue
                 bindings[(arch_key, label)] = (entity, paths)
     return bindings
 
 
 def _walk_statements(
     statements: list[Any],
-    arch_key: _ArchKey,
     prefixes: list[str],
     collected: dict[str, tuple[str, list[str]]],
-    result: EnrichmentResult,
+    ambiguous: set[str],
 ) -> None:
     """Record each instantiation's resolved target + one path per *prefix*.
 
     *prefixes* is the set of hierarchical paths reaching this declarative region
     (one per enclosing generate iteration), so a ``for ... generate`` simply
-    multiplies them before recursing.
+    multiplies them before recursing. A label that resolves to two different
+    entities across scopes is added to *ambiguous* (legal in VHDL, but the
+    syntactic graph cannot tell the scopes apart — see :func:`_elaborate`).
     """
     for stmt in statements:
         cls = type(stmt).__name__
@@ -172,8 +187,10 @@ def _walk_statements(
             if not label or not entity:
                 continue
             paths = [f"{p}.{label}" for p in prefixes]
-            existing = collected.get(label, ("", []))
-            collected[label] = (entity, existing[1] + paths)
+            existing = collected.get(label)
+            if existing is not None and existing[0] != entity:
+                ambiguous.add(label)
+            collected[label] = (entity, (existing[1] if existing else []) + paths)
         elif "Generate" in cls:
             label = _name(stmt, "Label")
             if "For" in cls:
@@ -183,7 +200,7 @@ def _walk_statements(
             else:  # if/case generate: a single block, best effort
                 seg = label or "gen"
                 expanded = [f"{p}.{seg}" for p in prefixes] if label else list(prefixes)
-            _walk_statements(_generate_body(stmt), arch_key, expanded, collected, result)
+            _walk_statements(_generate_body(stmt), expanded, collected, ambiguous)
 
 
 def _binding_target(stmt: Any) -> str:
@@ -206,14 +223,41 @@ def _generate_count(stmt: Any) -> int:
 
     First cut folds only literal integer ranges (``0 to 3`` / ``7 downto 0``);
     generic-bounded ranges that need value resolution are a documented follow-on
-    and conservatively count as 1 so no fabricated expansion is reported.
+    and conservatively count as 1 so no fabricated expansion is reported. A null
+    range (``3 to 0`` ascending / ``0 downto 3`` descending) elaborates zero
+    bodies, so direction is honoured and the count clamps to 0.
     """
     rng = getattr(getattr(stmt, "Range", None), "Range", None) or getattr(stmt, "Range", None)
     left = _int(getattr(rng, "LeftBound", None))
     right = _int(getattr(rng, "RightBound", None))
     if left is None or right is None:
         return 1
-    return abs(right - left) + 1
+    descending = _descending(rng)
+    if descending is None:
+        return abs(right - left) + 1  # direction unknown: best effort
+    span = (left - right) if descending else (right - left)
+    return max(0, span + 1)  # null range -> 0 iterations
+
+
+def _descending(rng: Any) -> bool | None:
+    """Whether a discrete range is ``downto``; None when undeterminable.
+
+    pyGHDL models ranges as ``AscendingRangeExpression`` /
+    ``DescendingRangeExpression``; older shapes expose a ``Direction`` enum whose
+    name carries ``down``/``desc``. Probe both without importing pyGHDL.
+    """
+    cls = type(rng).__name__.lower()
+    if "descending" in cls:
+        return True
+    if "ascending" in cls:
+        return False
+    direction = getattr(rng, "Direction", None)
+    text = getattr(direction, "name", str(direction)).lower()
+    if "down" in text or "desc" in text:
+        return True
+    if "to" in text or "asc" in text:
+        return False
+    return None
 
 
 def _generate_body(stmt: Any) -> list[Any]:
