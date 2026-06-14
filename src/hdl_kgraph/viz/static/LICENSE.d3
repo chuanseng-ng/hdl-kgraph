@@ -1,3 +1,10 @@
+Vendored third-party bundle: D3.js v7 (minified, `d3.v7.min.js`).
+Upstream: https://github.com/d3/d3 — release channel https://d3js.org/d3.v7.min.js
+Integrity (pinned, verified at render time — see hdl_kgraph/viz/__init__.py, #78):
+  sha256: f2094bbf6141b359722c4fe454eb6c4b0f0e42cc10cc7af921fc158fceb86539
+
+----------------------------------------------------------------------
+
 Copyright 2010-2023 Mike Bostock
 
 Permission to use, copy, modify, and/or distribute this software for any purpose
