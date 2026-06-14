@@ -227,6 +227,10 @@ def _payload(
         ]
         if not roots:  # a typo would otherwise render an empty page
             raise ValueError(f"module or entity {top!r} not found in the graph")
+        # Constrain the graph view to the rooted subtree, like the hierarchy.
+        keep = set().union(*(analysis.subtree_node_ids(g, root) for root in roots))
+        nodes = [n for n in nodes if n["id"] in keep]
+        links = [link for link in links if link["source"] in keep and link["target"] in keep]
     else:
         roots = analysis.find_top_modules(g)
     hierarchy = [_tree_to_dict(analysis.hierarchy_tree(g, root)) for root in roots]
@@ -238,7 +242,7 @@ def _payload(
         "nodes": nodes,
         "links": links,
         "hierarchy": hierarchy,
-        "communities": sorted({c for c in comm_of.values()}, key=int),
+        "communities": sorted({n["community"] for n in nodes if n["community"]}, key=int),
         "collapse": False,  # set True with supernodes/superlinks by render_html
     }
 

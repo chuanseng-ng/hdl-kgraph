@@ -136,6 +136,37 @@ def hierarchy_tree(g: nx.MultiDiGraph, top_id: str, max_depth: int = 64) -> Hier
     return expand(top_id, None, 1.0, frozenset(), 0)
 
 
+def subtree_node_ids(g: nx.MultiDiGraph, top_id: str, max_depth: int = 64) -> set[str]:
+    """Every node id in the design subtree rooted at *top_id*.
+
+    Walks the same DECLARES + INSTANTIATES (+ reverse IMPLEMENTS for VHDL
+    architectures) edges as :func:`hierarchy_tree`, but collects a flat set of
+    ids instead of a tree: the unit, its architectures, everything those scopes
+    DECLARE (instances, ports, signals, processes, ...), and recursively the
+    same for every instantiated child module. A unit is expanded at most once,
+    so shared submodules and instantiation cycles terminate.
+    """
+    keep: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(unit_id: str, depth: int) -> None:
+        keep.add(unit_id)
+        if unit_id in visited or depth >= max_depth:
+            return
+        visited.add(unit_id)
+        # All architectures (no via_arch narrowing) keeps the set a safe superset.
+        for holder in _instance_holders(g, unit_id, None):
+            keep.add(holder)
+            for _, child_id, _decl in _edges_of_kind(g, holder, EdgeKind.DECLARES):
+                keep.add(child_id)
+                if g.nodes[child_id]["kind"] is NodeKind.INSTANCE:
+                    for _, target_id, _inst in _edges_of_kind(g, child_id, EdgeKind.INSTANTIATES):
+                        visit(target_id, depth + 1)
+
+    visit(top_id, 0)
+    return keep
+
+
 def instances_of(g: nx.MultiDiGraph, name: str) -> list[dict[str, Any]]:
     """All instantiation sites of design units named *name*.
 
