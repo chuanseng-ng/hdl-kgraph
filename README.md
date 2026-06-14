@@ -30,6 +30,30 @@ query from the CLI, scripts, or AI assistants via MCP. The architecture
 follows [code-review-graph](https://github.com/tirth8205/code-review-graph),
 adapted for hardware.
 
+## How this differs
+
+The closest free, mature alternatives are *full elaborators* — **Verible** (SV
+linter/indexer with a Kythe knowledge-graph export), **Surelog/UHDM** (IEEE-1800
+elaboration to a queryable model), **Verilator** (`--xml-only` elaborated AST).
+They're excellent, but they need a complete, compilable design. hdl-kgraph's
+default tier is *syntactic* (tree-sitter): it parses files with `ERROR` nodes
+and missing dependencies, so it builds a graph from incomplete or in-progress
+RTL that an elaborator would reject — then `--enrich` overlays an actual
+frontend (pyslang/GHDL) for elaborated precision where one is available.
+
+| | Verible | Surelog/UHDM | Verilator `--xml-only` | hdl-kgraph |
+|---|---|---|---|---|
+| Parses incomplete / broken / missing-dep sources | partial (error-recovering) | no (elaborates) | no (elaborates) | **yes** (tree-sitter, ERROR-tolerant) |
+| Dependency footprint | C++ build | C++ build | C++ build | **pip, pure-Python default** |
+| Output store | Kythe graph | UHDM model | XML AST | **local SQLite, queryable** |
+| AI / MCP query surface | — | — | — | **yes** |
+| Full elaboration (params, generates) | — | yes | yes | opt-in overlay (`--enrich`) |
+
+So hdl-kgraph sits *alongside* these tools rather than against them — the
+syntactic tier is the always-works floor for partial designs, and a native
+elaborator can plug in as an [enrichment backend](docs/enrichment.md) for the
+precision overlay.
+
 ## Quickstart
 
 ```bash
