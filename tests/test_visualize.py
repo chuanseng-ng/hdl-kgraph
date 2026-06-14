@@ -457,6 +457,26 @@ def test_template_has_search_auto_expand(graph, tmp_path: Path) -> None:
     assert "syncSearchExpansion" in html and "searchExpanded" in html
 
 
+# ---------------------------------------------------------------------------
+# Search-neighbor highlighting (#97): highlight the searched node, its n-hop
+# neighbors, and the relationship lines between them. No JS harness in the
+# repo, so pin the behavior by template structure like the other viz tests.
+# ---------------------------------------------------------------------------
+
+
+def test_template_has_search_neighbor_highlight(graph, tmp_path: Path) -> None:
+    html = render_html(graph, tmp_path / "g.html").path.read_text()
+    # The depth control and the BFS over the adjacency closure.
+    assert 'id="search-depth"' in html and "searchDepth" in html
+    assert "function buildAdjacency" in html and "function computeHighlight" in html
+    assert "nearById" in html and "matchSet" in html
+    # Relationship lines between highlighted nodes are stroked in the accent.
+    assert "relPath" in html and "#ebcb8b" in html
+    # The search handler recomputes the highlight on input and on depth change.
+    assert "computeHighlight(q)" in html
+    assert 'getElementById("search-depth").addEventListener' in html
+
+
 def test_full_collapse_is_two_level(graph, tmp_path: Path) -> None:
     # --collapse --full aggregates communities of units, each holding leaves.
     result = render_html(graph, tmp_path / "g.html", collapse=True, full=True)
