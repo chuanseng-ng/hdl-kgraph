@@ -108,10 +108,19 @@ module = [
   "tomli.*",
   "watchdog.*",
   "fastmcp.*",
-  "pyslang.*",
   "pyVHDLModel.*",
 ]
 ignore_missing_imports = true
+
+# pyslang ships bundled .pyi stubs that are not valid Python (e.g. an enum
+# member literally named `and`, a keyword), so mypy aborts parsing them. Skip
+# following into the package and treat it as untyped — we use it behind the
+# `enrich/slang_backend.py` abstraction and validate it at runtime/tests.
+[[tool.mypy.overrides]]
+module = ["pyslang.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
+follow_imports_for_stubs = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
