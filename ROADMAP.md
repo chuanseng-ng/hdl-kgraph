@@ -311,12 +311,16 @@ tree-sitter remains the always-works baseline.
       confirms `INSTANTIATES` bindings; an un-elaboratable design degrades to the
       heuristic graph with diagnostics. Full type/width and
       `CONNECTS`/`PARAMETERIZES` value upgrades are a documented follow-on**
-- [ ] pyVHDLModel / GHDL analysis backend: VHDL semantic and overload
-      resolution — **deferred (follow-up phase): `pyVHDLModel` is a document
-      model, not an elaborator, and GHDL is a system binary, not a pip package.
-      The pip package ships in core now; the backend code and the `ghdl`-binary
-      requirement land later. SV elaboration already meets the acceptance
-      criterion**
+- [x] GHDL analysis backend: VHDL binding resolution — **`enrich/ghdl_backend.py`
+      drives GHDL (via its `pyGHDL`/`libghdl` bindings) to confirm
+      component/entity/configuration bindings (`INSTANTIATES` → 1.0), flag a
+      `wrong_target` where a configuration rebinds an instance the heuristic
+      guessed by name, and unroll `for ... generate` over static ranges. GHDL is
+      a system binary, not a pip package, so the backend probes for it and is
+      silently skipped when absent (its tests skip-guard accordingly); the
+      heuristic VHDL graph is the always-works baseline. Generic-bounded
+      generate ranges and `CONNECTS`/`PARAMETERIZES` value upgrades are a
+      documented follow-on, paralleling slang's own**
 - [x] Discrepancy report: where heuristic edges disagreed with elaboration —
       **`hdl-kgraph discrepancies` over a new `discrepancies` SQLite table
       (schema v6); `instance_count` (generate multiplicity) and `wrong_target`

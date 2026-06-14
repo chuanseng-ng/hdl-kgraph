@@ -536,9 +536,11 @@ def _execute(
             for f in discovered
             if f.skipped_reason is None
             and f.relpath not in consumed
-            and f.language in (Language.VERILOG, Language.SYSTEMVERILOG)
+            and f.language in (Language.VERILOG, Language.SYSTEMVERILOG, Language.VHDL)
         ]
-        discrepancies = _enrich(graph, base, options, inputs, enrich_files, report, progress)
+        discrepancies = _enrich(
+            graph, base, options, inputs, enrich_files, vhdl_file_libs, report, progress
+        )
         report.node_count = graph.number_of_nodes()
         report.edge_count = graph.number_of_edges()
 
@@ -560,13 +562,15 @@ def _enrich(
     options: BuildOptions,
     inputs: _Inputs,
     enrich_files: list[Path],
+    vhdl_file_libs: dict[str, str],
     report: BuildReport,
     progress: ProgressFn,
 ) -> list[Discrepancy]:
     """Run the M7 enrichment pass over the linked graph (mutated in place).
 
     *enrich_files* is the standalone compilation-unit set (consumed headers
-    already excluded by the caller).
+    already excluded by the caller); *vhdl_file_libs* maps each VHDL relpath to
+    the library it analyses into, which the GHDL backend needs.
     """
     backends = available_backends(options.enrich_backends or None)
     if not backends:
@@ -581,6 +585,7 @@ def _enrich(
         incdirs=inputs.incdirs,
         tops=list(options.top),
         base=base,
+        vhdl_libraries=vhdl_file_libs,
     )
     enrich_report = run_enrichment(graph, enrich_input, backends)
     report.enriched = True

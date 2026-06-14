@@ -63,11 +63,14 @@ Enrichment backends ship in the **core install** (no optional extra to add):
 | Backend | Package | Status |
 |---|---|---|
 | `slang` (SystemVerilog/Verilog) | [`pyslang`](https://pypi.org/project/pyslang/) | shipping — generate unroll + `INSTANTIATES` confirmation |
-| VHDL | [`pyVHDLModel`](https://pypi.org/project/pyVHDLModel/) + the `ghdl` binary | planned (M7 follow-up) |
+| `ghdl` (VHDL) | the `ghdl` binary (`pyGHDL`/`libghdl` ship with it) | shipping — binding confirmation + `wrong_target` + `for ... generate` unroll |
 
-`pyVHDLModel` is a VHDL document model, not an elaborator; the VHDL backend will
-drive the **GHDL** analyzer, which is a separate system binary (`apt`/`conda`/
-`brew`), not a pip package — only that backend needs it.
+`pyslang` is a core pip dependency, so `slang` works out of the box. **GHDL is a
+system binary, not a pip package** — its `pyGHDL`/`libghdl` Python bindings are
+installed alongside it (`apt install ghdl` / `conda install ghdl` / `brew install
+ghdl`), so `ghdl` enrichment activates only when that binary is present and is
+silently skipped otherwise. (`pyVHDLModel` is a document model used by `pyGHDL`,
+not an elaborator on its own.)
 
 The interface lives in
 [`hdl_kgraph/enrich/base.py`](../src/hdl_kgraph/enrich/base.py)
@@ -79,5 +82,9 @@ The interface lives in
 
 The first cut covers instance-count correction and `INSTANTIATES` confirmation —
 enough to satisfy the acceptance criterion (instance counts match elaborated
-reality on parameterized generates). Full type/width propagation onto signals
-and `CONNECTS`/`PARAMETERIZES` value upgrades are a follow-on within M7.
+reality on parameterized generates). For VHDL the `ghdl` backend's emphasis is
+binding accuracy: it confirms component/entity/configuration bindings, flags a
+`wrong_target` where a configuration rebinds an instance the heuristic guessed by
+name, and unrolls `for ... generate` over statically foldable ranges. Full
+type/width propagation onto signals, `CONNECTS`/`PARAMETERIZES` value upgrades,
+and generic-bounded generate ranges are a follow-on within M7.

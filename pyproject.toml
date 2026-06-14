@@ -109,6 +109,7 @@ module = [
   "watchdog.*",
   "fastmcp.*",
   "pyVHDLModel.*",
+  "pyGHDL.*",
 ]
 ignore_missing_imports = true
 

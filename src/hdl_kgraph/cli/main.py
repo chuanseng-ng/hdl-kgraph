@@ -94,9 +94,9 @@ _jobs_option = click.option(
 _enrich_option = click.option(
     "--enrich",
     is_flag=True,
-    help="Run native-frontend elaboration (pyslang) to upgrade heuristic edges "
-    "to elaboration-accurate facts and record discrepancies (M7). Slower; "
-    "re-runs whole-design elaboration on every update.",
+    help="Run native-frontend elaboration (pyslang for SV/Verilog, ghdl for "
+    "VHDL) to upgrade heuristic edges to elaboration-accurate facts and record "
+    "discrepancies (M7). Slower; re-runs whole-design elaboration on every update.",
 )
 
 

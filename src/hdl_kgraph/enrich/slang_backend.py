@@ -31,6 +31,7 @@ from typing import Any
 
 import networkx as nx
 
+from hdl_kgraph.enrich._graphutil import enclosing_module, instantiates_target
 from hdl_kgraph.enrich.base import (
     Capabilities,
     Discrepancy,
@@ -179,8 +180,8 @@ def _reconcile(graph: nx.MultiDiGraph, children: _ChildMap, result: EnrichmentRe
     for inst_id, data in list(graph.nodes(data=True)):
         if data["kind"] is not NodeKind.INSTANCE:
             continue
-        module = _enclosing_module(graph, inst_id)
-        target = _instantiates_target(graph, inst_id)
+        module = enclosing_module(graph, inst_id)
+        target = instantiates_target(graph, inst_id)
         if module is None or target is None:
             continue
         module_id, module_name = module
@@ -280,24 +281,3 @@ def _add_elaborated(
                 attrs={"source": "elaborated", "backend": SlangBackend.name},
             )
         )
-
-
-def _enclosing_module(graph: nx.MultiDiGraph, inst_id: str) -> tuple[str, str] | None:
-    """The (id, name) of the MODULE that DECLARES *inst_id*."""
-    for pred in graph.predecessors(inst_id):
-        for data in graph[pred][inst_id].values():
-            if (
-                data.get("kind") is EdgeKind.DECLARES
-                and graph.nodes[pred]["kind"] is NodeKind.MODULE
-            ):
-                return pred, graph.nodes[pred]["name"]
-    return None
-
-
-def _instantiates_target(graph: nx.MultiDiGraph, inst_id: str) -> tuple[str, str] | None:
-    """The (id, name) the syntactic INSTANTIATES edge of *inst_id* points at."""
-    for succ in graph.successors(inst_id):
-        for data in graph[inst_id][succ].values():
-            if data.get("kind") is EdgeKind.INSTANTIATES:
-                return succ, graph.nodes[succ]["name"]
-    return None
