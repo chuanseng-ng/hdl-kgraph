@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from gen_corpus import generate  # noqa: E402
 
 from hdl_kgraph.pipeline import run_build, run_update  # noqa: E402
+from hdl_kgraph.storage.sqlite_store import SqliteStore  # noqa: E402
 
 
 def main() -> int:
@@ -53,17 +54,43 @@ def main() -> int:
 
         leaf = root / "leaf_00001.sv"
         leaf.write_text(leaf.read_text().replace("+ 1", "+ 2"))
-        started = time.perf_counter()
-        update = run_update(root)
-        update_s = time.perf_counter() - started
+
+        # Capture the incremental write volume (issue #63): the delta write
+        # should touch far fewer rows than the full graph.
+        captured: dict[str, int] = {}
+        real_save_incremental = SqliteStore.save_incremental
+
+        def spy(self: SqliteStore, *a: object, **k: object) -> None:
+            real_save_incremental(self, *a, **k)
+            if self.last_write_stats is not None:
+                captured.update(self.last_write_stats)
+
+        SqliteStore.save_incremental = spy  # type: ignore[method-assign]
+        try:
+            started = time.perf_counter()
+            update = run_update(root)
+            update_s = time.perf_counter() - started
+        finally:
+            SqliteStore.save_incremental = real_save_incremental  # type: ignore[method-assign]
         assert update.build is not None
         print(
             f"update:        {update_s:.2f}s "
             f"(re-parsed {len(update.reparsed)}, reused {update.build.reused_files})"
         )
 
-        verdict = "PASS" if update_s < args.target_s else "FAIL"
-        print(f"target:        update < {args.target_s:.1f}s -> {verdict}")
+        node_writes = captured.get("nodes_upserted", 0) + captured.get("nodes_deleted", 0)
+        pct = 100.0 * node_writes / build.node_count if build.node_count else 0.0
+        print(
+            f"write volume:  {node_writes} node rows + "
+            f"{captured.get('edge_srcs_rewritten', 0)} edge-src buckets "
+            f"({pct:.2f}% of {build.node_count} nodes)"
+        )
+
+        time_ok = update_s < args.target_s
+        # The real point of #63: writes scale with the change, not the design.
+        write_ok = node_writes < build.node_count * 0.05
+        verdict = "PASS" if time_ok and write_ok else "FAIL"
+        print(f"target:        update < {args.target_s:.1f}s and write < 5% of graph -> {verdict}")
         return 0 if verdict == "PASS" else 1
 
 

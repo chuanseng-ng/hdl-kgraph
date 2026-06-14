@@ -323,11 +323,17 @@ def _execute(
     prior_warnings: dict[str, list[str]] | None = None,
     progress: ProgressFn | None = None,
     tick: TickFn | None = None,
+    incremental: bool = False,
 ) -> BuildReport:
     """One pipeline run; units named in *reuse* re-link from their stored IR.
 
     *prior_warnings* carries the previous build's per-file preprocessor
     warnings for reused units (their preprocessor never re-runs).
+
+    When *incremental* is set (an ``update`` over an existing, schema-matched
+    database), persistence writes only the changed rows via
+    :meth:`SqliteStore.save_incremental`; otherwise the whole graph is
+    rewritten via :meth:`SqliteStore.save`.
     """
     progress = progress if progress is not None else lambda _line: None
     tick = tick if tick is not None else lambda _done, _total: None
@@ -552,7 +558,9 @@ def _execute(
         report.edge_count = graph.number_of_edges()
 
     progress(f"writing {db_path}")
-    SqliteStore(db_path).save(
+    store = SqliteStore(db_path)
+    persist = store.save_incremental if incremental else store.save
+    persist(
         graph,
         files_meta,
         root=base,
@@ -724,6 +732,10 @@ def run_update(
         prior_warnings=store.load_file_warnings(),
         progress=progress,
         tick=tick,
+        # The database exists and its schema/root/options matched above, so the
+        # delta write applies; save_incremental still self-checks and falls back
+        # to a full rewrite if the database changed underneath us.
+        incremental=True,
     )
     report.elapsed_s = time.perf_counter() - started
     return report

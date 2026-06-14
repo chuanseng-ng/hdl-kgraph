@@ -19,13 +19,17 @@ Single-file, local-first storage of the knowledge graph:
   elaboration disagreed with the heuristic graph (only populated by
   ``build --enrich``). Surfaced by ``hdl-kgraph discrepancies``.
 
-``save()`` is a full rewrite, written to a temp file and atomically swapped
-into place with ``os.replace`` — concurrent readers (CLI queries, the MCP
-server) never block on or observe a half-written database, and a crashed
-build leaves the previous database intact. ``update`` reuses stored IRs
-for unchanged files and rewrites the (re-linked) result. Migration policy:
-the database is a derived cache, so there is no in-place migration —
-``load()`` raises :class:`SchemaVersionError` on a version mismatch and
+``save()`` is a full rewrite, written to a temp file (in WAL mode) and
+atomically swapped into place with ``os.replace`` — concurrent readers (CLI
+queries, the MCP server) never block on or observe a half-written database,
+and a crashed build leaves the previous database intact. ``update`` reuses
+stored IRs for unchanged files and persists the re-linked result through
+``save_incremental()``, which diffs the new graph against the stored rows and
+writes only the delta (UPSERT changed nodes/edges/file rows, delete vanished
+ones) under a single WAL transaction — so a one-file edit pays a write cost
+proportional to the change, not the whole design. Migration policy: the
+database is a derived cache, so there is no in-place migration — ``load()``
+raises :class:`SchemaVersionError` on a version mismatch and
 ``update``/``watch`` respond by falling back to a full rebuild.
 """
 
@@ -36,6 +40,7 @@ import json
 import os
 import sqlite3
 import time
+from collections import Counter, defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -141,11 +146,79 @@ class FileMeta:
     parse_errors: list[str] = field(default_factory=list)
 
 
+# -- row serialization (single source of truth) -------------------------------
+# Both the full ``save()`` and the incremental ``save_incremental()`` build
+# their rows here, so the two write paths can never drift on column order or
+# JSON encoding (a drift would make the incremental row-diff see spurious or,
+# worse, missed changes).
+
+
+def _node_row(node_id: str, data: dict[str, object]) -> tuple[object, ...]:
+    line_span = data["line_span"]
+    return (
+        node_id,
+        data["kind"].value,  # type: ignore[attr-defined]
+        data["name"],
+        data["qualified_name"],
+        data["file"],
+        line_span[0],  # type: ignore[index]
+        line_span[1],  # type: ignore[index]
+        data["language"].value,  # type: ignore[attr-defined]
+        json.dumps(data["attrs"], sort_keys=True),
+    )
+
+
+def _edge_row(src: str, dst: str, data: dict[str, object]) -> tuple[object, ...]:
+    return (
+        src,
+        dst,
+        data["kind"].value,  # type: ignore[attr-defined]
+        data["confidence"],
+        json.dumps(data["attrs"], sort_keys=True, default=list),
+    )
+
+
+def _file_row(f: FileMeta) -> tuple[object, ...]:
+    return (
+        f.path,
+        f.language.value,
+        f.content_hash,
+        f.size_bytes,
+        f.parse_error_count,
+        f.skipped_reason,
+        json.dumps(f.warnings),
+        json.dumps(f.parse_errors),
+    )
+
+
+def _file_ir_row(path: str, unit: StoredUnit) -> tuple[object, ...]:
+    return (path, unit.ir, unit.macro_events, unit.included)
+
+
+def _discrepancy_row(d: Discrepancy) -> tuple[object, ...]:
+    return (d.kind, d.backend, d.detail, d.node_id, d.src, d.dst, d.heuristic, d.elaborated)
+
+
+def _meta_rows(root: Path, options_hash: str) -> list[tuple[str, str]]:
+    return [
+        ("schema_version", SCHEMA_VERSION),
+        ("root", str(root.resolve())),
+        ("built_at", datetime.now(timezone.utc).isoformat(timespec="seconds")),
+        ("tool_version", __version__),
+        ("options_hash", options_hash),
+    ]
+
+
 class SqliteStore:
     """Saves and loads the knowledge graph at a fixed database path."""
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
+        # Set by save_incremental(): {nodes_upserted, nodes_deleted,
+        # edge_srcs_rewritten} for the last incremental write (None after a
+        # full save or before any write). Used by scripts/bench_incremental.py
+        # to assert write cost scales with the change, not the design size.
+        self.last_write_stats: dict[str, int] | None = None
 
     def save(
         self,
@@ -164,93 +237,104 @@ class SqliteStore:
         """
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = self.db_path.with_name(self.db_path.name + ".tmp")
-        tmp_path.unlink(missing_ok=True)  # leftover from a crashed build
+        _unlink_db(tmp_path)  # leftover (db + sidecars) from a crashed build
         conn = sqlite3.connect(tmp_path)
         try:
+            # Build in WAL mode so the persisted database is already WAL: a
+            # later incremental write never has to switch the journal mode
+            # (which is impossible while a reader holds the database open), so
+            # it can never block on a concurrent reader.
+            conn.execute("PRAGMA journal_mode = WAL")
             conn.executescript(_SCHEMA)
             conn.executemany(
                 "INSERT INTO meta (key, value) VALUES (?, ?)",
-                [
-                    ("schema_version", SCHEMA_VERSION),
-                    ("root", str(root.resolve())),
-                    ("built_at", datetime.now(timezone.utc).isoformat(timespec="seconds")),
-                    ("tool_version", __version__),
-                    ("options_hash", options_hash),
-                ],
+                _meta_rows(root, options_hash),
             )
             conn.executemany(
                 "INSERT INTO file_irs VALUES (?, ?, ?, ?)",
-                [
-                    (path, unit.ir, unit.macro_events, unit.included)
-                    for path, unit in (units or {}).items()
-                ],
+                [_file_ir_row(path, unit) for path, unit in (units or {}).items()],
             )
             conn.executemany(
                 "INSERT INTO files VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                [
-                    (
-                        f.path,
-                        f.language.value,
-                        f.content_hash,
-                        f.size_bytes,
-                        f.parse_error_count,
-                        f.skipped_reason,
-                        json.dumps(f.warnings),
-                        json.dumps(f.parse_errors),
-                    )
-                    for f in files
-                ],
+                [_file_row(f) for f in files],
             )
             conn.executemany(
                 "INSERT INTO nodes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [
-                    (
-                        node_id,
-                        data["kind"].value,
-                        data["name"],
-                        data["qualified_name"],
-                        data["file"],
-                        data["line_span"][0],
-                        data["line_span"][1],
-                        data["language"].value,
-                        json.dumps(data["attrs"], sort_keys=True),
-                    )
-                    for node_id, data in graph.nodes(data=True)
-                ],
+                [_node_row(node_id, data) for node_id, data in graph.nodes(data=True)],
             )
             conn.executemany(
                 "INSERT INTO edges VALUES (?, ?, ?, ?, ?)",
-                [
-                    (
-                        src,
-                        dst,
-                        data["kind"].value,
-                        data["confidence"],
-                        json.dumps(data["attrs"], sort_keys=True, default=list),
-                    )
-                    for src, dst, data in graph.edges(data=True)
-                ],
+                [_edge_row(src, dst, data) for src, dst, data in graph.edges(data=True)],
             )
             conn.executemany(
                 "INSERT INTO discrepancies VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                [
-                    (
-                        d.kind,
-                        d.backend,
-                        d.detail,
-                        d.node_id,
-                        d.src,
-                        d.dst,
-                        d.heuristic,
-                        d.elaborated,
-                    )
-                    for d in (discrepancies or [])
-                ],
+                [_discrepancy_row(d) for d in (discrepancies or [])],
             )
             conn.commit()
+            # Fold the WAL back into the main file so the temp database is a
+            # self-contained single file ready for the atomic swap.
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            conn.close()  # last connection closing also drops the WAL sidecars
+        _replace_into_place(tmp_path, self.db_path)
+        # A prior incremental update may have left WAL sidecars beside the live
+        # database; they belong to the now-replaced inode, so a reader must not
+        # apply them to the fresh file.
+        for suffix in ("-wal", "-shm"):
+            with contextlib.suppress(OSError):
+                self.db_path.with_name(self.db_path.name + suffix).unlink(missing_ok=True)
+        self.last_write_stats = None
+
+    def save_incremental(
+        self,
+        graph: nx.MultiDiGraph,
+        files: list[FileMeta],
+        root: Path,
+        units: dict[str, StoredUnit] | None = None,
+        options_hash: str = "",
+        discrepancies: list[Discrepancy] | None = None,
+    ) -> None:
+        """Write only the rows that changed since the stored build, in place.
+
+        ``update`` re-links the full graph but usually touches few files. This
+        diffs the new graph against the stored rows and writes just the delta,
+        so the write cost scales with the change rather than the design size
+        (the full ``save()`` rewrites every row every time). The write runs in
+        WAL mode under a single ``BEGIN IMMEDIATE`` transaction: a concurrent
+        reader never blocks the writer, and a crash mid-write rolls back to the
+        previous database. Falls back to a full :meth:`save` when the database
+        is missing, foreign, or on an incompatible schema.
+
+        The loaded result is identical to a full ``save()`` of the same graph;
+        this is the contract ``test_update_graph_matches_full_rebuild`` pins.
+        """
+        if not self.db_path.is_file():
+            self.save(graph, files, root, units, options_hash, discrepancies)
+            return
+        conn = sqlite3.connect(self.db_path)
+        conn.isolation_level = None  # we drive BEGIN/COMMIT explicitly
+        try:
+            conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
+            try:
+                self._check_version(conn)
+            except SchemaVersionError:
+                conn.close()
+                self.save(graph, files, root, units, options_hash, discrepancies)
+                return
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                stats = _apply_delta(conn, graph, files, root, units, options_hash, discrepancies)
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            # Keep the WAL sidecar near-empty so a later full save() never
+            # risks applying stale frames to the swapped-in file.
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            self.last_write_stats = stats
         finally:
             conn.close()
-        _replace_into_place(tmp_path, self.db_path)
 
     @contextlib.contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -400,6 +484,111 @@ class SqliteStore:
                     src, dst, kind=EdgeKind(kind), confidence=confidence, attrs=json.loads(attrs)
                 )
             return graph, files, meta
+
+
+def _apply_delta(
+    conn: sqlite3.Connection,
+    graph: nx.MultiDiGraph,
+    files: list[FileMeta],
+    root: Path,
+    units: dict[str, StoredUnit] | None,
+    options_hash: str,
+    discrepancies: list[Discrepancy] | None,
+) -> dict[str, int]:
+    """UPSERT/delete only the rows that differ from what is stored.
+
+    Runs inside the caller's open transaction. Returns write-volume stats.
+    """
+    units = units or {}
+    discrepancies = discrepancies or []
+
+    # -- nodes (PK id): UPSERT changed rows, delete vanished ids ---------------
+    stored_nodes = {row[0]: row for row in conn.execute("SELECT * FROM nodes")}
+    new_nodes = {node_id: _node_row(node_id, data) for node_id, data in graph.nodes(data=True)}
+    node_upserts = [row for node_id, row in new_nodes.items() if stored_nodes.get(node_id) != row]
+    node_deletes = [(node_id,) for node_id in stored_nodes if node_id not in new_nodes]
+    conn.executemany(
+        "INSERT OR REPLACE INTO nodes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", node_upserts
+    )
+    conn.executemany("DELETE FROM nodes WHERE id = ?", node_deletes)
+
+    # -- edges (no PK; a multiset grouped by src) -----------------------------
+    # Edges carry no key, so the unit of replacement is "all edges from one
+    # src". For each src whose edge multiset differs (including a src whose
+    # edges only changed because a *target* in an unchanged file was removed/
+    # re-resolved) we delete and re-insert just that src's rows. Counter, not
+    # set: a MultiDiGraph may hold identical parallel edges.
+    stored_edges: defaultdict[str, Counter[tuple[object, ...]]] = defaultdict(Counter)
+    for row in conn.execute("SELECT src, dst, kind, confidence, attrs FROM edges"):
+        stored_edges[row[0]][row] += 1
+    new_edges: defaultdict[str, Counter[tuple[object, ...]]] = defaultdict(Counter)
+    for src, dst, data in graph.edges(data=True):
+        new_edges[src][_edge_row(src, dst, data)] += 1
+    edge_srcs_rewritten = 0
+    for src in stored_edges.keys() | new_edges.keys():
+        if stored_edges.get(src) == new_edges.get(src):
+            continue
+        edge_srcs_rewritten += 1
+        conn.execute("DELETE FROM edges WHERE src = ?", (src,))
+        rows = [row for row, count in new_edges.get(src, Counter()).items() for _ in range(count)]
+        conn.executemany("INSERT INTO edges VALUES (?, ?, ?, ?, ?)", rows)
+
+    # -- files / file_irs (PK path): UPSERT changed, delete removed -----------
+    # A removed source file leaves no FileMeta and no unit, so its rows in both
+    # tables are deleted here; a stale files row would carry a stale
+    # content_hash that the next scan_changes would miss.
+    _upsert_by_path(
+        conn, "files", "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", {f.path: _file_row(f) for f in files}
+    )
+    _upsert_by_path(
+        conn,
+        "file_irs",
+        "VALUES (?, ?, ?, ?)",
+        {path: _file_ir_row(path, unit) for path, unit in units.items()},
+    )
+
+    # -- discrepancies (small, enrich-only): refresh wholesale ----------------
+    conn.execute("DELETE FROM discrepancies")
+    conn.executemany(
+        "INSERT INTO discrepancies VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [_discrepancy_row(d) for d in discrepancies],
+    )
+
+    # -- meta: refresh built_at / options_hash / tool_version -----------------
+    conn.executemany(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", _meta_rows(root, options_hash)
+    )
+
+    return {
+        "nodes_upserted": len(node_upserts),
+        "nodes_deleted": len(node_deletes),
+        "edge_srcs_rewritten": edge_srcs_rewritten,
+    }
+
+
+def _upsert_by_path(
+    conn: sqlite3.Connection,
+    table: str,
+    values_clause: str,
+    new_rows: dict[str, tuple[object, ...]],
+) -> None:
+    """UPSERT path-keyed rows that changed and delete paths no longer present."""
+    stored = {row[0]: row for row in conn.execute(f"SELECT * FROM {table}")}
+    conn.executemany(
+        f"INSERT OR REPLACE INTO {table} {values_clause}",
+        [row for path, row in new_rows.items() if stored.get(path) != row],
+    )
+    conn.executemany(
+        f"DELETE FROM {table} WHERE path = ?",
+        [(path,) for path in stored if path not in new_rows],
+    )
+
+
+def _unlink_db(db_path: Path) -> None:
+    """Remove a database file and its WAL sidecars, ignoring absence."""
+    for suffix in ("", "-wal", "-shm"):
+        with contextlib.suppress(OSError):
+            db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
 
 
 def _replace_into_place(tmp_path: Path, db_path: Path) -> None:

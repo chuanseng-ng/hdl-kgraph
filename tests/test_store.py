@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from hdl_kgraph.enrich.base import Discrepancy
 from hdl_kgraph.graph.builder import build_graph
 from hdl_kgraph.parser.systemverilog import SystemVerilogParser
 from hdl_kgraph.schema import EdgeKind, Language, NodeKind
@@ -243,3 +244,191 @@ def test_load_file_warnings_checks_schema_version(store) -> None:
         conn.execute("UPDATE meta SET value = '1' WHERE key = 'schema_version'")
     with pytest.raises(SchemaVersionError, match="'1'"):
         sqlite_store.load_file_warnings()
+
+
+# -- incremental persistence (issue #63) --------------------------------------
+
+
+def _edge_multiset(g) -> list:
+    """Sorted edge tuples *with* multiplicity (MultiDiGraph parallel edges)."""
+    return sorted(
+        (u, v, d["kind"].value, d["confidence"], _normalize(d["attrs"]))
+        for u, v, d in g.edges(data=True)
+    )
+
+
+def _add_module(graph, node_id: str, name: str, **attrs) -> None:
+    graph.add_node(
+        node_id,
+        kind=NodeKind.MODULE,
+        name=name,
+        qualified_name=name,
+        file=f"{name}.sv",
+        line_span=(1, 2),
+        language=Language.SYSTEMVERILOG,
+        attrs=attrs,
+    )
+
+
+def _node_rowids(db_path) -> dict:
+    conn = sqlite3.connect(db_path)
+    try:
+        return dict(conn.execute("SELECT id, rowid FROM nodes"))
+    finally:
+        conn.close()
+
+
+def test_save_incremental_matches_full_save(store, tmp_path) -> None:
+    """The headline contract: an incremental write loads identically to a full
+    save() of the same graph, across add/delete/edit and parallel edges."""
+    sqlite_store, graph, files = store  # already saved (the stored baseline)
+
+    _add_module(graph, "added.sv::module:added", "added", x=1)
+    victim = next(n for n, d in graph.nodes(data=True) if d["kind"] is NodeKind.PORT)
+    graph.remove_node(victim)  # drops its incident edges too
+    u, v, k, _ = next(iter(graph.edges(keys=True, data=True)))
+    graph[u][v][k]["confidence"] = 0.42
+    graph.add_edge(u, v, kind=EdgeKind.DECLARES, confidence=0.5, attrs={"dup": True})
+    graph.add_edge(u, v, kind=EdgeKind.DECLARES, confidence=0.5, attrs={"dup": True})
+
+    sqlite_store.save_incremental(graph, files, root=Path("."))
+    inc, _, _ = sqlite_store.load()
+
+    full = SqliteStore(tmp_path / "full" / "graph.db")
+    full.save(graph, files, root=Path("."))
+    ref, _, _ = full.load()
+
+    assert set(inc.nodes) == set(ref.nodes)
+    assert _edge_multiset(inc) == _edge_multiset(ref)
+    for node_id, data in ref.nodes(data=True):
+        assert _normalize(inc.nodes[node_id]["attrs"]) == _normalize(data["attrs"])
+
+
+def test_save_incremental_touches_only_changed_node_rows(store) -> None:
+    sqlite_store, graph, files = store
+    before = _node_rowids(sqlite_store.db_path)
+    target = next(iter(graph.nodes))
+    graph.nodes[target]["attrs"] = {"touched": True}
+
+    sqlite_store.save_incremental(graph, files, root=Path("."))
+
+    after = _node_rowids(sqlite_store.db_path)
+    for node_id, rowid in before.items():
+        if node_id != target:
+            assert after[node_id] == rowid, node_id  # untouched rows not rewritten
+    assert sqlite_store.last_write_stats == {
+        "nodes_upserted": 1,
+        "nodes_deleted": 0,
+        "edge_srcs_rewritten": 0,
+    }
+
+
+def test_save_incremental_bounds_edge_writes_by_src(store) -> None:
+    sqlite_store, graph, files = store
+    u, v, k, _ = next(iter(graph.edges(keys=True, data=True)))
+    graph[u][v][k]["confidence"] = 0.33
+
+    sqlite_store.save_incremental(graph, files, root=Path("."))
+
+    assert sqlite_store.last_write_stats["edge_srcs_rewritten"] == 1
+    loaded, _, _ = sqlite_store.load()
+    assert any(abs(d["confidence"] - 0.33) < 1e-9 for _, _, d in loaded.edges(data=True))
+
+
+def test_save_incremental_deletes_stale_nodes_and_edges(store) -> None:
+    sqlite_store, graph, files = store
+    victim = next(n for n, d in graph.nodes(data=True) if d["kind"] is NodeKind.MODULE)
+    graph.remove_node(victim)
+
+    sqlite_store.save_incremental(graph, files, root=Path("."))
+
+    loaded, _, _ = sqlite_store.load()
+    assert victim not in loaded.nodes
+    assert all(victim not in (u, v) for u, v in loaded.edges())
+
+
+def test_save_incremental_preserves_parallel_edges(store) -> None:
+    sqlite_store, graph, files = store
+    nodes = list(graph.nodes)
+    u, v = nodes[0], nodes[1]
+    for _ in range(2):
+        graph.add_edge(u, v, kind=EdgeKind.DECLARES, confidence=0.5, attrs={"p": 1})
+
+    sqlite_store.save_incremental(graph, files, root=Path("."))
+
+    loaded, _, _ = sqlite_store.load()
+    dup = [
+        1 for a, b, d in loaded.edges(data=True) if a == u and b == v and d["attrs"].get("p") == 1
+    ]
+    assert len(dup) == 2  # multiplicity preserved (Counter, not set)
+
+
+def test_save_incremental_refreshes_discrepancies(store) -> None:
+    sqlite_store, graph, files = store
+    disc = Discrepancy(kind="instance_count", backend="pyslang", detail="x")
+    sqlite_store.save_incremental(graph, files, root=Path("."), discrepancies=[disc])
+    assert sqlite_store.load_discrepancies() == [disc]
+    sqlite_store.save_incremental(graph, files, root=Path("."), discrepancies=[])
+    assert sqlite_store.load_discrepancies() == []
+
+
+def test_save_incremental_falls_back_on_schema_mismatch(store) -> None:
+    sqlite_store, graph, files = store
+    conn = sqlite3.connect(sqlite_store.db_path)
+    conn.execute("UPDATE meta SET value = '1' WHERE key = 'schema_version'")
+    conn.commit()
+    conn.close()
+    _add_module(graph, "fallback.sv::module:fb", "fb")
+
+    sqlite_store.save_incremental(graph, files, root=Path("."))  # must not raise
+
+    loaded, _, meta = sqlite_store.load()
+    assert meta["schema_version"] == SCHEMA_VERSION  # rewritten by the full save() fallback
+    assert "fallback.sv::module:fb" in loaded.nodes
+
+
+def test_save_incremental_creates_database_when_missing(tmp_path) -> None:
+    parser = SystemVerilogParser()
+    graph = build_graph([parser.parse(Path("m.sv"), "module m; endmodule\n")])
+    files = [FileMeta(path="m.sv", language=Language.SYSTEMVERILOG, content_hash="0", size_bytes=1)]
+    store = SqliteStore(tmp_path / ".hdl-kgraph" / "graph.db")
+    store.save_incremental(graph, files, root=tmp_path)  # no DB yet -> full save()
+    loaded, _, _ = store.load()
+    assert set(loaded.nodes) == set(graph.nodes)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="open handles block os.replace on Windows")
+def test_save_incremental_succeeds_while_reader_holds_a_transaction(store) -> None:
+    """The WAL no-block guarantee: an incremental write does not raise
+    'database is locked' under a concurrent reader, and the reader's snapshot
+    is untouched until its transaction ends."""
+    sqlite_store, graph, files = store
+    reader = sqlite3.connect(sqlite_store.db_path)
+    try:
+        reader.execute("BEGIN")
+        before = reader.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+        _add_module(graph, "reader.sv::module:z", "z")
+        sqlite_store.save_incremental(graph, files, root=Path("."), options_hash="during-read")
+        assert reader.execute("SELECT COUNT(*) FROM nodes").fetchone()[0] == before
+    finally:
+        reader.close()
+    _, _, meta = sqlite_store.load()
+    assert meta["options_hash"] == "during-read"
+
+
+def test_save_incremental_leaves_no_wal_frames(store) -> None:
+    sqlite_store, graph, files = store
+    _add_module(graph, "wal.sv::module:w", "w")
+    sqlite_store.save_incremental(graph, files, root=Path("."))
+    wal = sqlite_store.db_path.with_name(sqlite_store.db_path.name + "-wal")
+    assert not wal.exists() or wal.stat().st_size == 0
+
+
+def test_full_save_after_incremental_leaves_clean_single_file(store) -> None:
+    sqlite_store, graph, files = store
+    sqlite_store.save_incremental(graph, files, root=Path("."))  # DB now in WAL mode
+    sqlite_store.save(graph, files, root=Path("."))  # full rewrite must clean sidecars
+    for suffix in ("-wal", "-shm"):
+        assert not sqlite_store.db_path.with_name(sqlite_store.db_path.name + suffix).exists()
+    loaded, _, _ = sqlite_store.load()
+    assert loaded.number_of_edges() == graph.number_of_edges()
