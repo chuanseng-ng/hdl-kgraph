@@ -53,7 +53,12 @@ from hdl_kgraph.discovery import (
     discover_from_paths,
     glob_sources,
 )
-from hdl_kgraph.enrich import EnrichmentInput, available_backends, run_enrichment
+from hdl_kgraph.enrich import (
+    EnrichmentInput,
+    available_backends,
+    run_enrichment,
+    summarize_enrichment,
+)
 from hdl_kgraph.enrich.base import Discrepancy
 from hdl_kgraph.graph.builder import build_graph
 from hdl_kgraph.ids import file_node_id, library_node_id
@@ -144,6 +149,8 @@ class BuildReport:
     enriched: bool = False
     enrich_backends: list[str] = field(default_factory=list)
     edges_upgraded: int = 0
+    enrich_nodes_added: int = 0
+    enrich_generates_unrolled: int = 0
     discrepancy_count: int = 0
     enrich_diagnostics: list[str] = field(default_factory=list)
 
@@ -588,9 +595,14 @@ def _enrich(
         vhdl_libraries=vhdl_file_libs,
     )
     enrich_report = run_enrichment(graph, enrich_input, backends)
+    # Reconstruct the delta from the (now mutated) graph's elaboration stamps so
+    # the build report and the standalone `enriched` command share one source.
+    summary = summarize_enrichment(graph)
     report.enriched = True
-    report.enrich_backends = enrich_report.backends
-    report.edges_upgraded = enrich_report.edges_upgraded
+    report.enrich_backends = summary.backends or enrich_report.backends
+    report.edges_upgraded = summary.edges_upgraded
+    report.enrich_nodes_added = summary.nodes_added
+    report.enrich_generates_unrolled = summary.generates_unrolled
     report.discrepancy_count = len(enrich_report.discrepancies)
     report.enrich_diagnostics = enrich_report.diagnostics
     return enrich_report.discrepancies

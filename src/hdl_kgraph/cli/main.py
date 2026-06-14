@@ -45,6 +45,7 @@ from hdl_kgraph.config import (
     resolve_build_options,
 )
 from hdl_kgraph.discovery import DEFAULT_MAX_FILE_SIZE_KB, SUFFIXES
+from hdl_kgraph.enrich import summarize_enrichment
 from hdl_kgraph.export import EXPORT_FORMATS
 from hdl_kgraph.graph import analysis, clocks, lint, metrics, uvm
 from hdl_kgraph.incremental import dirty_closure
@@ -96,7 +97,8 @@ _enrich_option = click.option(
     is_flag=True,
     help="Run native-frontend elaboration (pyslang for SV/Verilog, ghdl for "
     "VHDL) to upgrade heuristic edges to elaboration-accurate facts and record "
-    "discrepancies (M7). Slower; re-runs whole-design elaboration on every update.",
+    "discrepancies (M7). Slower; re-runs whole-design elaboration on every "
+    "update. `hdl-kgraph enriched` reports the delta vs the default build.",
 )
 
 
@@ -349,6 +351,9 @@ def _echo_build_report(report: BuildReport, verbose: bool = False) -> None:
                 "(`hdl-kgraph discrepancies` lists them)"
             )
         if verbose:
+            click.echo(f"      nodes added:       {report.enrich_nodes_added}")
+            click.echo(f"      generates unrolled: {report.enrich_generates_unrolled}")
+            click.echo("      (full delta: `hdl-kgraph enriched`)")
             for diag in report.enrich_diagnostics:
                 click.echo(f"      {diag}")
     if not verbose and (report.error_files or report.preproc_warning_count):
@@ -877,6 +882,53 @@ def discrepancies(db_path: Path | None, as_json: bool) -> None:
     click.echo(f"{len(items)} discrepancy finding(s):")
     for kind, count in by_kind.most_common():
         click.echo(f"  {count:6} {kind}")
+    for d in items:
+        click.echo(f"[{d.kind}] {d.detail} (via {d.backend})")
+        if d.heuristic or d.elaborated:
+            click.echo(f"    heuristic: {d.heuristic or '-'}  elaborated: {d.elaborated or '-'}")
+
+
+@main.command()
+@_db_option
+@_json_option
+def enriched(db_path: Path | None, as_json: bool) -> None:
+    """Report exactly what ``build --enrich`` added vs the default build.
+
+    Reconstructed from the stored graph's elaboration stamps (M7): heuristic
+    edges promoted to elaboration-accurate facts, elaborated nodes/edges added
+    by unrolling generate loops and instance arrays, and the discrepancies where
+    elaboration disagreed with the heuristic graph. Read-only — no rebuild.
+    """
+    try:
+        store = SqliteStore(_resolve_db(db_path))
+        graph, _files, _meta = store.load()
+        items = store.load_discrepancies()
+    except SchemaVersionError as exc:
+        raise click.ClickException(str(exc)) from exc
+    summary = summarize_enrichment(graph)
+    if as_json:
+        _emit_json(
+            {
+                "summary": dataclasses.asdict(summary),
+                "discrepancies": [dataclasses.asdict(d) for d in items],
+            }
+        )
+        return
+    if not summary.enriched and not items:
+        click.echo("not enriched (run `hdl-kgraph build --enrich`)")
+        return
+    backends = ", ".join(summary.backends) or "(none)"
+    click.echo(f"enrichment via {backends}:")
+    click.echo(f"  edges upgraded:     {summary.edges_upgraded}")
+    click.echo(f"  edges added:        {summary.edges_added}")
+    click.echo(f"  nodes added:        {summary.nodes_added}")
+    click.echo(f"  generates unrolled: {summary.generates_unrolled}")
+    click.echo(f"  discrepancies:      {len(items)}")
+    if not items:
+        return
+    by_kind = Counter(d.kind for d in items)
+    for kind, count in by_kind.most_common():
+        click.echo(f"    {count:6} {kind}")
     for d in items:
         click.echo(f"[{d.kind}] {d.detail} (via {d.backend})")
         if d.heuristic or d.elaborated:

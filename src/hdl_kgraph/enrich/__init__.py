@@ -16,6 +16,7 @@ from hdl_kgraph.enrich.base import (
     EnrichmentReport,
     EnrichmentResult,
 )
+from hdl_kgraph.enrich.report import EnrichmentSummary, summarize_enrichment
 from hdl_kgraph.enrich.runner import available_backends, run_enrichment
 
 __all__ = [
@@ -26,6 +27,8 @@ __all__ = [
     "EnrichmentInput",
     "EnrichmentReport",
     "EnrichmentResult",
+    "EnrichmentSummary",
     "available_backends",
     "run_enrichment",
+    "summarize_enrichment",
 ]

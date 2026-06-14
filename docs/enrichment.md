@@ -56,6 +56,33 @@ $ hdl-kgraph discrepancies
 `--json` emits the same findings for tooling. Discrepancy kinds:
 `instance_count`, `wrong_target` (and the reserved `missing_edge` / `extra_edge`).
 
+## The enrichment report
+
+`hdl-kgraph enriched` reports exactly what `--enrich` changed relative to the
+default (heuristic-only) build — reconstructed from the stored graph's
+elaboration stamps, so it is read-only and needs no rebuild:
+
+```console
+$ hdl-kgraph enriched
+enrichment via slang:
+  edges upgraded:     12
+  edges added:        16
+  nodes added:        8
+  generates unrolled: 1
+  discrepancies:      1
+       1 instance_count
+[instance_count] soc_top.u_lane (target lane) elaborates to 8 instances; tree-sitter saw 1 (via slang)
+    heuristic: 1  elaborated: 8
+```
+
+`edges upgraded` are heuristic edges promoted to elaboration confidence;
+`edges added`/`nodes added` are the elaborated (`elab:`) nodes and edges created
+by unrolling generates and instance arrays; `generates unrolled` counts the
+syntactic instances whose elaborated multiplicity exceeded one. `--json` emits
+`{summary, discrepancies}` for tooling. On a non-enriched build the command
+prints `not enriched (run \`hdl-kgraph build --enrich\`)`. The same summary is
+shown inline by `build --enrich -v`.
+
 ## Backends
 
 Enrichment backends ship in the **core install** (no optional extra to add):
