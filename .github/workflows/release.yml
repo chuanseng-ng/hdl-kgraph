@@ -21,7 +21,10 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install -e .[dev,mcp,watch]
+      # Mirror CI's test job: [enrich] pulls in pyslang so the slang backend is
+      # actually available. Without it, the registry exposes no backends and the
+      # enrichment availability tests fail (rather than skipping) here.
+      - run: pip install -e .[dev,mcp,watch,enrich]
       - run: pytest
 
   build:
