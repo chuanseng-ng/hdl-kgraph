@@ -119,6 +119,95 @@ def test_added_header_dirties_previously_failing_includer(tmp_path: Path) -> Non
     assert update.build is not None and update.build.includes_resolved == 1
 
 
+def _instantiates_targets(graph, parent_module: str) -> set[str]:
+    """The dst node ids of INSTANTIATES edges out of *parent_module*'s subtree."""
+    prefix = f"{parent_module}::"  # scope to this file, not similarly-named ones
+    return {
+        v
+        for u, v, d in graph.edges(data=True)
+        if d["kind"] is EdgeKind.INSTANTIATES and u.startswith(prefix)
+    }
+
+
+def test_removed_module_relinks_parent_edge_incrementally(project: Path) -> None:
+    """A removed module flips an instantiation edge owned by an *unchanged*
+    (not reparsed) parent file. The per-src edge diff in the incremental write
+    must catch that, even though mid.sv itself is re-linked from its stored IR."""
+    before = _graph(project)
+    assert "leaf.sv::module:leaf" in _instantiates_targets(before, "mid.sv")
+
+    (project / "leaf.sv").unlink()
+    report = run_update(project)
+    assert report.reparsed == {}  # mid is NOT reparsed
+    assert report.full_rebuild_reason is None  # the incremental path was taken
+
+    after = _graph(project)
+    targets = _instantiates_targets(after, "mid.sv")
+    assert "leaf.sv::module:leaf" not in targets
+    assert "unresolved:module:leaf" in targets  # edge re-pointed by the delta write
+
+
+def test_readded_module_flips_edge_back_incrementally(project: Path) -> None:
+    source = (project / "leaf.sv").read_text()
+    (project / "leaf.sv").unlink()
+    run_update(project)
+    assert "unresolved:module:leaf" in _instantiates_targets(_graph(project), "mid.sv")
+
+    (project / "leaf.sv").write_text(source)
+    run_update(project)
+    targets = _instantiates_targets(_graph(project), "mid.sv")
+    assert "leaf.sv::module:leaf" in targets
+    assert "unresolved:module:leaf" not in targets
+
+
+def test_removed_file_drops_its_files_and_file_ir_rows(project: Path) -> None:
+    """An incrementally-removed source must leave no stale files/file_irs row
+    (a stale content_hash would make the next scan miss it)."""
+    import sqlite3
+
+    db = project / ".hdl-kgraph" / "graph.db"
+    (project / "my_pkg.sv").unlink()  # a leaf in the dep graph, safe to drop
+    run_update(project)
+
+    conn = sqlite3.connect(db)
+    try:
+        files = {row[0] for row in conn.execute("SELECT path FROM files")}
+        irs = {row[0] for row in conn.execute("SELECT path FROM file_irs")}
+    finally:
+        conn.close()
+    assert "my_pkg.sv" not in files
+    assert "my_pkg.sv" not in irs
+
+
+def test_update_write_cost_scales_with_change(project: Path) -> None:
+    """The issue's verification: an incremental write touches far fewer rows
+    than the full graph. Asserted via SqliteStore.last_write_stats."""
+    db = project / ".hdl-kgraph" / "graph.db"
+    total_nodes = SqliteStore(db).load()[0].number_of_nodes()
+
+    captured: dict[str, dict] = {}
+    real_save_incremental = SqliteStore.save_incremental
+
+    def spy(self, *args, **kwargs):
+        real_save_incremental(self, *args, **kwargs)
+        if self.last_write_stats is not None:
+            captured["stats"] = self.last_write_stats
+
+    SqliteStore.save_incremental = spy  # type: ignore[method-assign]
+    try:
+        path = project / "mid.sv"
+        path.write_text(path.read_text() + "// touched\n")
+        run_update(project)
+    finally:
+        SqliteStore.save_incremental = real_save_incremental  # type: ignore[method-assign]
+
+    stats = captured["stats"]
+    written = stats["nodes_upserted"] + stats["nodes_deleted"]
+    # Touching only mid.sv must write a small fraction of the graph, not all of
+    # it — a proportional bound that stays valid as the schema/graph grows.
+    assert written < total_nodes // 2
+
+
 def test_update_graph_matches_full_rebuild(project: Path) -> None:
     path = project / "mid.sv"
     path.write_text(path.read_text().replace("u_leaf", "u_leaf2"))

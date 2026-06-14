@@ -169,9 +169,13 @@ def test_stale_database_reloads(tmp_path: Path, fixtures_dir: Path) -> None:
 def test_locked_database_is_a_clear_retriable_error(
     tmp_path: Path, fixtures_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A tool call racing a concurrent writer must surface a retriable
-    message, not a raw sqlite3.OperationalError — and the next call after
-    the writer finishes must succeed (the failure is not cached)."""
+    """A tool call against a genuinely locked database must surface a
+    retriable message, not a raw sqlite3.OperationalError — and the next call
+    after the lock clears must succeed (the failure is not cached).
+
+    The database is WAL mode (so an ordinary writer never blocks readers); to
+    force the locked path we hold an EXCLUSIVE *file* lock, which does block
+    readers even under WAL."""
     root = tmp_path / "proj"
     root.mkdir()
     shutil.copy(fixtures_dir / "simple_counter.sv", root / "simple_counter.sv")
@@ -179,11 +183,14 @@ def test_locked_database_is_a_clear_retriable_error(
     monkeypatch.setattr(sqlite_store_module, "_BUSY_TIMEOUT_MS", 100)
     server = create_server(root / ".hdl-kgraph" / "graph.db")
     blocker = sqlite3.connect(root / ".hdl-kgraph" / "graph.db")
+    blocker.isolation_level = None
     try:
-        blocker.execute("BEGIN EXCLUSIVE")
+        blocker.execute("PRAGMA locking_mode = EXCLUSIVE")
+        blocker.execute("BEGIN IMMEDIATE")
+        blocker.execute("UPDATE meta SET value = value WHERE key = 'root'")
         with pytest.raises(Exception, match="retry shortly"):
             _call(server, "find_module", {"name": "simple_counter"})
     finally:
-        blocker.rollback()
+        blocker.execute("ROLLBACK")
         blocker.close()
     assert _call(server, "find_module", {"name": "simple_counter"})["total"] == 1
