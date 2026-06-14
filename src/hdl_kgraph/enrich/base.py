@@ -51,6 +51,10 @@ class EnrichmentInput:
     incdirs: list[Path] = field(default_factory=list)
     tops: list[str] = field(default_factory=list)
     base: Path = field(default_factory=Path)
+    #: VHDL is analysed library-scoped; maps a root-relative source path to the
+    #: library it compiles into (``work`` by default). Empty for SV-only inputs;
+    #: the slang backend ignores it.
+    vhdl_libraries: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

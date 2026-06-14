@@ -18,7 +18,10 @@ rebuild. Paths are POSIX-style and relative to the build root.
   hierarchical path so a generate loop's unrolled iterations get distinct,
   stable ids that never collide with the single syntactic instance):
   ``elab:{kind}:{hierarchical_path}`` — e.g.
-  ``elab:instance:top.g_leaf[0].u_leaf``.
+  ``elab:instance:top.g_leaf[0].u_leaf`` (SystemVerilog ``[i]`` indexing; VHDL
+  ``for ... generate`` uses ``(i)`` and seeds the path with ``entity(arch)`` so
+  an entity's architectures never collide —
+  ``elab:instance:gen_top(rtl).g_leaf(0).u_leaf``).
 """
 
 from __future__ import annotations
