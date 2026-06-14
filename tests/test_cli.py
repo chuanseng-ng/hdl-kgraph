@@ -934,13 +934,29 @@ def test_serve_http_warns_on_non_loopback_bind(
 
     import hdl_kgraph.mcp
 
-    monkeypatch.setattr(hdl_kgraph.mcp, "create_server", lambda db_path: DummyServer())
+    seen: list[str | None] = []
+
+    def fake_create_server(db_path: Path, *, token: str | None = None) -> DummyServer:
+        seen.append(token)
+        return DummyServer()
+
+    monkeypatch.setattr(hdl_kgraph.mcp, "create_server", fake_create_server)
 
     public = CliRunner().invoke(main, ["serve", "--http", "0.0.0.0:8123", *db_args(project)])
     assert public.exit_code == 0, public.output
     assert "no authentication" in public.output
     assert calls[-1]["host"] == "0.0.0.0"
+    assert seen[-1] is None  # no token configured
 
     loopback = CliRunner().invoke(main, ["serve", "--http", "127.0.0.1:8123", *db_args(project)])
     assert loopback.exit_code == 0, loopback.output
     assert "no authentication" not in loopback.output
+
+    # With a token the non-loopback bind is authenticated, so the warning is
+    # suppressed and the token is threaded into create_server (#69).
+    tokened = CliRunner().invoke(
+        main, ["serve", "--http", "0.0.0.0:8123", "--token", "s3cret", *db_args(project)]
+    )
+    assert tokened.exit_code == 0, tokened.output
+    assert "no authentication" not in tokened.output
+    assert seen[-1] == "s3cret"

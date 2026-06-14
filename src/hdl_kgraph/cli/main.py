@@ -1578,18 +1578,30 @@ def tree(top: str | None, depth: int, db_path: Path | None, as_json: bool) -> No
     "http_addr",
     metavar="HOST:PORT",
     default=None,
-    help="Serve over streamable HTTP instead of stdio. No authentication — "
-    "the graph exposes your design's structure, so bind 127.0.0.1 unless "
-    "every host on the network is trusted.",
+    help="Serve over streamable HTTP instead of stdio. Pass --token to require "
+    "a bearer token; otherwise there is no authentication — the graph exposes "
+    "your design's structure, so bind 127.0.0.1 unless every host is trusted.",
 )
-def serve(mcp_mode: bool, db_path: Path | None, http_addr: str | None) -> None:
+@click.option(
+    "--token",
+    "token",
+    metavar="TOKEN",
+    default=None,
+    envvar="HDL_KGRAPH_MCP_TOKEN",
+    help="Require this bearer token for the HTTP transport (clients send "
+    "`Authorization: Bearer <token>`). Reads HDL_KGRAPH_MCP_TOKEN if unset; "
+    "ignored for stdio.",
+)
+def serve(mcp_mode: bool, db_path: Path | None, http_addr: str | None, token: str | None) -> None:
     """Serve the knowledge graph to AI assistants over MCP (read-only).
 
     Speaks MCP on stdio by default (the transport assistant configs use);
-    ``--http`` exposes the same tools over streamable HTTP instead — with
-    no authentication, so keep it bound to loopback (see docs/mcp.md). The
-    server only ever reads the database — rebuild with ``build``/``update``
-    (a running server picks up the new database automatically).
+    ``--http`` exposes the same tools over streamable HTTP instead. HTTP has
+    no authentication unless you pass ``--token`` (or set
+    ``HDL_KGRAPH_MCP_TOKEN``), so otherwise keep it bound to loopback (see
+    docs/mcp.md). The server only ever reads the database — rebuild with
+    ``build``/``update`` (a running server picks up the new database
+    automatically).
     """
     del mcp_mode  # MCP is the default and only mode; the flag is a no-op
     if db_path is None:
@@ -1608,8 +1620,11 @@ def serve(mcp_mode: bool, db_path: Path | None, http_addr: str | None) -> None:
 
     from hdl_kgraph.mcp import McpUnavailableError, create_server
 
+    # stdio is a local pipe with no network surface, so a token is meaningless
+    # there; only wire auth into the HTTP transport.
+    http_token = token if http_addr is not None else None
     try:
-        server = create_server(db_path)
+        server = create_server(db_path, token=http_token)
     except McpUnavailableError as exc:
         raise click.ClickException(str(exc)) from exc
     if http_addr is None:
@@ -1618,11 +1633,12 @@ def serve(mcp_mode: bool, db_path: Path | None, http_addr: str | None) -> None:
     host, _, port_text = http_addr.rpartition(":")
     if not host or not port_text.isdigit():
         raise click.ClickException(f"--http expects HOST:PORT, got {http_addr!r}")
-    if host not in ("127.0.0.1", "localhost", "::1", "[::1]"):
+    if token is None and host not in ("127.0.0.1", "localhost", "::1", "[::1]"):
         click.echo(
             f"warning: serving on {host} exposes your design's structure to the "
-            "network with no authentication; bind 127.0.0.1 unless every host "
-            "is trusted (see docs/mcp.md)",
+            "network with no authentication; pass --token (or set "
+            "HDL_KGRAPH_MCP_TOKEN), or bind 127.0.0.1 unless every host is "
+            "trusted (see docs/mcp.md)",
             err=True,
         )
     server.run(transport="http", host=host, port=int(port_text))

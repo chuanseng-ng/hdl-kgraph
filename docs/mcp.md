@@ -67,12 +67,32 @@ prefer HTTP:
 hdl-kgraph serve --mcp --http 127.0.0.1:8000   # streamable HTTP at /mcp
 ```
 
-> **Security:** the HTTP transport has **no authentication**, and the graph
-> exposes your design's structure (module names, hierarchy, files). Keep it
-> bound to a loopback address (`127.0.0.1`, `localhost`, or `[::1]`) — the
-> CLI warns when you bind any other host. Only bind a routable address on a
-> network where every host is trusted, or put an authenticating reverse
-> proxy in front.
+### HTTP authentication
+
+By default the HTTP transport has **no authentication**. Require a bearer
+token with `--token` (or the `HDL_KGRAPH_MCP_TOKEN` environment variable so
+the secret stays off the process command line):
+
+```sh
+export HDL_KGRAPH_MCP_TOKEN=$(openssl rand -hex 32)
+hdl-kgraph serve --mcp --http 0.0.0.0:8000      # now requires the token
+```
+
+Clients then send it as a standard bearer credential:
+
+```text
+Authorization: Bearer <token>
+```
+
+Requests without a valid token are rejected. The token gates HTTP only;
+stdio is a local pipe and ignores it.
+
+> **Security:** the graph exposes your design's structure (module names,
+> hierarchy, files). When the HTTP transport runs **without** a token, keep it
+> bound to a loopback address (`127.0.0.1`, `localhost`, or `[::1]`) — the CLI
+> warns when you bind any other host without `--token`. Only bind a routable
+> address when every host on the network is trusted, you set a `--token`, or
+> you put an authenticating reverse proxy in front.
 
 ## Tools
 

@@ -529,3 +529,27 @@ def test_compression_lets_oversized_payload_embed(graph, tmp_path: Path, monkeyp
     monkeypatch.setattr("hdl_kgraph.viz.COMPRESS_OVER_BYTES", 10**12)
     with pytest.raises(ValueError, match="inline limit"):
         render_html(graph, tmp_path / "no.html", full=True)
+
+
+def test_d3_bundle_matches_pinned_hash() -> None:
+    # The vendored d3 blob is inlined verbatim into every report, so its SHA-256
+    # is pinned and verified; a drift between file and pin must fail loud (#78).
+    import hashlib
+    from importlib import resources
+
+    from hdl_kgraph.viz import _D3_SHA256, _load_d3
+
+    package = resources.files("hdl_kgraph.viz")
+    raw = (package / "static" / "d3.v7.min.js").read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == _D3_SHA256
+    assert _load_d3(package)  # loads (and re-verifies) without raising
+
+
+def test_d3_bundle_integrity_rejects_tamper(tmp_path: Path) -> None:
+    from hdl_kgraph.viz import _load_d3
+
+    fake = tmp_path / "static"
+    fake.mkdir()
+    (fake / "d3.v7.min.js").write_text("/* tampered */ alert(1)")
+    with pytest.raises(RuntimeError, match="integrity check"):
+        _load_d3(tmp_path)

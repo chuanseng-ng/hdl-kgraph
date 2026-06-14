@@ -15,6 +15,11 @@ filelists carry simulator options we must tolerate. Relative paths resolve
 against the filelist's own directory, so nested ``-f`` in other directories
 just works. File order is preserved (and persisted on REFERENCES_FILE edge
 ``attrs["order"]``) because compile order governs ``define`` visibility.
+
+When the pipeline passes a ``root`` (the build root), resolved source/``-y``/
+``-v``/nested-``-f`` paths and ``+incdir+`` dirs are confined to it: a token
+that escapes via ``..`` or a ``$VAR`` expanding to an out-of-tree/absolute path
+is dropped with a warning instead of disclosing files outside the tree (#68).
 """
 
 from __future__ import annotations
@@ -27,7 +32,7 @@ from pathlib import Path
 
 from hdl_kgraph.config import parse_define
 from hdl_kgraph.ids import file_node_id, filelist_node_id
-from hdl_kgraph.parser.base import FileIR
+from hdl_kgraph.parser.base import FileIR, within_root
 from hdl_kgraph.schema import Edge, EdgeKind, Node, NodeKind
 
 FILELIST_SUFFIXES = frozenset({".f", ".vc"})
@@ -64,12 +69,29 @@ def parse_filelist(
     path: Path,
     *,
     env: Mapping[str, str] | None = None,
+    root: Path | None = None,
     _stack: tuple[Path, ...] = (),
 ) -> Filelist:
-    """Parse *path* recursively; problems become warnings, never exceptions."""
+    """Parse *path* recursively; problems become warnings, never exceptions.
+
+    When *root* is given, every resolved source/``-y``/``-v`` token, nested
+    ``-f`` filelist, and ``+incdir+`` directory is confined to it: a token that
+    resolves outside *root* (via ``..`` or a ``$VAR`` expanding to an
+    out-of-tree/absolute path) is dropped with a warning rather than pulling in
+    files outside the build tree (#68). With *root* ``None`` no containment is
+    applied (direct-API/test use).
+    """
     path = path.resolve()
+    root = root.resolve() if root is not None else None
     env_map = os.environ if env is None else env
     fl = Filelist(path=path)
+
+    def escapes(target: Path, label: str) -> bool:
+        if root is not None and not within_root(target, root):
+            fl.warnings.append(f"{path.name}: {label} escapes the build root, skipped")
+            return True
+        return False
+
     try:
         text = path.read_text(errors="replace")
     except OSError as exc:
@@ -91,18 +113,26 @@ def parse_filelist(
             fl.warnings.extend(f"{path.name}: {w}" for w in expand_warnings)
             i += 1
             target = (base / arg).resolve()
+            if escapes(target, f"{token} {arg!r}"):
+                continue
             if token == "-f":
                 if target in (*_stack, path):
                     fl.warnings.append(f"{path.name}: filelist cycle via {arg} skipped")
                 else:
-                    fl.entries.append(parse_filelist(target, env=env_map, _stack=(*_stack, path)))
+                    fl.entries.append(
+                        parse_filelist(target, env=env_map, root=root, _stack=(*_stack, path))
+                    )
             elif token == "-y":
                 fl.library_dirs.append(target)
             else:  # -v
                 fl.library_files.append(target)
         elif token.startswith("+incdir+"):
-            dirs = token[len("+incdir+") :].split("+")
-            fl.incdirs.extend((base / d).resolve() for d in dirs if d)
+            for d in token[len("+incdir+") :].split("+"):
+                if not d:
+                    continue
+                target = (base / d).resolve()
+                if not escapes(target, f"+incdir+ {d!r}"):
+                    fl.incdirs.append(target)
         elif token.startswith("+define+"):
             for item in token[len("+define+") :].split("+"):
                 if item:
@@ -111,7 +141,9 @@ def parse_filelist(
         elif token.startswith(("-", "+")):
             fl.warnings.append(f"{path.name}: unknown option {token!r} skipped")
         else:
-            fl.entries.append((base / token).resolve())
+            target = (base / token).resolve()
+            if not escapes(target, f"source {token!r}"):
+                fl.entries.append(target)
     return fl
 
 

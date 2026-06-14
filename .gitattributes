@@ -1,0 +1,5 @@
+# Vendored, integrity-pinned third-party asset: its SHA-256 is verified at
+# render time (hdl_kgraph/viz/__init__.py, #78). Treat it as binary so Git
+# never rewrites its line endings on checkout — a CRLF conversion on Windows
+# would change the bytes and fail the integrity check.
+src/hdl_kgraph/viz/static/d3.v7.min.js binary

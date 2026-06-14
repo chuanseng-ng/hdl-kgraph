@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import base64
 import gzip
+import hashlib
 import json
 from dataclasses import dataclass
 from importlib import resources
@@ -40,6 +41,33 @@ from hdl_kgraph.viz.layout import compute_layout, layout_available
 _DATA_MARKER = "/*__DATA__*/"
 _D3_MARKER = "/*__D3__*/"
 _ENC_MARKER = "/*__ENC__*/"
+
+#: SHA-256 of the vendored ``static/d3.v7.min.js`` (upstream version + provenance
+#: recorded in ``static/LICENSE.d3``). The bundle is inlined verbatim into every
+#: report, so a tampered blob would execute in the browser of anyone who opens
+#: one. Verifying the hash at render time turns repo/supply-chain modification
+#: into a loud failure instead of silent execution (#78). Update both this
+#: constant and LICENSE.d3 together when intentionally bumping d3.
+_D3_SHA256 = "f2094bbf6141b359722c4fe454eb6c4b0f0e42cc10cc7af921fc158fceb86539"
+
+
+def _load_d3(package: Any) -> str:
+    """Read the vendored d3 bundle after verifying its pinned SHA-256.
+
+    Raises :class:`RuntimeError` if the bundled file no longer matches
+    :data:`_D3_SHA256`, so an accidental or malicious modification fails loud
+    rather than being inlined into a generated report (#78).
+    """
+    raw = (package / "static" / "d3.v7.min.js").read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != _D3_SHA256:
+        raise RuntimeError(
+            "vendored d3.v7.min.js failed its integrity check "
+            f"(expected sha256 {_D3_SHA256}, got {digest}); the bundled file has "
+            "been modified — see src/hdl_kgraph/viz/static/LICENSE.d3"
+        )
+    return raw.decode("utf-8")
+
 
 #: Layout tiers (viz-scalability Phase 2). Below the live thresholds the
 #: client runs ``d3.forceSimulation`` as before; above them we ship
@@ -337,7 +365,7 @@ def render_html(
 
     package = resources.files("hdl_kgraph.viz")
     template = (package / "template.html").read_text(encoding="utf-8")
-    d3 = (package / "static" / "d3.v7.min.js").read_text(encoding="utf-8")
+    d3 = _load_d3(package)
     payload = _payload(
         g,
         full,

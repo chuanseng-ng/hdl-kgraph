@@ -109,6 +109,55 @@ def test_missing_filelist_warns(tmp_path: Path) -> None:
     assert any("cannot read" in w for w in fl.warnings)
 
 
+def test_root_containment_skips_escaping_paths(tmp_path: Path) -> None:
+    # Build root is proj/; tokens climbing above it must be dropped with a warning (#68).
+    root = tmp_path / "proj"
+    write(root / "good.sv", "")
+    fl = parse_filelist(
+        write(root / "tb.f", "good.sv\n../evil.sv\n+incdir+../outside\n-v ../lib.v\n-f ../up.f\n"),
+        env={},
+        root=root,
+    )
+    assert [p.name for p in fl.files] == ["good.sv"]  # ../evil.sv dropped
+    assert fl.incdirs == []  # +incdir+../outside dropped
+    assert fl.library_files == []  # -v ../lib.v dropped
+    assert fl.nested == []  # -f ../up.f dropped
+    assert sum("escapes the build root" in w for w in fl.warnings) == 4
+
+
+def test_root_containment_allows_in_tree(tmp_path: Path) -> None:
+    root = tmp_path / "proj"
+    write(root / "sub" / "a.sv", "")
+    fl = parse_filelist(
+        write(root / "tb.f", "sub/a.sv\n+incdir+sub\n"),
+        env={},
+        root=root,
+    )
+    assert [p.name for p in fl.files] == ["a.sv"]
+    assert fl.incdirs == [(root / "sub").resolve()]
+    assert not any("escapes" in w for w in fl.warnings)
+
+
+def test_root_containment_catches_var_expansion_escape(tmp_path: Path) -> None:
+    # A $VAR that expands to an out-of-tree absolute path is caught by containment.
+    root = tmp_path / "proj"
+    fl = parse_filelist(
+        write(root / "tb.f", "$SECRET/passwd.sv\n"),
+        env={"SECRET": str(tmp_path / "outside")},
+        root=root,
+    )
+    assert fl.files == []
+    assert any("escapes the build root" in w for w in fl.warnings)
+
+
+def test_no_containment_without_root(tmp_path: Path) -> None:
+    # Direct-API/test use (root=None) keeps the permissive behavior.
+    root = tmp_path / "proj"
+    fl = parse_filelist(write(root / "tb.f", "../evil.sv\n"), env={})
+    assert [p.name for p in fl.files] == ["evil.sv"]
+    assert not any("escapes" in w for w in fl.warnings)
+
+
 def test_filelist_irs(tmp_path: Path) -> None:
     write(tmp_path / "common.f", "c.sv\n")
     fl = parse_filelist(write(tmp_path / "tb.f", "a.sv\n-f common.f\nb.sv\n-v prims.v\n"), env={})
