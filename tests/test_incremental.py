@@ -208,6 +208,37 @@ def test_update_write_cost_scales_with_change(project: Path) -> None:
     assert written < total_nodes // 2
 
 
+def test_update_read_cost_scales_with_change(project: Path) -> None:
+    """Phase B: the scoped delta *reads* only the dirty closure's stored rows,
+    not the whole nodes/edges tables — so update memory/IO scales with the
+    change. Asserted via SqliteStore.last_write_stats."""
+    db = project / ".hdl-kgraph" / "graph.db"
+    total_nodes = SqliteStore(db).load()[0].number_of_nodes()
+
+    captured: dict[str, dict] = {}
+    real_save_incremental = SqliteStore.save_incremental
+
+    def spy(self, *args, **kwargs):
+        real_save_incremental(self, *args, **kwargs)
+        if self.last_write_stats is not None:
+            captured["stats"] = self.last_write_stats
+
+    SqliteStore.save_incremental = spy  # type: ignore[method-assign]
+    try:
+        path = project / "mid.sv"
+        path.write_text(path.read_text() + "// touched\n")
+        report = run_update(project)
+    finally:
+        SqliteStore.save_incremental = real_save_incremental  # type: ignore[method-assign]
+
+    assert report.build is not None and report.build.incremental_link
+    stats = captured["stats"]
+    # The scoped path reports read volume; its presence proves the whole-table
+    # diff was avoided, and editing one of five files reads a strict subset.
+    assert "nodes_scanned" in stats
+    assert stats["nodes_scanned"] < total_nodes
+
+
 def test_ref_index_scoping_is_superset_of_changed_pass2_edges(project: Path) -> None:
     """Stage-0 substrate guard (#64-A): every pass-2 edge that differs between
     two builds is owned by a reparsed file or surfaced by the reverse-index
