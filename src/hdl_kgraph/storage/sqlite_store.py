@@ -358,6 +358,8 @@ class SqliteStore:
         discrepancies: list[Discrepancy] | None = None,
         ref_records: list[RefRecord] | None = None,
         summaries: dict[str, str] | None = None,
+        touched_files: set[str] | None = None,
+        affected_srcs: set[str] | None = None,
     ) -> None:
         """Write only the rows that changed since the stored build, in place.
 
@@ -413,6 +415,8 @@ class SqliteStore:
                     discrepancies,
                     ref_records,
                     summaries,
+                    touched_files,
+                    affected_srcs,
                 )
                 conn.execute("COMMIT")
             except BaseException:
@@ -612,15 +616,38 @@ def _apply_delta(
     discrepancies: list[Discrepancy] | None,
     ref_records: list[RefRecord] | None = None,
     summaries: dict[str, str] | None = None,
+    touched_files: set[str] | None = None,
+    affected_srcs: set[str] | None = None,
 ) -> dict[str, int]:
     """UPSERT/delete only the rows that differ from what is stored.
 
     Runs inside the caller's open transaction. Returns write-volume stats.
+
+    When *touched_files* and *affected_srcs* are given (the incremental-link
+    path), the diff is *scoped* to the dirty closure — only those files' rows
+    and the re-resolved clean refs are read and reconciled, never the whole
+    nodes/edges tables. Otherwise the full tables are diffed (correct for any
+    graph, including a full re-link fallback).
     """
     units = units or {}
     discrepancies = discrepancies or []
     ref_records = ref_records or []
     summaries = summaries or {}
+
+    if touched_files is not None and affected_srcs is not None:
+        return _apply_delta_scoped(
+            conn,
+            graph,
+            files,
+            root,
+            units,
+            options_hash,
+            discrepancies,
+            ref_records,
+            summaries,
+            touched_files,
+            affected_srcs,
+        )
 
     # -- nodes (PK id): UPSERT changed rows, delete vanished ids ---------------
     stored_nodes = {row[0]: row for row in conn.execute("SELECT * FROM nodes")}
@@ -684,27 +711,215 @@ def _apply_delta(
         rows = [row for row, count in new_refs.get(file, Counter()).items() for _ in range(count)]
         conn.executemany("INSERT INTO ref_index VALUES (?, ?, ?, ?, ?)", rows)
 
-    # -- discrepancies (small, enrich-only): refresh wholesale ----------------
-    conn.execute("DELETE FROM discrepancies")
-    conn.executemany(
-        "INSERT INTO discrepancies VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        [_discrepancy_row(d) for d in discrepancies],
-    )
-
-    # -- summaries (a handful of whole-design JSON blobs): refresh wholesale ---
-    conn.execute("DELETE FROM summaries")
-    conn.executemany("INSERT INTO summaries (name, payload) VALUES (?, ?)", list(summaries.items()))
-
-    # -- meta: refresh built_at / options_hash / tool_version -----------------
-    conn.executemany(
-        "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", _meta_rows(root, options_hash)
-    )
+    _refresh_small_tables(conn, root, options_hash, discrepancies, summaries)
 
     return {
         "nodes_upserted": len(node_upserts),
         "nodes_deleted": len(node_deletes),
         "edge_srcs_rewritten": edge_srcs_rewritten,
     }
+
+
+#: SQLite caps host parameters per statement; chunk ``IN (...)`` lists under it.
+_SQL_VAR_LIMIT = 900
+
+
+def _chunked(items: set[str]) -> Iterator[list[str]]:
+    seq = list(items)
+    for start in range(0, len(seq), _SQL_VAR_LIMIT):
+        yield seq[start : start + _SQL_VAR_LIMIT]
+
+
+def _refresh_small_tables(
+    conn: sqlite3.Connection,
+    root: Path,
+    options_hash: str,
+    discrepancies: list[Discrepancy],
+    summaries: dict[str, str],
+) -> None:
+    """Wholesale-refresh the small tables both delta paths share.
+
+    ``discrepancies`` and ``summaries`` are a handful of rows (enrich findings;
+    the two whole-design JSON blobs), and ``meta`` is five keys — cheaper to
+    rewrite than to diff.
+    """
+    conn.execute("DELETE FROM discrepancies")
+    conn.executemany(
+        "INSERT INTO discrepancies VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [_discrepancy_row(d) for d in discrepancies],
+    )
+    conn.execute("DELETE FROM summaries")
+    conn.executemany("INSERT INTO summaries (name, payload) VALUES (?, ?)", list(summaries.items()))
+    conn.executemany(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", _meta_rows(root, options_hash)
+    )
+
+
+def _apply_delta_scoped(
+    conn: sqlite3.Connection,
+    graph: nx.MultiDiGraph,
+    files: list[FileMeta],
+    root: Path,
+    units: dict[str, StoredUnit],
+    options_hash: str,
+    discrepancies: list[Discrepancy],
+    ref_records: list[RefRecord],
+    summaries: dict[str, str],
+    touched_files: set[str],
+    affected_srcs: set[str],
+) -> dict[str, int]:
+    """Delta write scoped to the dirty closure (incremental-link path only).
+
+    ``link_incremental`` (#64) guarantees that the only rows which can differ
+    from the stored build are: nodes owned by a touched/removed file, *fileless*
+    nodes (unresolved stubs, filelist/library) which it may add or drop, and the
+    ``affected_srcs`` clean references it re-resolved. Every other row is
+    byte-identical to the prior build, so this reads and reconciles only those —
+    the diff cost scales with the change, not the design size. The loaded result
+    is identical to a full ``save()``; the byte-identical-rebuild fuzz suite
+    (``tests/test_incremental_equivalence.py``) pins that.
+    """
+    # -- nodes: scope = a touched/removed file, or fileless (stubs etc.) -------
+    stored_nodes = {row[0]: row for row in _select_scoped_nodes(conn, touched_files)}
+    new_nodes = {
+        node_id: _node_row(node_id, data)
+        for node_id, data in graph.nodes(data=True)
+        if data["file"] in touched_files or data["file"] == ""
+    }
+    node_upserts = [row for node_id, row in new_nodes.items() if stored_nodes.get(node_id) != row]
+    node_deletes = [(node_id,) for node_id in stored_nodes if node_id not in new_nodes]
+    conn.executemany(
+        "INSERT OR REPLACE INTO nodes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", node_upserts
+    )
+    conn.executemany("DELETE FROM nodes WHERE id = ?", node_deletes)
+
+    # -- edges: scope = srcs in those nodes plus the re-resolved clean srcs ----
+    # An edge's src multiset can change only if the src is in a touched/fileless
+    # node (reparsed/added/removed) or is an affected clean ref (re-resolved);
+    # every other src's edges are reused verbatim by link_incremental.
+    candidate_srcs = set(stored_nodes) | set(new_nodes) | affected_srcs
+    stored_edges: defaultdict[str, Counter[tuple[object, ...]]] = defaultdict(Counter)
+    for row in _select_edges_by_src(conn, candidate_srcs):
+        stored_edges[row[0]][row] += 1
+    new_edges: defaultdict[str, Counter[tuple[object, ...]]] = defaultdict(Counter)
+    for src, dst, data in graph.edges(data=True):
+        if src in candidate_srcs:
+            new_edges[src][_edge_row(src, dst, data)] += 1
+    edge_srcs_rewritten = 0
+    for src in candidate_srcs:
+        if stored_edges.get(src) == new_edges.get(src):
+            continue
+        edge_srcs_rewritten += 1
+        conn.execute("DELETE FROM edges WHERE src = ?", (src,))
+        rows = [row for row, count in new_edges.get(src, Counter()).items() for _ in range(count)]
+        conn.executemany("INSERT INTO edges VALUES (?, ?, ?, ?, ?)", rows)
+
+    # -- files / file_irs (PK path): scope = the touched/removed paths ---------
+    _upsert_by_path_scoped(
+        conn,
+        "files",
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        {f.path: _file_row(f) for f in files if f.path in touched_files},
+        touched_files,
+    )
+    _upsert_by_path_scoped(
+        conn,
+        "file_irs",
+        "VALUES (?, ?, ?, ?)",
+        {path: _file_ir_row(path, unit) for path, unit in units.items() if path in touched_files},
+        touched_files,
+    )
+
+    # -- ref_index (grouped by file): scope = the touched/removed files --------
+    # Clean files' ref rows are regenerated identically, so only touched files
+    # can differ (a removed file's rows are deleted: no new refs for it).
+    stored_refs: defaultdict[str, Counter[tuple[object, ...]]] = defaultdict(Counter)
+    for row in _select_refs_by_file(conn, touched_files):
+        stored_refs[row[0]][row] += 1
+    new_refs: defaultdict[str, Counter[tuple[object, ...]]] = defaultdict(Counter)
+    for rec in ref_records:
+        if rec.file in touched_files:
+            new_refs[rec.file][_ref_index_row(rec)] += 1
+    for file in touched_files:
+        if stored_refs.get(file) == new_refs.get(file):
+            continue
+        conn.execute("DELETE FROM ref_index WHERE file = ?", (file,))
+        rows = [row for row, count in new_refs.get(file, Counter()).items() for _ in range(count)]
+        conn.executemany("INSERT INTO ref_index VALUES (?, ?, ?, ?, ?)", rows)
+
+    _refresh_small_tables(conn, root, options_hash, discrepancies, summaries)
+
+    return {
+        "nodes_upserted": len(node_upserts),
+        "nodes_deleted": len(node_deletes),
+        "edge_srcs_rewritten": edge_srcs_rewritten,
+        # Read volume: stored rows the scoped diff had to read. Bounded by the
+        # dirty closure, not the design — scripts/bench_incremental.py asserts it.
+        "nodes_scanned": len(stored_nodes),
+        "edge_srcs_scanned": len(candidate_srcs),
+    }
+
+
+def _select_scoped_nodes(conn: sqlite3.Connection, files: set[str]) -> Iterator[tuple[Any, ...]]:
+    """Stored ``nodes`` rows owned by a file in *files*, plus all fileless nodes.
+
+    Fileless nodes (``file = ''``) — unresolved stubs and filelist/library nodes
+    — are the ones the linker creates/drops without a source file, so they must
+    be reconciled on every incremental write."""
+    for chunk in _chunked(files):
+        placeholders = ", ".join("?" for _ in chunk)
+        yield from conn.execute(f"SELECT * FROM nodes WHERE file IN ({placeholders})", tuple(chunk))
+    yield from conn.execute("SELECT * FROM nodes WHERE file = ''")
+
+
+def _select_edges_by_src(conn: sqlite3.Connection, srcs: set[str]) -> Iterator[tuple[Any, ...]]:
+    """Stored ``edges`` rows whose ``src`` is in *srcs* (uses ``idx_edges_src``)."""
+    for chunk in _chunked(srcs):
+        placeholders = ", ".join("?" for _ in chunk)
+        yield from conn.execute(
+            f"SELECT src, dst, kind, confidence, attrs FROM edges WHERE src IN ({placeholders})",
+            tuple(chunk),
+        )
+
+
+def _select_refs_by_file(conn: sqlite3.Connection, files: set[str]) -> Iterator[tuple[Any, ...]]:
+    """Stored ``ref_index`` rows owned by a file in *files* (``idx_ref_index_file``)."""
+    for chunk in _chunked(files):
+        placeholders = ", ".join("?" for _ in chunk)
+        yield from conn.execute(
+            f"SELECT file, src_id, edge_kind, target_name, scoped FROM ref_index "
+            f"WHERE file IN ({placeholders})",
+            tuple(chunk),
+        )
+
+
+def _upsert_by_path_scoped(
+    conn: sqlite3.Connection,
+    table: str,
+    values_clause: str,
+    new_rows: dict[str, tuple[object, ...]],
+    scope_paths: set[str],
+) -> None:
+    """:func:`_upsert_by_path` restricted to *scope_paths*.
+
+    Stored rows are read only for the scoped paths, and deletes are confined to
+    them too — a path outside the scope was not touched, so its row is unchanged.
+    """
+    stored: dict[str, tuple[object, ...]] = {}
+    for chunk in _chunked(scope_paths):
+        placeholders = ", ".join("?" for _ in chunk)
+        for row in conn.execute(
+            f"SELECT * FROM {table} WHERE path IN ({placeholders})", tuple(chunk)
+        ):
+            stored[row[0]] = row
+    conn.executemany(
+        f"INSERT OR REPLACE INTO {table} {values_clause}",
+        [row for path, row in new_rows.items() if stored.get(path) != row],
+    )
+    conn.executemany(
+        f"DELETE FROM {table} WHERE path = ?",
+        [(path,) for path in stored if path not in new_rows],
+    )
 
 
 def _upsert_by_path(

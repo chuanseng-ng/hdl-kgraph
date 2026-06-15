@@ -108,11 +108,32 @@ def main() -> int:
             + ("" if stats_present else "  [!] no incremental write stats captured")
         )
 
+        # Phase B: the scoped delta also *reads* only the dirty closure, so its
+        # memory/IO scales with the change, not the design (the old path read
+        # every stored node and edge-src to diff them).
+        nodes_scanned = captured.get("nodes_scanned")
+        read_pct = (
+            100.0 * nodes_scanned / build.node_count
+            if nodes_scanned is not None and build.node_count
+            else 0.0
+        )
+        print(
+            f"read volume:   {nodes_scanned} node rows scanned "
+            f"({read_pct:.2f}% of {build.node_count} nodes)"
+            if nodes_scanned is not None
+            else "read volume:   (full-table diff — not scoped)"
+        )
+
         time_ok = update_s < args.target_s
         # The real point of #63: writes scale with the change, not the design.
         write_ok = stats_present and node_writes < build.node_count * 0.05
-        verdict = "PASS" if time_ok and write_ok else "FAIL"
-        print(f"target:        update < {args.target_s:.1f}s and write < 5% of graph -> {verdict}")
+        # Phase B: reads scale with the change too (scoped diff).
+        read_ok = nodes_scanned is not None and nodes_scanned < build.node_count * 0.10
+        verdict = "PASS" if time_ok and write_ok and read_ok else "FAIL"
+        print(
+            f"target:        update < {args.target_s:.1f}s, write < 5% and "
+            f"read < 10% of graph -> {verdict}"
+        )
         return 0 if verdict == "PASS" else 1
 
 

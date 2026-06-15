@@ -163,6 +163,9 @@ class BuildReport:
     enrich_diagnostics: list[str] = field(default_factory=list)
     # M4/#64: pass-2 link was incremental (re-resolved only the dirty closure).
     incremental_link: bool = False
+    # Clean-file ref source ids the incremental link re-resolved (#64). Together
+    # with the dirty files this bounds the scoped delta write to the changed rows.
+    affected_srcs: set[str] = field(default_factory=set)
     # Reason the incremental linker fell back to a full re-link (None if not).
     incremental_link_skipped: str | None = None
     # Parser-worker failures isolated to their unit (the build continued; #65).
@@ -375,6 +378,7 @@ def _link_pass2(
             changed = changed_target_names(prior_graph, irs, dirty_files)
             affected = {src for _, src, _ in affected_clean_refs(prior_ref_index, changed)}
             report.incremental_link = True
+            report.affected_srcs = affected
             graph, ref_records = link_incremental(
                 irs, prior_graph, dirty_files, affected, warnings=report.warnings
             )
@@ -695,21 +699,39 @@ def _execute(
 
     progress(f"writing {db_path}")
     store = SqliteStore(db_path)
-    persist = store.save_incremental if incremental else store.save
     # Whole-design summaries (clock domains, UVM topology) cannot be answered
     # from a bounded subgraph, so compute them once here — the graph is already
     # in memory — and persist them for the MCP server to read without a load.
     summaries = {name: json.dumps(payload) for name, payload in build_summaries(graph).items()}
-    persist(
-        graph,
-        files_meta,
-        root=base,
-        units=units,
-        options_hash=options_hash(base, options, inputs),
-        discrepancies=discrepancies,
-        ref_records=ref_records,
-        summaries=summaries,
-    )
+    opts_hash = options_hash(base, options, inputs)
+    if incremental:
+        # Scope the delta write to the dirty closure only when the link was
+        # incremental — a full re-link fallback can touch any clean edge, so
+        # leaving the scope sets None makes save_incremental diff the whole graph.
+        scoped = report.incremental_link and dirty_files is not None
+        store.save_incremental(
+            graph,
+            files_meta,
+            root=base,
+            units=units,
+            options_hash=opts_hash,
+            discrepancies=discrepancies,
+            ref_records=ref_records,
+            summaries=summaries,
+            touched_files=dirty_files if scoped else None,
+            affected_srcs=report.affected_srcs if scoped else None,
+        )
+    else:
+        store.save(
+            graph,
+            files_meta,
+            root=base,
+            units=units,
+            options_hash=opts_hash,
+            discrepancies=discrepancies,
+            ref_records=ref_records,
+            summaries=summaries,
+        )
     return report
 
 

@@ -53,24 +53,34 @@ no summaries table, so the reader falls back to a one-off full load).
 
 ## Writes
 
-`update` writes only the changed rows: `save_incremental` diffs the new graph
-against the stored rows and UPSERT/DELETEs just the delta, so a one-file edit
-pays a write *volume* proportional to the change, not the design
-(`scripts/bench_incremental.py` guards this).
+`update` writes only the changed rows, and (since the incremental-link path)
+*reads* only the changed rows too. `save_incremental` UPSERT/DELETEs just the
+delta; when the pipeline links incrementally it passes the dirty files and the
+re-resolved clean-ref ids, and `_apply_delta` scopes the diff to exactly those —
+reading only the touched files' nodes/edges (plus fileless stub nodes) through
+`idx_nodes_file`/`idx_edges_src`, never the whole tables. So a one-file edit
+pays a write *and read* cost proportional to the change. `bench_incremental.py`
+guards both: on the 2 000-file corpus a one-leaf edit scans **~0.04 %** of the
+nodes to diff (down from 100 %).
+
+`link_incremental` (#64) guarantees this is safe: the only rows that can differ
+from the stored build are those owned by a touched/removed file, fileless nodes
+it may add/drop, and the `affected_srcs` clean refs it re-resolved; every other
+row is byte-identical. The byte-identical-rebuild fuzz suite
+(`tests/test_incremental_equivalence.py`) pins that a scoped `update` loads back
+identical to a full `build`. When the link falls back to a full re-link (VHDL,
+binds, enrich), the scope sets are omitted and `_apply_delta` diffs the whole
+tables as before — correct for any graph.
 
 ### Remaining ceiling (known)
 
-The `update` *pipeline* is still O(design) in a few places that a future change
-should bound for true 100 GB incrementality:
+Two parts of the `update` *pipeline* are still O(design) in memory:
 
 1. the incremental linker loads the full prior graph (`SqliteStore.load()`) to
    re-resolve the dirty closure;
-2. `_apply_delta` reads the full `nodes`/`edges` tables into memory to diff them
-   against the new graph (the *write* is delta, but the *diff* scans both);
-3. the precomputed summaries are recomputed over the whole graph each update.
+2. the precomputed summaries are recomputed over the whole graph each update.
 
-These keep `update` memory-bound by the design size even though its write volume
-is bounded. Bounding (1) and (2) — e.g. diffing only the dirty files' rows via a
-denormalized `edges.file` column and the linker's affected-ref set — is the next
-step; it is gated by the linker also becoming prior-graph-bounded, so the two
-should land together.
+The delta *diff* is now bounded (above), so (1) — making `link_incremental`
+re-resolve the dirty closure without holding the entire prior graph in memory —
+is the dominant remaining work for true 100 GB incremental `update`, and the
+larger/riskier change (it must preserve the same byte-identical contract).
