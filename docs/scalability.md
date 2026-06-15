@@ -74,13 +74,36 @@ tables as before — correct for any graph.
 
 ### Remaining ceiling (known)
 
-Two parts of the `update` *pipeline* are still O(design) in memory:
+Three parts of the `update` *pipeline* are still O(design) in memory:
 
 1. the incremental linker loads the full prior graph (`SqliteStore.load()`) to
    re-resolve the dirty closure;
-2. the precomputed summaries are recomputed over the whole graph each update.
+2. `update` decodes *every* clean unit's stored IR (`pipeline._reuse_unit`), not
+   just the dirty/affected ones;
+3. the precomputed summaries are recomputed over the whole graph each update.
 
 The delta *diff* is now bounded (above), so (1) — making `link_incremental`
 re-resolve the dirty closure without holding the entire prior graph in memory —
-is the dominant remaining work for true 100 GB incremental `update`, and the
-larger/riskier change (it must preserve the same byte-identical contract).
+is the dominant remaining work for true 100 GB incremental `update`.
+
+**Why it is all-or-nothing (not a cheap slice).** You cannot simply load a
+lighter prior graph (e.g. nodes + structural edges, dropping the dataflow-edge
+bulk). Several steps read the *whole* graph and are entangled:
+
+- `_gc_orphan_stubs` (`graph/builder.py`) keeps an unresolved stub alive iff it
+  has **any non-`DECLARES` edge of any kind** — including `DRIVES`/`READS`/
+  `CLOCKED_BY`/… So dropping the dataflow edges would make a stub anchored only
+  by a clean dataflow edge look orphaned and get deleted — a non-byte-identical,
+  corrupt result.
+- `derive_test_covers` (`graph/uvm.py`) scans the whole graph each link to find
+  `tb_*` tops and their instantiation subtrees.
+- the definitions/`children` seeding and `report.edge_count` read all
+  nodes/edges.
+
+So a memory-bounded linker must land as one architecture — SQL-backed name
+resolution (`idx_nodes_kind_name`), SQL-aware stub-GC, an incremental
+`derive_test_covers`, selective IR decode, and a delta-only output (which the
+existing `_apply_delta_scoped` already consumes) — all gated by the
+byte-identical fuzz suite. It is a large, high-risk change to the core
+resolution engine for a payoff that only bites at the extreme, so it is
+deliberately deferred: reads and the write *diff* are already bounded.
