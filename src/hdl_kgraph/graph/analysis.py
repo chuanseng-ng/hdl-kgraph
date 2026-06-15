@@ -8,6 +8,7 @@ topology (M5).
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
@@ -425,6 +426,42 @@ INSTANTIABLE_KINDS = frozenset(
 def _match_name(data: dict[str, Any], wanted: str) -> bool:
     """Node-name equality with the project's VHDL case-insensitivity rule."""
     return bool(data["name"] == (wanted.lower() if data["language"] is Language.VHDL else wanted))
+
+
+def resolve_unit(
+    g: nx.MultiDiGraph,
+    name: str,
+    kinds: tuple[NodeKind, ...] = _HIERARCHY_ROOT_KINDS,
+) -> list[str]:
+    """Resolve a design-unit *name* to matching node ids.
+
+    Applies the VHDL case-insensitivity rule and excludes unresolved stubs.
+    *kinds* defaults to the hierarchy roots (MODULE/ENTITY). Shared by the CLI
+    ``tree`` command and the MCP ``get_hierarchy`` tool so both resolve a top
+    the same way.
+    """
+    return [
+        node_id
+        for node_id, data in g.nodes(data=True)
+        if data["kind"] in kinds and _match_name(data, name) and not _is_stub(g, node_id)
+    ]
+
+
+def instantiation_count(g: nx.MultiDiGraph, unit_id: str) -> int:
+    """How many ``INSTANTIATES`` edges target *unit_id*."""
+    return sum(
+        1 for _, _, d in g.in_edges(unit_id, data=True) if d["kind"] is EdgeKind.INSTANTIATES
+    )
+
+
+def node_kind_histogram(g: nx.MultiDiGraph) -> Counter[str]:
+    """``NodeKind`` value → count over every node."""
+    return Counter(data["kind"].value for _, data in g.nodes(data=True))
+
+
+def edge_kind_histogram(g: nx.MultiDiGraph) -> Counter[str]:
+    """``EdgeKind`` value → count over every edge."""
+    return Counter(data["kind"].value for _, _, data in g.edges(data=True))
 
 
 def _declaration_order(record: dict[str, Any]) -> tuple[bool, Any, int, str]:

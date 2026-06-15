@@ -30,6 +30,8 @@ from typing import TYPE_CHECKING, Any
 
 import networkx as nx
 
+from hdl_kgraph.cli.render import jsonable as _jsonable
+from hdl_kgraph.cli.render import page as _render_page
 from hdl_kgraph.graph import analysis, summary
 from hdl_kgraph.schema import EdgeKind, NodeKind
 from hdl_kgraph.storage.query import GraphQuery
@@ -79,23 +81,10 @@ class GraphContext:
             ) from exc
 
 
-#: JSON-safe conversion (enums/dataclasses/tuples), shared with the build-time
-#: summary writer so a precomputed summary and a live one are byte-identical.
-_jsonable = summary.jsonable
-
-
 def _page(items: list[Any], limit: int, offset: int) -> dict[str, Any]:
-    """The pagination envelope every list-returning tool uses."""
-    limit = max(1, min(limit, MAX_LIMIT))
-    offset = max(0, offset)
-    page = items[offset : offset + limit]
-    return {
-        "total": len(items),
-        "offset": offset,
-        "count": len(page),
-        "truncated": offset + len(page) < len(items),
-        "items": _jsonable(page),
-    }
+    """The pagination envelope every list-returning tool uses, bound to this
+    server's ``MAX_LIMIT`` (the shared implementation lives in ``cli.render``)."""
+    return _render_page(items, limit, offset, MAX_LIMIT)
 
 
 def _find_module_impl(g: nx.MultiDiGraph, name: str, limit: int) -> dict[str, Any]:
@@ -109,9 +98,7 @@ def _find_module_impl(g: nx.MultiDiGraph, name: str, limit: int) -> dict[str, An
         )
         record["port_count"] = counts[NodeKind.PORT]
         record["parameter_count"] = counts[NodeKind.PARAMETER]
-        record["instantiation_count"] = sum(
-            1 for _, _, d in g.in_edges(unit_id, data=True) if d["kind"] is EdgeKind.INSTANTIATES
-        )
+        record["instantiation_count"] = analysis.instantiation_count(g, unit_id)
     return _page(matches, limit, 0)
 
 

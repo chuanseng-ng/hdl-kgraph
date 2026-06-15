@@ -22,8 +22,6 @@ given.
 from __future__ import annotations
 
 import dataclasses
-import enum
-import json
 import sys
 import time
 from collections import Counter
@@ -35,6 +33,7 @@ import click
 import networkx as nx
 
 from hdl_kgraph import __version__
+from hdl_kgraph.cli.render import emit_json as _emit_json
 from hdl_kgraph.config import (
     BuildConfig,
     BuildOptions,
@@ -58,7 +57,7 @@ from hdl_kgraph.pipeline import (
     run_update,
     scan_changes,
 )
-from hdl_kgraph.schema import EdgeKind, Language, NodeKind
+from hdl_kgraph.schema import Language, NodeKind
 from hdl_kgraph.storage.sqlite_store import SchemaVersionError, SqliteStore
 from hdl_kgraph.vcs import detect_vcs, detect_vcs_changes
 
@@ -180,18 +179,6 @@ class _ProgressRenderer:
             self._stream.write("\n")
             self._stream.flush()
             self._live_len = 0
-
-
-def _json_default(value: Any) -> Any:
-    if isinstance(value, enum.Enum):
-        return value.value
-    if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return dataclasses.asdict(value)
-    return str(value)
-
-
-def _emit_json(payload: Any) -> None:
-    click.echo(json.dumps(payload, indent=2, default=_json_default))
 
 
 def _resolve_db(db_path: Path | None) -> Path:
@@ -902,8 +889,8 @@ def status(db_path: Path | None, as_json: bool, show_errors: bool) -> None:
     error_files = [f for f in parsed if f.parse_error_count]
     warning_count = sum(len(f.warnings) for f in files)
     total_errors = sum(f.parse_error_count for f in error_files)
-    node_kinds = Counter(data["kind"].value for _, data in graph.nodes(data=True))
-    edge_kinds = Counter(data["kind"].value for _, _, data in graph.edges(data=True))
+    node_kinds = analysis.node_kind_histogram(graph)
+    edge_kinds = analysis.edge_kind_histogram(graph)
     stubs = analysis.unresolved_stubs(graph)
     if as_json:
         _emit_json(
@@ -1445,11 +1432,7 @@ def modules(db_path: Path | None, as_json: bool) -> None:
             "unresolved"
         ):
             continue
-        count = sum(
-            1
-            for _, _, edge in graph.in_edges(node_id, data=True)
-            if edge["kind"] is EdgeKind.INSTANTIATES
-        )
+        count = analysis.instantiation_count(graph, node_id)
         rows.append(
             {
                 "name": data["name"],
@@ -1643,14 +1626,7 @@ def tree(top: str | None, depth: int, db_path: Path | None, as_json: bool) -> No
     """Print the design hierarchy from TOP (default: every top module)."""
     graph, _, _ = _load(db_path)
     if top is not None:
-        roots = [
-            node_id
-            for node_id, data in graph.nodes(data=True)
-            if data["kind"] in (NodeKind.MODULE, NodeKind.ENTITY)
-            # VHDL entity names are stored lowercase (case-insensitive).
-            and data["name"] == (top.lower() if data["language"] is Language.VHDL else top)
-            and not data["attrs"].get("unresolved")
-        ]
+        roots = analysis.resolve_unit(graph, top)
         if not roots:
             raise CliError(f"module or entity {top!r} not found in the graph")
     else:

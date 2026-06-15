@@ -9,6 +9,18 @@ changes.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-06-15
+
+### Changed
+
+- Move the graph traversals that were inlined in CLI command handlers into
+  `graph.analysis` (`resolve_unit`, `instantiation_count`, `node_kind_histogram`,
+  `edge_kind_histogram`) and share one JSON/pagination renderer (`cli.render`)
+  between the CLI and the MCP server, so neither the `status`/`modules`/`tree`
+  commands nor the MCP tools re-implement graph logic or serialization. No
+  behavior change ([#70]).
+  *(First step of #70; the per-command file split of `cli/main.py` remains.)*
+
 ## [0.14.0] - 2026-06-15
 
 ### Changed
@@ -246,7 +258,8 @@ Maintenance release — version bump only, no functional changes.
 Releases before `0.6.3` predate this changelog; their history lives in the git
 log.
 
-[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.12.0...v0.13.0
@@ -274,6 +287,7 @@ log.
 [#69]: https://github.com/chuanseng-ng/hdl-kgraph/pull/69
 [#76]: https://github.com/chuanseng-ng/hdl-kgraph/pull/76
 [#77]: https://github.com/chuanseng-ng/hdl-kgraph/pull/77
+[#70]: https://github.com/chuanseng-ng/hdl-kgraph/issues/70
 [#71]: https://github.com/chuanseng-ng/hdl-kgraph/issues/71
 [#72]: https://github.com/chuanseng-ng/hdl-kgraph/issues/72
 [#73]: https://github.com/chuanseng-ng/hdl-kgraph/issues/73
