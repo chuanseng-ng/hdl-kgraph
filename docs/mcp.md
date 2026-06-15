@@ -2,9 +2,14 @@
 
 `hdl-kgraph serve --mcp` exposes the graph to AI assistants via the
 [Model Context Protocol](https://modelcontextprotocol.io). The server is
-**read-only**: it loads `.hdl-kgraph/graph.db` and never builds or updates
-it. Rebuild with `hdl-kgraph build`/`update` at any time — a running server
-notices the new database (mtime/size check per call) and reloads.
+**read-only**: it answers each tool from `.hdl-kgraph/graph.db` and never builds
+or updates it. Every call opens a fresh read connection and hydrates only the
+bounded subgraph the query needs through the SQLite indices — it never loads the
+whole graph (v0.9), so queries stay fast even on a 10–100+ GB design and a
+rebuild by `hdl-kgraph build`/`update` is observed automatically with no
+staleness window. The whole-design reports (`clock_domains`, `uvm_topology`) are
+precomputed at build time and read as a small blob. See
+[docs/scalability.md](docs/scalability.md).
 
 Requires the `mcp` extra:
 

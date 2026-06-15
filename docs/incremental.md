@@ -7,8 +7,17 @@ The database is a derived cache that stays fresh as you edit.
 `update` re-parses only changed/added/removed files plus their dependents —
 files that `` `include `` an edited header or expand a macro it defines —
 and re-links everything else from stored parse results. One file edited in
-a 2000-file design updates in about 1.3 s (budget < 1.5 s); see
+a 2000-file design updates in about 1.5 s (budget < 1.8 s); see
 [benchmarks.md](benchmarks.md).
+
+The database write is scoped to the change too: when the pass-2 link is
+incremental, `save_incremental` reads and rewrites only the dirty closure's
+rows (the touched files' nodes/edges, fileless stubs, and the re-resolved
+clean references) rather than diffing the whole `nodes`/`edges` tables — so a
+one-file edit touches ~0.04 % of the rows on the 2000-file corpus. The result
+is byte-identical to a full rebuild. The remaining whole-graph cost (the
+incremental linker still loading the prior graph) is the documented ceiling in
+[scalability.md](scalability.md).
 
 A change to the effective build inputs (defines, incdirs, filelists,
 library map) falls back to a full rebuild automatically, as does a database

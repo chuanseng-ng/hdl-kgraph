@@ -278,8 +278,10 @@ a UVM example testbench yields a component-tree report.
       streamable HTTP; every list tool returns a
       `{total, offset, count, truncated, items}` envelope (limit clamped to
       500), hierarchy defaults to depth 3 with a 500-node cap, impact leads
-      with a summary so truncated pages still answer "what breaks"; the server
-      stats the database per call and reloads when `update`/`watch` rewrite it**
+      with a summary so truncated pages still answer "what breaks"; each tool
+      answers from a bounded, index-backed subgraph and never loads the whole
+      graph (v0.9), so a concurrent `update`/`watch` rewrite is picked up with
+      no staleness window**
 - [x] Docs: Claude Code / Claude Desktop configuration snippets — **docs/mcp.md:
       tool reference, transports, cold-checkout walkthrough**
 - [x] `hdl-kgraph setup`: detect installed assistants and write their MCP
@@ -339,6 +341,34 @@ tree-sitter remains the always-works baseline.
 elaborated reality (`tests/test_enrich.py`, `tests/fixtures/param_generate.sv`);
 a plain `build` (enrichment off) is unchanged. *(pyslang/pyVHDLModel are now
 core dependencies rather than optional extras — see the interface note above.)*
+
+## Scalability hardening — v0.9–v0.10 (cross-cutting)
+
+**Goal:** the graph can reach 10–100+ GB; reads and incremental writes must
+scale with the *query/change*, not the design size, so an AI assistant never
+waits on (or runs out of memory loading) the whole graph.
+
+- [x] **Bounded, index-backed reads (v0.9):** `GraphQuery`
+      (`storage/query.py`) answers each MCP/CLI tool by hydrating only the
+      subgraph it touches through the existing indices, then runs the same
+      `graph.analysis` function on it — byte-identical to the full-graph path
+      (`tests/test_query.py` sweeps every name). A localized query is
+      1000–16000× faster than the old per-call `SqliteStore.load()`.
+- [x] **Precomputed whole-design summaries (v0.9, schema v8):** clock-domain/CDC
+      and UVM-topology reports are computed at build into the `summaries` table,
+      so those tools read O(1) instead of scanning the graph.
+- [x] **Dirty-closure-scoped incremental write (v0.10):** `save_incremental`
+      reads and rewrites only the changed rows (a one-file edit touches ~0.04 %
+      of the corpus), not the whole `nodes`/`edges` tables.
+- [ ] **Memory-bounded incremental linker:** the last O(design) cost is the
+      incremental linker still loading the full prior graph; an all-or-nothing
+      rewrite (SQL-backed resolution + stub-GC + incremental TEST_COVERS), so far
+      deferred — see [docs/scalability.md](docs/scalability.md).
+
+**Acceptance:** `tests/test_query.py` (read parity + no-full-load proof),
+`tests/test_incremental_equivalence.py` (byte-identical scoped writes),
+`scripts/bench_query.py` and `scripts/bench_incremental.py` (latency + bounded
+read/write volume). Detail in [docs/scalability.md](docs/scalability.md).
 
 ## M8 — v1.0: C/C++/Python boundary + API stability (stretch)
 
