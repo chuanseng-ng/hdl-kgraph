@@ -98,12 +98,12 @@ def test_unexpected_build_failure_is_clean_exit_two(
 ) -> None:
     """A non-ClickException from the pipeline surfaces as a clean exit 2, not a
     raw traceback."""
-    import hdl_kgraph.cli.main as cli
+    import hdl_kgraph.cli.build as build_mod
 
     def boom(*_a: object, **_k: object) -> object:
         raise RuntimeError("kaboom")
 
-    monkeypatch.setattr(cli, "run_build", boom)
+    monkeypatch.setattr(build_mod, "run_build", boom)
     result = CliRunner().invoke(main, ["build", str(tmp_path)])
     assert result.exit_code == 2, result.output
     assert "build failed" in result.output
