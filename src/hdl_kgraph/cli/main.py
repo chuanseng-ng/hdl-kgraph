@@ -1790,9 +1790,7 @@ def setup(
     if list_only:
         return
     if not detected:
-        raise CliError(
-            "no supported AI assistant detected; see docs/mcp.md for manual setup"
-        )
+        raise CliError("no supported AI assistant detected; see docs/mcp.md for manual setup")
 
     if db_path is None:
         db_path = find_db(Path.cwd())
