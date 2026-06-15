@@ -9,6 +9,16 @@ changes.
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-06-15
+
+### Fixed
+
+- `serve --http` now parses IPv6 `[host]:port` addresses (e.g. `[::1]:8123`)
+  instead of mangling them, and rejects out-of-range ports (only `1`–`65535`).
+- `setup --db <path>` validates the database exists before writing assistant
+  configs, matching `serve`, so a typo no longer points assistants at a missing
+  database. (Both were pre-existing issues surfaced while reviewing the CLI split.)
+
 ## [0.16.0] - 2026-06-15
 
 ### Changed
@@ -268,7 +278,8 @@ Maintenance release — version bump only, no functional changes.
 Releases before `0.6.3` predate this changelog; their history lives in the git
 log.
 
-[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.16.1...HEAD
+[0.16.1]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.13.1...v0.14.0
