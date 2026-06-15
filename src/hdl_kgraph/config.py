@@ -49,7 +49,17 @@ except ModuleNotFoundError:  # Python 3.10
 CONFIG_FILENAME = "hdl-kgraph.toml"
 
 _BUILD_KEYS = frozenset(
-    {"sources", "filelists", "defines", "incdirs", "top", "exclude", "max_file_size_kb", "enrich"}
+    {
+        "sources",
+        "filelists",
+        "defines",
+        "incdirs",
+        "auto_incdirs",
+        "top",
+        "exclude",
+        "max_file_size_kb",
+        "enrich",
+    }
 )
 
 _LINT_KEYS = frozenset({"waivers"})
@@ -93,6 +103,9 @@ class BuildConfig:
     filelists: list[Path] = field(default_factory=list)
     defines: dict[str, str | None] = field(default_factory=dict)
     incdirs: list[Path] = field(default_factory=list)
+    # Search every discovered source directory for `` `include``s (default on);
+    # disable to require explicit incdirs only.
+    auto_incdirs: bool = True
     top: list[str] = field(default_factory=list)
     exclude: list[str] = field(default_factory=list)
     max_file_size_kb: int | None = None
@@ -134,6 +147,10 @@ class BuildConfig:
         if not isinstance(enrich, bool):
             raise ConfigError(f"{path}: [build].enrich must be a boolean")
         config.enrich = enrich
+        auto_incdirs = build.get("auto_incdirs", True)
+        if not isinstance(auto_incdirs, bool):
+            raise ConfigError(f"{path}: [build].auto_incdirs must be a boolean")
+        config.auto_incdirs = auto_incdirs
 
         vhdl = data.pop("vhdl", {})
         libraries = vhdl.get("libraries", {}) if isinstance(vhdl, dict) else {}
@@ -232,6 +249,7 @@ class BuildOptions:
     filelists: list[Path] = field(default_factory=list)
     defines: dict[str, str | None] = field(default_factory=dict)
     incdirs: list[Path] = field(default_factory=list)
+    auto_incdirs: bool = True  # search discovered source dirs for `` `include``s
     sources: list[str] = field(default_factory=list)
     exclude: tuple[str, ...] = ()
     max_file_size_kb: int | None = None
@@ -264,6 +282,7 @@ def resolve_build_options(
     cli_exclude: Sequence[str] = (),
     cli_max_file_size_kb: int | None = None,
     cli_libs: Sequence[str] = (),
+    cli_no_auto_incdir: bool = False,
 ) -> BuildOptions:
     """Merge config-file values with CLI flags (CLI appended last, so it wins)."""
     defines = dict(config.defines)
@@ -274,6 +293,7 @@ def resolve_build_options(
         filelists=[*config.filelists, *cli_filelists],
         defines=defines,
         incdirs=[*config.incdirs, *cli_incdirs],
+        auto_incdirs=config.auto_incdirs and not cli_no_auto_incdir,
         sources=list(config.sources),
         exclude=(*config.exclude, *cli_exclude),
         max_file_size_kb=(

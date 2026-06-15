@@ -19,11 +19,36 @@ hdl-kgraph build --exclude 'vendor/*' --max-file-size 2048
   filelist; the positional `SOURCE` then only sets the build root.
 - `-D/--define NAME[=VALUE]` (repeatable) sets a preprocessor define;
   CLI defines override config and filelist defines.
-- `-I/--incdir` (repeatable) adds a `` `include `` search directory.
+- `-I/--incdir` (repeatable) adds a `` `include `` search directory; it is
+  searched before the auto-discovered directories described below.
+- `--no-auto-incdir` turns off automatic `` `include `` directory discovery
+  (see [Auto-discovered include directories](#auto-discovered-include-directories)).
 - `--lib NAME=PATH` (repeatable) maps a VHDL library name to a source
   directory (default library is `work`).
 - `--exclude GLOB` (repeatable) and `--max-file-size KB` keep generated
   netlists and vendored IP out of the graph.
+
+## Auto-discovered include directories
+
+A `` `include "defs.svh" `` resolves against, in order:
+
+1. the directory of the file that contains the `` `include ``,
+2. every `-I`/`incdirs`/`+incdir+` directory you configured, then
+3. **every directory that holds a discovered source file** — added
+   automatically so a header or define file resolves no matter where in the
+   scanned tree it lives.
+
+Step 3 is on by default; this is why `` `include "abc.sv" `` works without any
+`-I` even when `abc.sv` sits in a separate `include/` or `defines/` directory.
+Explicit `-I` directories are still searched first, so they remain the precise
+control when the same header basename exists in more than one place (the first
+match in sorted order wins otherwise). Auto-discovery never reaches outside the
+build root (see #68).
+
+Disable it with `--no-auto-incdir` (CLI) or `auto_incdirs = false` (config) to
+require explicit include directories only. `build -v` prints the effective
+search path — including the count of auto-discovered directories — and a hint
+whenever an `` `include `` still cannot be resolved.
 
 ## Filelists
 
@@ -50,7 +75,8 @@ Repeatable inputs can live in an `hdl-kgraph.toml` at the build root
 [build]
 filelists = ["sim/tb.f"]
 defines   = ["SYNTHESIS", "WIDTH=8"]
-incdirs   = ["include"]
+incdirs   = ["include"]        # searched before auto-discovered source dirs
+auto_incdirs = true            # default; false = explicit incdirs only
 exclude   = ["vendor/*"]
 top       = ["soc_top"]  # intended tops; lint's dead-module exempts them
 

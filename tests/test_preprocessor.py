@@ -283,6 +283,54 @@ def test_include_via_trusted_incdir_outside_root_allowed(tmp_path: Path) -> None
     assert "wire vok;" in pp.text
 
 
+def test_include_resolved_via_auto_incdir(tmp_path: Path) -> None:
+    # A header in a *different* project directory resolves without an explicit
+    # -I when that directory is offered as an auto-discovered incdir.
+    (tmp_path / "rtl").mkdir()
+    (tmp_path / "include").mkdir()
+    (tmp_path / "include" / "defs.svh").write_text("`define AW wire aok;\n")
+    unit = tmp_path / "rtl" / "unit.sv"
+    unit.write_text('`include "defs.svh"\n`AW\n')
+    pp = Preprocessor(
+        base=tmp_path, auto_incdirs=[tmp_path / "include"], branch_mode="both"
+    ).preprocess(unit)
+    assert not any("cannot resolve" in w for w in pp.warnings)
+    assert "wire aok;" in pp.text
+    assert pp.includes[0].resolved is not None
+
+
+def test_explicit_incdir_wins_over_auto_incdir(tmp_path: Path) -> None:
+    # When the same header basename exists in an explicit -I dir and an auto dir,
+    # the explicit dir is searched first.
+    (tmp_path / "good").mkdir()
+    (tmp_path / "auto").mkdir()
+    (tmp_path / "good" / "defs.svh").write_text("good_line;\n")
+    (tmp_path / "auto" / "defs.svh").write_text("auto_line;\n")
+    unit = tmp_path / "unit.sv"
+    unit.write_text('`include "defs.svh"\n')
+    pp = Preprocessor(
+        base=tmp_path,
+        incdirs=[tmp_path / "good"],
+        auto_incdirs=[tmp_path / "auto"],
+        branch_mode="both",
+    ).preprocess(unit)
+    assert "good_line;" in pp.text
+    assert "auto_line;" not in pp.text
+
+
+def test_auto_incdir_disabled_leaves_include_unresolved(tmp_path: Path) -> None:
+    # Without the auto dir (the --no-auto-incdir case), a header in another
+    # directory stays unresolved.
+    (tmp_path / "rtl").mkdir()
+    (tmp_path / "include").mkdir()
+    (tmp_path / "include" / "defs.svh").write_text("`define AW wire aok;\n")
+    unit = tmp_path / "rtl" / "unit.sv"
+    unit.write_text('`include "defs.svh"\n')
+    pp = Preprocessor(base=tmp_path, branch_mode="both").preprocess(unit)
+    assert pp.includes[0].resolved is None
+    assert any("cannot resolve" in w for w in pp.warnings)
+
+
 def test_macro_table_carries_across_files(tmp_path: Path) -> None:
     table = MacroTable()
     pre = Preprocessor(base=tmp_path, macros=table, branch_mode="both")

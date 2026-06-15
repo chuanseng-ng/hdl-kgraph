@@ -53,6 +53,7 @@ from hdl_kgraph.discovery import (
     discover,
     discover_from_paths,
     glob_sources,
+    source_dirs,
 )
 from hdl_kgraph.enrich import (
     EnrichmentInput,
@@ -148,7 +149,9 @@ class BuildReport:
     # relpath -> `file:line: message` details (capped per file in the parser)
     file_error_details: dict[str, list[str]] = field(default_factory=dict)
     preproc_warnings: list[str] = field(default_factory=list)  # full warning text
-    incdirs: list[str] = field(default_factory=list)  # effective `include search path
+    incdirs: list[str] = field(default_factory=list)  # explicit `include search path
+    # Count of source dirs auto-added to the `include search path (auto_incdirs).
+    auto_incdir_count: int = 0
     # M7 semantic enrichment (only populated when `build --enrich` ran).
     enriched: bool = False
     enrich_backends: list[str] = field(default_factory=list)
@@ -250,6 +253,11 @@ def options_hash(base: Path, options: BuildOptions, inputs: _Inputs) -> str:
     payload = {
         "defines": sorted((k, v) for k, v in inputs.defines.items()),
         "incdirs": [rel(d) for d in inputs.incdirs],
+        # Toggling auto-incdir changes which `include``s resolve, so an
+        # incremental reuse of a build made with the other setting is invalid.
+        # The derived dir list is a function of the (already-hashed) file set,
+        # so only the flag itself needs fingerprinting.
+        "auto_incdirs": options.auto_incdirs,
         "sources": sorted(options.sources),
         "exclude": sorted(options.exclude),
         "max_file_size_kb": options.max_file_size_kb,
@@ -430,11 +438,18 @@ def _execute(
         progress(f"discovering source files under {root}")
         discovered = _discover(root, base, options, inputs, max_kb)
 
+    # Auto-discovered `include search dirs: every source directory in the tree,
+    # so a header/define file resolves without an explicit ``-I``. Explicit
+    # incdirs still win (searched first); see Preprocessor._resolve_include.
+    auto_incdirs = source_dirs(discovered, base) if options.auto_incdirs else []
+    report.auto_incdir_count = len(auto_incdirs)
+
     # -- pass 0 + pass 1, in compile order --------------------------------------
     report.both_branches = not inputs.defines
     preprocessor = Preprocessor(
         base=base,
         incdirs=inputs.incdirs,
+        auto_incdirs=auto_incdirs,
         macros=MacroTable(inputs.defines),
         branch_mode="both" if report.both_branches else "select",
     )
