@@ -83,8 +83,14 @@ def serve(mcp_mode: bool, db_path: Path | None, http_addr: str | None, token: st
     if http_addr is None:
         server.run()
         return
-    host, _, port_text = http_addr.rpartition(":")
-    if not host or not port_text.isdigit():
+    if http_addr.startswith("["):  # IPv6: [host]:port
+        bracket = http_addr.find("]")
+        if bracket == -1 or http_addr[bracket + 1 : bracket + 2] != ":":
+            raise CliError(f"--http expects HOST:PORT, got {http_addr!r}")
+        host, port_text = http_addr[: bracket + 1], http_addr[bracket + 2 :]
+    else:  # IPv4 / hostname: host:port
+        host, _, port_text = http_addr.rpartition(":")
+    if not host or not port_text.isdigit() or not (1 <= int(port_text) <= 65535):
         raise CliError(f"--http expects HOST:PORT, got {http_addr!r}")
     if token is None and host not in ("127.0.0.1", "localhost", "::1", "[::1]"):
         click.echo(
@@ -151,6 +157,8 @@ def setup(
                 "no .hdl-kgraph/graph.db found here or in any parent directory; "
                 "run `hdl-kgraph build` first or pass --db"
             )
+    if not db_path.is_file():
+        raise CliError(f"database not found: {db_path}")
     entry = plan_entry(db_path.resolve())
 
     try:
