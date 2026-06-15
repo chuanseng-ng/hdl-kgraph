@@ -346,6 +346,26 @@ def impact_seeds(g: nx.MultiDiGraph, files: list[FileMeta], target: str) -> list
     ]
 
 
+def _signal_unit_names(g: nx.MultiDiGraph, node_id: str) -> tuple[str | None, set[str]]:
+    """The enclosing design unit's name and the set of unit names a signal
+    belongs to, for ``signal_drivers``'s ``module`` filter.
+
+    A VHDL architecture's signals also belong to the entity it implements, so a
+    ``module`` filter matches either. Returns ``(enclosing_unit_name, names)``
+    where *names* is what ``module`` is matched against.
+    """
+    unit_id = _enclosing_unit(g, node_id)
+    unit_name = g.nodes[unit_id]["name"] if unit_id else None
+    unit_names = {unit_name} if unit_name else set()
+    if unit_id and g.nodes[unit_id]["kind"] is NodeKind.ARCHITECTURE:
+        unit_names.update(
+            g.nodes[dst]["name"]
+            for _, dst, d in g.out_edges(unit_id, data=True)
+            if d["kind"] is EdgeKind.IMPLEMENTS
+        )
+    return unit_name, unit_names
+
+
 def signal_drivers(
     g: nx.MultiDiGraph,
     signal: str,
@@ -366,16 +386,7 @@ def signal_drivers(
         is_vhdl = data["language"] is Language.VHDL
         if data["name"] != (signal.lower() if is_vhdl else signal):
             continue
-        unit_id = _enclosing_unit(g, node_id)
-        unit_name = g.nodes[unit_id]["name"] if unit_id else None
-        unit_names = {unit_name} if unit_name else set()
-        if unit_id and g.nodes[unit_id]["kind"] is NodeKind.ARCHITECTURE:
-            # A VHDL architecture's signals belong to its entity for callers.
-            unit_names.update(
-                g.nodes[dst]["name"]
-                for _, dst, d in g.out_edges(unit_id, data=True)
-                if d["kind"] is EdgeKind.IMPLEMENTS
-            )
+        unit_name, unit_names = _signal_unit_names(g, node_id)
         if module is not None and (module.lower() if is_vhdl else module) not in unit_names:
             continue
         for src, _, edge in g.in_edges(node_id, data=True):
