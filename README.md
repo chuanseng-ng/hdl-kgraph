@@ -8,7 +8,7 @@ instances, ports, parameters, signals, classes, packages, and the
 relationships between them — design hierarchy, port connectivity, package
 imports, class inheritance, clock domains, and more.
 
-> **Status: alpha (v0.8).** Milestones M1–M7 are in: SystemVerilog/Verilog
+> **Status: alpha (v0.10).** Milestones M1–M7 are in: SystemVerilog/Verilog
 > and VHDL extraction with mixed-language linking, the SV preprocessor and
 > real-world build inputs (`.f` filelists, defines, `hdl-kgraph.toml`),
 > incremental rebuilds and watch mode, the clock/reset/CDC/lint/metrics
@@ -18,11 +18,13 @@ imports, class inheritance, clock domains, and more.
 > elaborates the design — unrolling parameterized generates so instance counts
 > match reality — and records a
 > [discrepancy report](docs/enrichment.md). `hdl-kgraph enriched` summarizes
-> exactly what enrichment changed vs the default build. v0.8 makes the
-> incremental `update` re-resolve only the changed references — mutating the
-> prior resolved graph in place instead of re-linking the whole design
-> (SystemVerilog/Verilog; VHDL, binds, and `--enrich` fall back to a full
-> re-link), byte-identical to a full re-link. See the
+> exactly what enrichment changed vs the default build. **v0.9–v0.10 make it
+> scale to large (10–100+ GB) designs:** MCP/CLI queries answer from a bounded,
+> index-backed subgraph instead of loading the whole graph (a localized query is
+> sub-millisecond and tracks the *answer* size, not the design size), the
+> whole-design clock/UVM reports are precomputed at build, and an incremental
+> `update` reads and writes only the changed rows. See
+> [docs/scalability.md](docs/scalability.md) and the
 > [roadmap](#roadmap-at-a-glance).
 
 ## Why
@@ -88,12 +90,13 @@ warnings and why files were skipped.
 → [docs/build-inputs.md](docs/build-inputs.md)
 
 **Incremental updates.** `update` re-parses only changed files plus their
-include/macro dependents — one edit in a 2000-file design lands in about
-1.3 s (budget < 1.5 s) — and `watch` does it on every save burst. As of v0.8
-the pass-2 link is incremental too: for SystemVerilog/Verilog it re-resolves
-only the references whose target changed and mutates the prior resolved graph
-in place (byte-identical to a full re-link; VHDL, binds, and `--enrich` fall
-back). `detect-changes`
+include/macro dependents — one edit in a 2000-file design lands in about 1.5 s
+(budget < 1.8 s) — and `watch` does it on every save burst. As of v0.8 the
+pass-2 link is incremental too: for SystemVerilog/Verilog it re-resolves only
+the references whose target changed and mutates the prior resolved graph in
+place (byte-identical to a full re-link; VHDL, binds, and `--enrich` fall back).
+v0.10 scopes the database write to the dirty closure — a one-file edit reads and
+writes ~0.04 % of the rows, not the whole graph. `detect-changes`
 (exit codes: 0 clean, 1 dirty, 2 error; diffs against git, svn, or Perforce)
 and `impact` answer "what changed, and what does it affect?" in CI.
 → [docs/incremental.md](docs/incremental.md)
@@ -114,7 +117,8 @@ hub/bridge metrics, and a self-contained interactive HTML visualization
 **AI assistants over MCP.** `hdl-kgraph setup` detects installed assistants
 (Claude Code/Desktop, Cursor, Codex, Windsurf, Gemini CLI, VS Code) and
 writes their MCP config; `hdl-kgraph serve` exposes nine read-only,
-paginated tools (`pip install 'hdl-kgraph[mcp]'`).
+paginated tools (`pip install 'hdl-kgraph[mcp]'`). Each tool answers from the
+bounded subgraph it needs (v0.9), so queries stay fast on very large designs.
 → [docs/mcp.md](docs/mcp.md)
 
 ## What gets extracted
@@ -146,6 +150,10 @@ full list, the confidence convention, and the schema pointers live in
 | M8 (v1.0) | C/C++/Python boundary (DPI-C, cocotb), stable API |
 | M9 (v1.x) | Chisel/FIRRTL, Amaranth, SpinalHDL |
 | M10 (v1.x) | Tcl/SDC/UPF constraints, Perl scripting, SLN portable stimulus |
+
+*Cross-cutting (v0.9–v0.10): bounded index-backed reads, precomputed
+whole-design summaries, and a dirty-closure-scoped incremental write, so the
+tool scales to 10–100+ GB graphs — [docs/scalability.md](docs/scalability.md).*
 
 Details and acceptance criteria: [ROADMAP.md](ROADMAP.md).
 
