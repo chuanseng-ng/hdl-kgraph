@@ -19,6 +19,14 @@ ruff check . && ruff format --check . && mypy && pytest
 
 CI runs the same checks on Python 3.10–3.13.
 
+## Changelog
+
+If your PR changes user-visible behavior, add a bullet under the
+`[Unreleased]` section of [CHANGELOG.md](CHANGELOG.md), in the appropriate
+group (`Added` / `Changed` / `Fixed` / `Removed` / `Security`). CI enforces
+this for any PR that touches `src/`; for docs-only or purely internal changes
+that don't warrant an entry, apply the `skip-changelog` label to the PR.
+
 ## The most valuable contribution: fixtures
 
 HDL parsing lives and dies by real-world edge cases. If hdl-kgraph
