@@ -17,6 +17,7 @@ project risk) is isolated here, and M7 adds elaboration-accurate backends
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -26,6 +27,55 @@ from hdl_kgraph.schema import CONFIDENCE_RESOLVED, Edge, EdgeKind, Node
 #: Per-file cap on recorded parse-error *details*; ``parse_error_count``
 #: stays exact beyond it (a garbage/minified file must not bloat the store).
 MAX_PARSE_ERRORS = 20
+
+
+class GrammarMismatchError(RuntimeError):
+    """A loaded tree-sitter grammar is missing node types/fields the parser
+    dispatches on.
+
+    The parsers walk the tree with hardcoded ``node.type``/field-name string
+    literals (the Query API churns across releases — see ROADMAP Risk #5). A
+    syntax error is loud (it shows up in ``parse_error_count``), but an upstream
+    *rename* of a node type that still parses cleanly would silently turn a
+    handler into a no-op — missing nodes, no error. :func:`validate_grammar`
+    checks the expected names at parser construction and raises this so the
+    drift is a loud, actionable failure instead. See issue #71.
+    """
+
+
+def validate_grammar(
+    language: Any,
+    node_types: Iterable[str],
+    *,
+    field_names: Iterable[str] = (),
+    grammar: str = "tree-sitter grammar",
+) -> None:
+    """Raise :class:`GrammarMismatchError` if the loaded *language* is missing any
+    of the named node types or fields the parser dispatches on.
+
+    Uses the tree-sitter ``Language`` introspection API
+    (``id_for_node_kind``/``field_id_for_name``), which returns ``None`` for an
+    unknown name — so a grammar that renamed a construct fails loudly here rather
+    than under-extracting in silence.
+    """
+    missing_types = sorted(
+        t for t in dict.fromkeys(node_types) if language.id_for_node_kind(t, True) is None
+    )
+    missing_fields = sorted(
+        f for f in dict.fromkeys(field_names) if language.field_id_for_name(f) is None
+    )
+    if not missing_types and not missing_fields:
+        return
+    parts = []
+    if missing_types:
+        parts.append(f"node types {missing_types}")
+    if missing_fields:
+        parts.append(f"fields {missing_fields}")
+    raise GrammarMismatchError(
+        f"the loaded {grammar} is missing " + " and ".join(parts) + ". "
+        "hdl-kgraph dispatches on these names, so a grammar rename would silently "
+        "under-extract; pin a compatible grammar version or update the parser."
+    )
 
 
 class UnsupportedBackendError(NotImplementedError):

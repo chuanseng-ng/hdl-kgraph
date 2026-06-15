@@ -67,7 +67,7 @@ from tree_sitter import Node as TSNode
 from tree_sitter import Parser as TSParser
 
 from hdl_kgraph.ids import decl_node_id, file_node_id
-from hdl_kgraph.parser.base import FileIR, UnresolvedRef, error_snippet
+from hdl_kgraph.parser.base import FileIR, UnresolvedRef, error_snippet, validate_grammar
 from hdl_kgraph.parser.preprocessor import LineOrigin
 from hdl_kgraph.parser.sv_normalize import normalize_sv_source
 from hdl_kgraph.schema import (
@@ -443,6 +443,7 @@ class _Walker:
                 self.scope.ports[name] = port
 
     def _on_parameter_declaration(self, node: TSNode) -> None:
+        self._count_subtree_errors(node)
         is_localparam = node.type == "local_parameter_declaration"
         assignments = self._child(node, "list_of_param_assignments", "list_of_type_assignments")
         if assignments is None:
@@ -468,6 +469,7 @@ class _Walker:
     # -- typedefs ------------------------------------------------------------------
 
     def _on_type_declaration(self, node: TSNode) -> None:
+        self._count_subtree_errors(node)
         name = self._identifier(node)
         if not name:
             return
@@ -513,6 +515,7 @@ class _Walker:
     # -- instantiations ------------------------------------------------------------------
 
     def _on_instantiation(self, node: TSNode) -> None:
+        self._count_subtree_errors(node)
         target = self._identifier(node)
         if not target:
             return
@@ -624,6 +627,7 @@ class _Walker:
     # -- imports -------------------------------------------------------------------------
 
     def _on_import(self, node: TSNode) -> None:
+        self._count_subtree_errors(node)
         for item in self._children(node, "package_import_item"):
             idents = self._children(item, *_IDENTIFIER_TYPES)
             if not idents:
@@ -1160,12 +1164,30 @@ class _Walker:
     }
 
 
+#: Validate the grammar's node-type surface once (the names the walker
+#: dispatches on); a rename upstream would otherwise silently under-extract.
+_grammar_validated = False
+
+
+def _validate_sv_grammar() -> None:
+    global _grammar_validated
+    if _grammar_validated:
+        return
+    validate_grammar(
+        SV_LANGUAGE,
+        set(_Walker._DISPATCH) | set(_HEADER_TYPES) | set(_IDENTIFIER_TYPES),
+        grammar="tree-sitter-systemverilog grammar",
+    )
+    _grammar_validated = True
+
+
 class SystemVerilogParser:
     """Tree-sitter based SystemVerilog/Verilog pass-1 parser."""
 
     suffixes = SUFFIXES
 
     def __init__(self) -> None:
+        _validate_sv_grammar()
         self._parser = TSParser(SV_LANGUAGE)
 
     def parse(self, path: Path, text: str, line_map: Sequence[LineOrigin] | None = None) -> FileIR:

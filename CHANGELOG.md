@@ -9,6 +9,23 @@ changes.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-06-15
+
+### Added
+
+- Parsers now validate the loaded tree-sitter grammar at construction
+  (`validate_grammar` / `GrammarMismatchError`): if the grammar is missing a
+  node type the SystemVerilog/VHDL walker dispatches on, hdl-kgraph fails loudly
+  with an actionable message instead of silently under-extracting after an
+  upstream grammar rename ([#71]).
+
+### Fixed
+
+- Keep `parse_error_count` honest for the SystemVerilog parameter, typedef,
+  instantiation, and package-import subtrees: these handlers consume their
+  subtree without re-dispatching, so syntax errors inside them were previously
+  uncounted ([#71]).
+
 ## [0.12.0] - 2026-06-15
 
 ### Changed
@@ -198,7 +215,8 @@ Maintenance release — version bump only, no functional changes.
 Releases before `0.6.3` predate this changelog; their history lives in the git
 log.
 
-[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.10.1...v0.10.2
@@ -223,6 +241,7 @@ log.
 [#69]: https://github.com/chuanseng-ng/hdl-kgraph/pull/69
 [#76]: https://github.com/chuanseng-ng/hdl-kgraph/pull/76
 [#77]: https://github.com/chuanseng-ng/hdl-kgraph/pull/77
+[#71]: https://github.com/chuanseng-ng/hdl-kgraph/issues/71
 [#73]: https://github.com/chuanseng-ng/hdl-kgraph/issues/73
 [#74]: https://github.com/chuanseng-ng/hdl-kgraph/issues/74
 [#78]: https://github.com/chuanseng-ng/hdl-kgraph/pull/78
