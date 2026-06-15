@@ -62,7 +62,13 @@ from tree_sitter import Node as TSNode
 from tree_sitter import Parser as TSParser
 
 from hdl_kgraph.ids import decl_node_id, file_node_id
-from hdl_kgraph.parser.base import FileIR, UnresolvedRef, error_snippet, validate_grammar
+from hdl_kgraph.parser.base import (
+    FileIR,
+    UnresolvedRef,
+    _WalkerBase,
+    error_snippet,
+    validate_grammar,
+)
 from hdl_kgraph.schema import (
     CONFIDENCE_HEURISTIC,
     CONFIDENCE_RESOLVED,
@@ -114,7 +120,12 @@ class _UseClause:
     span: tuple[int, int]
 
 
-class _Walker:
+class _Walker(_WalkerBase[_Scope]):
+    #: VHDL descends into an ERROR subtree: its grammar wraps whole intact
+    #: regions (often the entire design_file) in a single ERROR node, so
+    #: skipping — the SV strategy — would discard salvageable declarations.
+    ERROR_POLICY = "descend"
+
     def __init__(self, ir: FileIR, relpath: str, source: bytes, library: str) -> None:
         self.ir = ir
         self.relpath = relpath
@@ -132,22 +143,8 @@ class _Walker:
 
     # -- small helpers -------------------------------------------------------
 
-    def _text(self, node: TSNode) -> str:
-        return self.source[node.start_byte : node.end_byte].decode(errors="replace")
-
     def _norm(self, node: TSNode) -> str:
         return self._text(node).lower()
-
-    @staticmethod
-    def _child(node: TSNode, *types: str) -> TSNode | None:
-        for child in node.children:
-            if child.type in types:
-                return child
-        return None
-
-    @staticmethod
-    def _children(node: TSNode, *types: str) -> list[TSNode]:
-        return [c for c in node.children if c.type in types]
 
     def _named_texts(self, node: TSNode) -> list[str]:
         """Texts of named children — identifiers regardless of how they lexed."""
@@ -159,10 +156,6 @@ class _Walker:
             if child.is_named and child.child_count == 0:
                 return self._text(child)
         return ""
-
-    @property
-    def scope(self) -> _Scope:
-        return self.scopes[-1]
 
     def _new_node(self, kind: NodeKind, name: str, ts_node: TSNode, **attrs: object) -> Node:
         """Create a node (name lowercased) in the current scope + DECLARES edge."""
@@ -219,27 +212,6 @@ class _Walker:
         else:
             message = f"syntax error near `{error_snippet(self._text(node))}`"
         self.ir.record_parse_error(f"{self.relpath}:{line}: {message}")
-
-    def visit(self, node: TSNode) -> None:
-        if node.is_missing:
-            self._record_parse_error(node)
-        if node.type == "ERROR":
-            # Count it, but keep descending: this grammar wraps whole regions
-            # (often the entire design_file) in one ERROR node with intact
-            # design units inside, so skipping the subtree — the SV parser's
-            # strategy — would discard salvageable declarations. Stray tokens
-            # under the ERROR have no dispatch entry and visit harmlessly.
-            self._record_parse_error(node)
-        handler = self._DISPATCH.get(node.type)
-        if handler is not None:
-            handler(self, node)
-        else:
-            for child in node.children:
-                self.visit(child)
-
-    def _visit_children(self, node: TSNode) -> None:
-        for child in node.children:
-            self.visit(child)
 
     def _visit_in_scope(self, node: TSNode, scope_node: Node) -> None:
         self.scopes.append(_Scope(node_id=scope_node.id, path=scope_node.qualified_name))

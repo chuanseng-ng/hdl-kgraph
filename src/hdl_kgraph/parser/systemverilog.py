@@ -67,7 +67,13 @@ from tree_sitter import Node as TSNode
 from tree_sitter import Parser as TSParser
 
 from hdl_kgraph.ids import decl_node_id, file_node_id
-from hdl_kgraph.parser.base import FileIR, UnresolvedRef, error_snippet, validate_grammar
+from hdl_kgraph.parser.base import (
+    FileIR,
+    UnresolvedRef,
+    _WalkerBase,
+    error_snippet,
+    validate_grammar,
+)
 from hdl_kgraph.parser.preprocessor import LineOrigin
 from hdl_kgraph.parser.sv_normalize import normalize_sv_source
 from hdl_kgraph.schema import (
@@ -141,7 +147,10 @@ class _Scope:
         return f"{self.path}.{name}" if self.path else name
 
 
-class _Walker:
+class _Walker(_WalkerBase[_Scope]):
+    #: SV skips an ERROR subtree (partial results from the siblings).
+    ERROR_POLICY = "skip"
+
     def __init__(
         self,
         ir: FileIR,
@@ -181,20 +190,6 @@ class _Walker:
     def _ref_confidence(self, node: TSNode) -> float:
         return CONFIDENCE_AMBIGUOUS if self._origin(node).ambiguous else CONFIDENCE_RESOLVED
 
-    def _text(self, node: TSNode) -> str:
-        return self.source[node.start_byte : node.end_byte].decode(errors="replace")
-
-    @staticmethod
-    def _child(node: TSNode, *types: str) -> TSNode | None:
-        for child in node.children:
-            if child.type in types:
-                return child
-        return None
-
-    @staticmethod
-    def _children(node: TSNode, *types: str) -> list[TSNode]:
-        return [c for c in node.children if c.type in types]
-
     def _find_first(self, node: TSNode, type_: str, max_depth: int = 3) -> TSNode | None:
         if max_depth < 0:
             return None
@@ -209,10 +204,6 @@ class _Walker:
     def _identifier(self, node: TSNode) -> str:
         ident = self._child(node, *_IDENTIFIER_TYPES)
         return self._text(ident) if ident is not None else ""
-
-    @property
-    def scope(self) -> _Scope:
-        return self.scopes[-1]
 
     def _new_node(self, kind: NodeKind, name: str, ts_node: TSNode, **attrs: object) -> Node:
         """Create a node in the current scope and emit its DECLARES edge."""
@@ -276,35 +267,6 @@ class _Walker:
         else:
             message = f"syntax error near `{error_snippet(self._text(node))}`"
         self.ir.record_parse_error(f"{origin.file}:{origin.line}: {message}")
-
-    def visit(self, node: TSNode) -> None:
-        if node.is_missing:
-            self._record_parse_error(node)
-        if node.type == "ERROR":
-            # Skip the subtree but keep going with siblings: partial results.
-            self._record_parse_error(node)
-            return
-        handler = self._DISPATCH.get(node.type)
-        if handler is not None:
-            handler(self, node)
-        else:
-            for child in node.children:
-                self.visit(child)
-
-    def _visit_children(self, node: TSNode) -> None:
-        for child in node.children:
-            self.visit(child)
-
-    def _count_subtree_errors(self, node: TSNode) -> None:
-        """Keep ``parse_error_count`` honest for subtrees a handler consumes
-        without re-dispatching (mirrors :meth:`visit`'s counting)."""
-        if node.is_missing:
-            self._record_parse_error(node)
-        if node.type == "ERROR":
-            self._record_parse_error(node)
-            return
-        for child in node.children:
-            self._count_subtree_errors(child)
 
     def _visit_in_scope(self, node: TSNode, scope_node: Node) -> None:
         self.scopes.append(

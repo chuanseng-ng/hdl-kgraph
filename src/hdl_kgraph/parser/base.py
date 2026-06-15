@@ -20,9 +20,14 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Generic, Protocol, TypeVar
+
+from tree_sitter import Node as TSNode
 
 from hdl_kgraph.schema import CONFIDENCE_RESOLVED, Edge, EdgeKind, Node
+
+#: A walker's per-language declaration-scope type (see :class:`_WalkerBase`).
+ScopeT = TypeVar("ScopeT")
 
 #: Per-file cap on recorded parse-error *details*; ``parse_error_count``
 #: stays exact beyond it (a garbage/minified file must not bloat the store).
@@ -194,3 +199,84 @@ class ParserBackend(Protocol):
     def parse(self, path: Path, text: str) -> FileIR:
         """Parse one file into its per-file IR. Must tolerate syntax errors."""
         ...
+
+
+class _WalkerBase(Generic[ScopeT]):
+    """Shared tree-walking machinery for the tree-sitter parsers (issue #72).
+
+    Holds the language-agnostic traversal that the SystemVerilog and VHDL
+    walkers used to re-implement independently (and drift apart on): node-text
+    extraction, typed child lookup, the dispatch-driven :meth:`visit`, and
+    parse-error counting. A subclass provides ``source`` and ``scopes``, its
+    ``_DISPATCH`` table (``node.type`` → handler), language-specific node
+    handlers and ``_new_node``, and :meth:`_record_parse_error` (file/line
+    attribution differs — VHDL uses the raw row, SV maps through the
+    preprocessor line map). Parameterized by the subclass's scope type so
+    ``self.scope`` stays precisely typed.
+
+    The ERROR-node policy is an **explicit, documented** decision point rather
+    than accidental drift: SystemVerilog *skips* an ERROR subtree (keep partial
+    results from the siblings), while VHDL *descends* into it because its grammar
+    wraps whole regions — often the entire ``design_file`` — in a single ERROR
+    node with intact design units inside, so skipping would discard salvageable
+    declarations. Subclasses set :attr:`ERROR_POLICY` accordingly.
+    """
+
+    #: ``"skip"`` the ERROR subtree (return) or ``"descend"`` into it.
+    ERROR_POLICY: str = "skip"
+    #: ``node.type`` → ``handler(self, node)``. Subclasses define this.
+    _DISPATCH: dict[str, Any] = {}
+
+    source: bytes
+    scopes: list[ScopeT]
+
+    @property
+    def scope(self) -> ScopeT:
+        return self.scopes[-1]
+
+    def _text(self, node: TSNode) -> str:
+        return self.source[node.start_byte : node.end_byte].decode(errors="replace")
+
+    @staticmethod
+    def _child(node: TSNode, *types: str) -> TSNode | None:
+        for child in node.children:
+            if child.type in types:
+                return child
+        return None
+
+    @staticmethod
+    def _children(node: TSNode, *types: str) -> list[TSNode]:
+        return [c for c in node.children if c.type in types]
+
+    def visit(self, node: TSNode) -> None:
+        if node.is_missing:
+            self._record_parse_error(node)
+        if node.type == "ERROR":
+            self._record_parse_error(node)
+            if self.ERROR_POLICY == "skip":
+                return  # partial results: keep going with siblings
+        handler = self._DISPATCH.get(node.type)
+        if handler is not None:
+            handler(self, node)
+        else:
+            for child in node.children:
+                self.visit(child)
+
+    def _visit_children(self, node: TSNode) -> None:
+        for child in node.children:
+            self.visit(child)
+
+    def _count_subtree_errors(self, node: TSNode) -> None:
+        """Keep ``parse_error_count`` honest for subtrees a handler consumes
+        without re-dispatching (mirrors :meth:`visit`'s counting)."""
+        if node.is_missing:
+            self._record_parse_error(node)
+        if node.type == "ERROR":
+            self._record_parse_error(node)
+            return
+        for child in node.children:
+            self._count_subtree_errors(child)
+
+    def _record_parse_error(self, node: TSNode) -> None:
+        # Subclass responsibility: the file/line attribution is language-specific.
+        raise NotImplementedError

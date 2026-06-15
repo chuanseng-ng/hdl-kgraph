@@ -9,6 +9,17 @@ changes.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-06-15
+
+### Changed
+
+- Extract a shared `_WalkerBase` for the SystemVerilog and VHDL tree-sitter
+  parsers (node-text/child helpers, the dispatch-driven `visit`, and parse-error
+  counting), so cross-cutting traversal fixes are made once instead of twice.
+  The ERROR-node policy is now an explicit, documented `ERROR_POLICY` per
+  language (`skip` for SV, `descend` for VHDL) rather than two independently
+  drifting `visit` implementations ([#72]).
+
 ## [0.13.1] - 2026-06-15
 
 ### Added
@@ -235,7 +246,8 @@ Maintenance release — version bump only, no functional changes.
 Releases before `0.6.3` predate this changelog; their history lives in the git
 log.
 
-[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.13.1...HEAD
+[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.11.0...v0.12.0
@@ -263,6 +275,7 @@ log.
 [#76]: https://github.com/chuanseng-ng/hdl-kgraph/pull/76
 [#77]: https://github.com/chuanseng-ng/hdl-kgraph/pull/77
 [#71]: https://github.com/chuanseng-ng/hdl-kgraph/issues/71
+[#72]: https://github.com/chuanseng-ng/hdl-kgraph/issues/72
 [#73]: https://github.com/chuanseng-ng/hdl-kgraph/issues/73
 [#74]: https://github.com/chuanseng-ng/hdl-kgraph/issues/74
 [#75]: https://github.com/chuanseng-ng/hdl-kgraph/issues/75
