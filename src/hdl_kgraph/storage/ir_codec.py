@@ -23,6 +23,15 @@ from hdl_kgraph.parser.base import FileIR, UnresolvedRef
 from hdl_kgraph.parser.preprocessor import MacroDef, MacroEvent
 from hdl_kgraph.schema import Edge, EdgeKind, Language, Node, NodeKind
 
+#: Version of the persisted pass-1 IR encoding (the ``file_irs.ir`` blobs).
+#: Historically the IR format was keyed implicitly off the SQLite
+#: ``SCHEMA_VERSION``; this makes the contract explicit so the schema-migration
+#: ladder can tell an *additive* schema bump (migratable in place) apart from a
+#: change to the IR encoding (a stored IR can't be ``ALTER``ed — it must be
+#: re-parsed). Bump this whenever the encode/decode functions below change shape
+#: in a way that an older blob would no longer decode into an identical IR.
+IR_CODEC_VERSION = "1"
+
 
 def ir_to_json(ir: FileIR) -> str:
     return json.dumps(
