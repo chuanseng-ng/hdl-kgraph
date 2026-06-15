@@ -168,10 +168,7 @@ def _migrate_7_to_8(conn: sqlite3.Connection) -> None:
     commit the caller's migration transaction).
     """
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS summaries ("
-        "  name    TEXT PRIMARY KEY,"
-        "  payload TEXT NOT NULL"
-        ")"
+        "CREATE TABLE IF NOT EXISTS summaries (  name    TEXT PRIMARY KEY,  payload TEXT NOT NULL)"
     )
 
 
