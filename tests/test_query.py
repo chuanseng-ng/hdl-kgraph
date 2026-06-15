@@ -50,9 +50,7 @@ def query(built: Path) -> GraphQuery:
 
 
 def _names_of_kinds(graph: nx.MultiDiGraph, kinds: frozenset[NodeKind]) -> list[str]:
-    return sorted(
-        {data["name"] for _, data in graph.nodes(data=True) if data["kind"] in kinds}
-    )
+    return sorted({data["name"] for _, data in graph.nodes(data=True) if data["kind"] in kinds})
 
 
 def _same(label: object, query_call: Callable[[], Any], ref_call: Callable[[], Any]) -> None:
@@ -67,9 +65,7 @@ def _same(label: object, query_call: Callable[[], Any], ref_call: Callable[[], A
     assert query_call() == expected, label
 
 
-def _ref_hierarchy(
-    g: nx.MultiDiGraph, top: str, depth: int, max_nodes: int
-) -> dict[str, object]:
+def _ref_hierarchy(g: nx.MultiDiGraph, top: str, depth: int, max_nodes: int) -> dict[str, object]:
     """What the old ``_get_hierarchy_impl`` returned for a named top."""
     roots = [
         node_id
@@ -129,9 +125,10 @@ def test_hierarchy_parity(query: GraphQuery, loaded) -> None:
     assert tops
     for name in sorted(tops):
         for depth in (1, 3, 64):
-            assert query.hierarchy(name, depth, 500) == _ref_hierarchy(
-                graph, name, depth, 500
-            ), (name, depth)
+            assert query.hierarchy(name, depth, 500) == _ref_hierarchy(graph, name, depth, 500), (
+                name,
+                depth,
+            )
     # node-cap pruning matches too
     name = sorted(tops)[0]
     assert query.hierarchy(name, 64, 1) == _ref_hierarchy(graph, name, 64, 1)
@@ -187,9 +184,7 @@ def test_search_nodes_parity(query: GraphQuery, loaded) -> None:
         ("df_top.*", None, None),  # qualified-name path
     ]
     for name, kinds, file in cases:
-        expected = srv._page(
-            analysis.search_nodes(graph, name=name, kinds=kinds, file=file), 50, 0
-        )
+        expected = srv._page(analysis.search_nodes(graph, name=name, kinds=kinds, file=file), 50, 0)
         assert query.search_nodes(name, kinds, file, 50, 0) == expected, (name, kinds, file)
 
 
@@ -217,9 +212,7 @@ def test_global_tools_parity(query: GraphQuery, loaded) -> None:
     assert query.uvm_topology() == srv._uvm_impl(graph)
 
 
-def test_no_full_graph_load(
-    query: GraphQuery, loaded, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_no_full_graph_load(query: GraphQuery, loaded, monkeypatch: pytest.MonkeyPatch) -> None:
     """The whole point: no tool may fall back to SqliteStore.load() on a current
     (summary-bearing) database — that is the unbounded path this work removes."""
     import hdl_kgraph.storage.query as query_mod

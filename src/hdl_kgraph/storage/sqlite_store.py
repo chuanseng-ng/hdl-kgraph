@@ -566,9 +566,7 @@ class SqliteStore:
         """
         with self._connect() as conn:
             self._check_version(conn)
-            row = conn.execute(
-                "SELECT payload FROM summaries WHERE name = ?", (name,)
-            ).fetchone()
+            row = conn.execute("SELECT payload FROM summaries WHERE name = ?", (name,)).fetchone()
             return row[0] if row else None
 
     def load(self) -> tuple[nx.MultiDiGraph, list[FileMeta], dict[str, str]]:
@@ -687,9 +685,7 @@ def _apply_delta(
 
     # -- summaries (a handful of whole-design JSON blobs): refresh wholesale ---
     conn.execute("DELETE FROM summaries")
-    conn.executemany(
-        "INSERT INTO summaries (name, payload) VALUES (?, ?)", list(summaries.items())
-    )
+    conn.executemany("INSERT INTO summaries (name, payload) VALUES (?, ?)", list(summaries.items()))
 
     # -- meta: refresh built_at / options_hash / tool_version -----------------
     conn.executemany(

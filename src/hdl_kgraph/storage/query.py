@@ -135,9 +135,7 @@ class GraphQuery:
 
     # -- name resolution (indexed) ---------------------------------------------
 
-    def _ids_by_name(
-        self, conn: Any, kinds: tuple[str, ...], name: str
-    ) -> list[str]:
+    def _ids_by_name(self, conn: Any, kinds: tuple[str, ...], name: str) -> list[str]:
         """Node ids of the given *kinds* named *name*, honouring VHDL casing.
 
         Uses ``idx_nodes_kind_name``. VHDL names are stored lowercase, so a
@@ -147,8 +145,7 @@ class GraphQuery:
         # ``name IN (name, name.lower())`` is an indexed superset; the per-row
         # check then enforces the rule (VHDL: lowercased; others: exact case).
         rows = conn.execute(
-            f"SELECT id, language, name FROM nodes "
-            f"WHERE kind IN ({kind_ph}) AND name IN (?, ?)",
+            f"SELECT id, language, name FROM nodes WHERE kind IN ({kind_ph}) AND name IN (?, ?)",
             (*kinds, name, name.lower()),
         )
         out: list[str] = []
@@ -217,9 +214,7 @@ class GraphQuery:
             self._hydrate_nodes(graph, conn, unit_ids)
             self._hydrate_out_edges(graph, conn, unit_ids, (EdgeKind.DECLARES,))
             if instance is not None:
-                inst_ids = self._hydrate_in_edges(
-                    graph, conn, unit_ids, (EdgeKind.INSTANTIATES,)
-                )
+                inst_ids = self._hydrate_in_edges(graph, conn, unit_ids, (EdgeKind.INSTANTIATES,))
                 self._hydrate_nodes(graph, conn, inst_ids)
                 self._hydrate_out_edges(graph, conn, inst_ids, (EdgeKind.CONNECTS,))
             self._ensure_endpoints(graph, conn)
@@ -233,9 +228,7 @@ class GraphQuery:
         with self._store._connect() as conn:
             self._store._check_version(conn)
             graph = nx.MultiDiGraph()
-            sig_ids = self._ids_by_name(
-                conn, (NodeKind.SIGNAL.value, NodeKind.PORT.value), signal
-            )
+            sig_ids = self._ids_by_name(conn, (NodeKind.SIGNAL.value, NodeKind.PORT.value), signal)
             self._hydrate_nodes(graph, conn, sig_ids)
             # The driving/reading sites (and the unit each signal belongs to,
             # reached by climbing reverse DECLARES) must be present.
@@ -427,9 +420,7 @@ class GraphQuery:
         self._ensure_endpoints(graph, conn)
         return graph, files, seeds
 
-    def _hydrate_impact_neighbors(
-        self, graph: nx.MultiDiGraph, conn: Any, ids: set[str]
-    ) -> None:
+    def _hydrate_impact_neighbors(self, graph: nx.MultiDiGraph, conn: Any, ids: set[str]) -> None:
         """One BFS step of the impact closure: load everything one
         ``_impact_dependents`` call would follow out of *ids* (over-loading edge
         kinds is harmless — ``impact_radius`` filters by kind)."""
@@ -474,9 +465,7 @@ class GraphQuery:
         candidate = target.replace("\\", "/").lstrip("./")
         if candidate in known_paths or "/" in candidate or Path(candidate).suffix in SUFFIXES:
             matches = [
-                f"file:{p}"
-                for p in known_paths
-                if p == candidate or p.endswith("/" + candidate)
+                f"file:{p}" for p in known_paths if p == candidate or p.endswith("/" + candidate)
             ]
             present = [
                 node_id
@@ -547,6 +536,4 @@ def _select_in(
     for start in range(0, len(id_list), _IN_CHUNK):
         chunk = id_list[start : start + _IN_CHUNK]
         placeholders = ", ".join("?" for _ in chunk)
-        yield from conn.execute(
-            f"{sql_prefix} IN ({placeholders}){sql_suffix}", (*chunk, *extra)
-        )
+        yield from conn.execute(f"{sql_prefix} IN ({placeholders}){sql_suffix}", (*chunk, *extra))

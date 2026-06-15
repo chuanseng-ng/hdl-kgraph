@@ -287,9 +287,7 @@ def create_server(db_path: Path, *, token: str | None = None) -> FastMCP:
     ) -> dict[str, Any]:
         """What drives (or, with readers=true, reads) signals named `signal`,
         optionally only inside design unit `module`."""
-        return ctx.run(
-            lambda q: q.find_signal_drivers(signal, module, readers, limit, offset)
-        )
+        return ctx.run(lambda q: q.find_signal_drivers(signal, module, readers, limit, offset))
 
     @mcp.tool
     def uvm_topology() -> dict[str, Any]:

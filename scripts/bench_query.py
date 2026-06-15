@@ -53,10 +53,7 @@ def main() -> int:
         count = generate(root, args.files)
         report = run_build(root)
         db = default_db_path(root)
-        print(
-            f"corpus:        {count} files, {report.node_count} nodes, "
-            f"{report.edge_count} edges"
-        )
+        print(f"corpus:        {count} files, {report.node_count} nodes, {report.edge_count} edges")
 
         # Baseline: the old read path materialised this whole graph per call.
         load_ms = _time_ms(lambda: SqliteStore(db).load(), repeat=3)
