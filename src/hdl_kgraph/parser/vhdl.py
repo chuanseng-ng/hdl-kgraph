@@ -62,7 +62,7 @@ from tree_sitter import Node as TSNode
 from tree_sitter import Parser as TSParser
 
 from hdl_kgraph.ids import decl_node_id, file_node_id
-from hdl_kgraph.parser.base import FileIR, UnresolvedRef, error_snippet
+from hdl_kgraph.parser.base import FileIR, UnresolvedRef, error_snippet, validate_grammar
 from hdl_kgraph.schema import (
     CONFIDENCE_HEURISTIC,
     CONFIDENCE_RESOLVED,
@@ -760,12 +760,30 @@ class _Walker:
     }
 
 
+#: Validate the grammar's node-type surface once (the names the walker
+#: dispatches on); a rename upstream would otherwise silently under-extract.
+_grammar_validated = False
+
+
+def _validate_vhdl_grammar() -> None:
+    global _grammar_validated
+    if _grammar_validated:
+        return
+    validate_grammar(
+        VHDL_LANGUAGE,
+        set(_Walker._DISPATCH) | {"identifier"},
+        grammar="tree-sitter-vhdl grammar",
+    )
+    _grammar_validated = True
+
+
 class VhdlParser:
     """Tree-sitter based VHDL pass-1 parser (M3)."""
 
     suffixes = SUFFIXES
 
     def __init__(self) -> None:
+        _validate_vhdl_grammar()
         self._parser = TSParser(VHDL_LANGUAGE)
 
     def parse(self, path: Path, text: str, library: str = DEFAULT_LIBRARY) -> FileIR:
