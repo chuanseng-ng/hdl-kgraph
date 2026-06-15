@@ -427,10 +427,18 @@ class SqliteStore:
 
     @contextlib.contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
-        """A read connection that waits out a concurrent writer and is closed
-        deterministically (an open handle blocks the ``save()`` swap on
-        Windows)."""
-        conn = sqlite3.connect(self.db_path)
+        """A read-only connection that waits out a concurrent writer and is
+        closed deterministically (an open handle blocks the ``save()`` swap on
+        Windows).
+
+        Opened ``mode=ro`` via a file: URI so a read can never create or write
+        the database — without it, a plain ``connect`` to a path that a
+        concurrent rebuild has momentarily removed would silently materialize an
+        empty database. All writers (``save``/``save_incremental``) use their own
+        connections, so this only constrains the read paths.
+        """
+        uri = f"file:{self.db_path.resolve().as_posix()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
         try:
             conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
             yield conn

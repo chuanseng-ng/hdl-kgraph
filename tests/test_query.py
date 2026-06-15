@@ -218,8 +218,13 @@ def test_no_full_graph_load(query: GraphQuery, loaded, monkeypatch: pytest.Monke
     import hdl_kgraph.storage.query as query_mod
 
     graph, files = loaded
-    top = query.top_modules()[0]["name"]
-    signal = _names_of_kinds(graph, frozenset({NodeKind.SIGNAL, NodeKind.PORT}))[0]
+    tops = query.top_modules()
+    signals = _names_of_kinds(graph, frozenset({NodeKind.SIGNAL, NodeKind.PORT}))
+    assert tops, "expected at least one top module in the fixture corpus"
+    assert signals, "expected at least one signal/port in the fixture corpus"
+    assert files, "expected at least one source file in the fixture corpus"
+    top = tops[0]["name"]
+    signal = signals[0]
     file_target = files[0].path
 
     def boom(self: object) -> None:

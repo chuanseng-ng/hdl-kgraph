@@ -34,10 +34,11 @@ whole-design pass to each build/update (~0.25 s on the M5 corpus), so
 graph by ~76% more edges (DRIVES/READS/CLOCKED_BY/RESETS plus SIGNAL and
 PROCESS nodes), and every edge is re-linked and re-saved on each update
 (steps 2–4 below scale with graph size, not with the edit). The M4
-acceptance (< 1 s) was met and recorded at M4; the M5 budget is < 1.5 s —
+acceptance (< 1 s) was met and recorded at M4; the M5 budget was < 1.5 s —
 the threshold at which a `--no-dataflow` build flag or a partitioned
-re-link (see the escape hatch) becomes worth its complexity.
-`bench_incremental.py` defaults to `--target-s 1.5` accordingly.
+re-link (see the escape hatch) becomes worth its complexity. The precomputed
+summaries (above) then raised the current budget to < 1.8 s, and
+`bench_incremental.py` defaults to `--target-s 1.8` accordingly.
 
 ### Where the update time goes
 

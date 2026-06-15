@@ -28,6 +28,8 @@ def jsonable(value: Any) -> Any:
         return jsonable(dataclasses.asdict(value))
     if isinstance(value, dict):
         return {k: jsonable(v) for k, v in value.items()}
+    if isinstance(value, (set, frozenset)):
+        return sorted((jsonable(v) for v in value), key=repr)
     if isinstance(value, (list, tuple)):
         return [jsonable(v) for v in value]
     return value
@@ -69,5 +71,10 @@ BUILDERS = {
 
 
 def build_summaries(graph: nx.MultiDiGraph) -> dict[str, dict[str, Any]]:
-    """Compute every persisted whole-design summary from *graph*."""
-    return {name: builder(graph) for name, builder in BUILDERS.items()}
+    """Compute every persisted whole-design summary from *graph*.
+
+    The result is passed straight to ``json.dumps`` by the pipeline, so run it
+    through :func:`jsonable` here — one place — rather than trusting every
+    builder to return only JSON-native types.
+    """
+    return {name: jsonable(builder(graph)) for name, builder in BUILDERS.items()}

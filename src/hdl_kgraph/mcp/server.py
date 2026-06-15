@@ -2,18 +2,23 @@
 
 Design notes:
 
-* **Read-only by construction** — only :class:`SqliteStore.load` is ever
-  called; the build/update pipeline is never imported, so neither stdio nor
-  HTTP mode can mutate the database.
-* **Staleness** — the database may be rewritten by ``update``/``watch``
-  while the server runs. Every tool call stats the file and reloads only
-  when ``(mtime_ns, size)`` changed; a stat is cheap, a reload is not.
+* **Read-only by construction** — every tool delegates to
+  :class:`~hdl_kgraph.storage.query.GraphQuery`, which only ever reads; the
+  build/update pipeline is never imported, so neither stdio nor HTTP mode can
+  mutate the database.
+* **Bounded reads, no cache** — :class:`GraphContext` holds a ``GraphQuery``
+  and opens a *fresh read connection per call*, hydrating only the subgraph a
+  query touches instead of loading the whole graph. A concurrent
+  ``update``/``watch`` swap (atomic ``os.replace``) is therefore always
+  observed with no staleness window. Whole-design reports (clock domains, UVM
+  topology) are read from precomputed summary rows, not recomputed.
 * **LLM-sized responses** — list-returning tools wrap results in a
   ``{total, offset, count, truncated, items}`` envelope with a clamped
   ``limit``; the hierarchy tool caps depth and node count and reports what
   it omitted.
-* The ``_impl`` functions hold all logic and are testable without fastmcp;
-  :func:`create_server` only wraps them in typed closures.
+* The ``_impl`` helpers hold the response-shaping logic and are shared by
+  ``GraphQuery`` (which runs them on a hydrated subgraph) and tested without
+  fastmcp; :func:`create_server` only wraps the tools in typed closures.
 """
 
 from __future__ import annotations

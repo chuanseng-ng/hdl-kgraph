@@ -216,7 +216,16 @@ class GraphQuery:
             if instance is not None:
                 inst_ids = self._hydrate_in_edges(graph, conn, unit_ids, (EdgeKind.INSTANTIATES,))
                 self._hydrate_nodes(graph, conn, inst_ids)
-                self._hydrate_out_edges(graph, conn, inst_ids, (EdgeKind.CONNECTS,))
+                # _port_map_impl reports CONNECTS only for the instance whose
+                # name/qualified_name matches, so hydrate that fanout for the
+                # matching instances alone — a unit reused thousands of times
+                # otherwise loads every instance's bindings to return one.
+                matching = [
+                    i
+                    for i in inst_ids
+                    if instance in (graph.nodes[i]["name"], graph.nodes[i]["qualified_name"])
+                ]
+                self._hydrate_out_edges(graph, conn, matching, (EdgeKind.CONNECTS,))
             self._ensure_endpoints(graph, conn)
             return _port_map_impl(graph, module, instance)
 
