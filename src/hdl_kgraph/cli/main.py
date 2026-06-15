@@ -62,6 +62,34 @@ from hdl_kgraph.schema import EdgeKind, Language, NodeKind
 from hdl_kgraph.storage.sqlite_store import SchemaVersionError, SqliteStore
 from hdl_kgraph.vcs import detect_vcs, detect_vcs_changes
 
+
+class CliError(click.ClickException):
+    """An application/usage error.
+
+    Exits ``2`` — distinct from a documented *negative result* (exit ``1``,
+    e.g. ``detect-changes`` finding changes, or a name lookup matching nothing)
+    and from success (``0``). This mirrors the ``git diff --exit-code``
+    convention so scripts can tell "broken" from "found nothing". See the
+    exit-code policy in :func:`main`'s help.
+    """
+
+    exit_code = 2
+
+
+def _run_pipeline(action: Callable[[], Any], what: str) -> Any:
+    """Run a build/update pipeline call, converting an unexpected failure into a
+    clean exit-2 error instead of letting a raw traceback escape (OSError, a
+    parser ``RuntimeError``, an internal invariant, …)."""
+    try:
+        return action()
+    except click.exceptions.Exit:
+        raise
+    except click.ClickException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — last line of defense for the CLI
+        raise CliError(f"{what} failed: {type(exc).__name__}: {exc}") from exc
+
+
 _db_option = click.option(
     "--db",
     "db_path",
@@ -171,12 +199,12 @@ def _resolve_db(db_path: Path | None) -> Path:
     if db_path is None:
         db_path = find_db(Path.cwd())
         if db_path is None:
-            raise click.ClickException(
+            raise CliError(
                 "no .hdl-kgraph/graph.db found here or in any parent directory; "
                 "run `hdl-kgraph build` first or pass --db"
             )
     if not db_path.is_file():
-        raise click.ClickException(f"database not found: {db_path}")
+        raise CliError(f"database not found: {db_path}")
     return db_path
 
 
@@ -184,13 +212,22 @@ def _load(db_path: Path | None) -> tuple[nx.MultiDiGraph, list, dict[str, str]]:
     try:
         return SqliteStore(_resolve_db(db_path)).load()
     except SchemaVersionError as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise CliError(str(exc)) from exc
 
 
 @click.group()
 @click.version_option(version=__version__, prog_name="hdl-kgraph")
 def main() -> None:
-    """Build and query a knowledge graph of your HDL design."""
+    """Build and query a knowledge graph of your HDL design.
+
+    \b
+    Exit codes (uniform across commands; text and --json agree):
+      0  success — including an empty report (e.g. no CDC suspects is good news)
+      1  a documented negative result: `detect-changes` found changes, or a
+         name lookup (`query instances-of`, `query drivers`) matched nothing
+      2  an error: bad usage, missing/foreign database, config/VCS failure, or
+         an unexpected build/update failure
+    """
 
 
 def _input_options(f: Callable) -> Callable:
@@ -289,7 +326,7 @@ def _resolve_options(
         try:
             config = BuildConfig.load(config_path) if config_path is not None else BuildConfig()
         except ConfigError as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise CliError(str(exc)) from exc
     try:
         return resolve_build_options(
             config,
@@ -302,14 +339,14 @@ def _resolve_options(
             cli_no_auto_incdir=no_auto_incdir,
         )
     except ConfigError as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise CliError(str(exc)) from exc
 
 
 def _echo_build_report(report: BuildReport, verbose: bool = False) -> None:
     for warning in report.warnings:
         click.echo(f"warning: {warning}", err=True)
     if report.parsed_files == 0:
-        raise click.ClickException(f"no parseable HDL files found under {report.root}")
+        raise CliError(f"no parseable HDL files found under {report.root}")
     click.echo(f"built {report.db_path}")
     if report.filelists_read:
         click.echo(f"  filelists:      {report.filelists_read}")
@@ -448,8 +485,11 @@ def build(
     options.jobs = jobs
     options.enrich = options.enrich or enrich
     renderer = _ProgressRenderer()
-    report = run_build(
-        source, db_path=db_path, options=options, progress=renderer.stage, tick=renderer.tick
+    report = _run_pipeline(
+        lambda: run_build(
+            source, db_path=db_path, options=options, progress=renderer.stage, tick=renderer.tick
+        ),
+        "build",
     )
     renderer.finish()
     _echo_build_report(report, verbose=verbose)
@@ -468,7 +508,8 @@ def _echo_update_report(report: UpdateReport, verbose: bool = False) -> None:
             click.echo(f"  re-parsed: {path} ({why})")
         if not report.reparsed:
             click.echo("  no files re-parsed (re-linked only)")
-    assert report.build is not None
+    if report.build is None:
+        raise CliError("internal error: update reported neither up-to-date nor a build")
     _echo_build_report(report.build, verbose=verbose)
     click.echo(f"  updated in {report.elapsed_s:.2f}s")
 
@@ -518,13 +559,16 @@ def update(
     options.jobs = jobs
     options.enrich = options.enrich or enrich
     renderer = _ProgressRenderer()
-    report = run_update(
-        source,
-        db_path=db_path,
-        options=options,
-        full=full,
-        progress=renderer.stage,
-        tick=renderer.tick,
+    report = _run_pipeline(
+        lambda: run_update(
+            source,
+            db_path=db_path,
+            options=options,
+            full=full,
+            progress=renderer.stage,
+            tick=renderer.tick,
+        ),
+        "update",
     )
     renderer.finish()
     _echo_update_report(report, verbose=verbose)
@@ -624,16 +668,16 @@ def detect_changes(
             if ref is not None
         ]
         if use_vcs and explicit:
-            raise click.ClickException("--vcs cannot be combined with --git/--svn/--p4")
+            raise CliError("--vcs cannot be combined with --git/--svn/--p4")
         if len(explicit) > 1:
-            raise click.ClickException("choose only one of --git/--svn/--p4")
+            raise CliError("choose only one of --git/--svn/--p4")
         if explicit or use_vcs:
             if explicit:
                 vcs, ref = explicit[0]
             else:  # bare --vcs: auto-detect the tree's VCS, default ref
                 detected = detect_vcs(base)
                 if detected is None:
-                    raise click.ClickException(
+                    raise CliError(
                         "could not detect a VCS (no .git/.svn, no P4 environment); "
                         "pass --git/--svn/--p4"
                     )
@@ -641,19 +685,19 @@ def detect_changes(
             try:
                 changes = detect_vcs_changes(base, vcs, ref, SUFFIXES)
             except RuntimeError as exc:
-                raise click.ClickException(str(exc)) from exc
+                raise CliError(str(exc)) from exc
         else:
             if db_path is None:
                 db_path = default_db_path(base)
             if not db_path.is_file():
-                raise click.ClickException(
+                raise CliError(
                     f"no database at {db_path}; run `hdl-kgraph build` first, "
                     "or use --git/--svn/--p4/--vcs"
                 )
             try:
                 changes = scan_changes(source, db_path, options)
             except SchemaVersionError as exc:
-                raise click.ClickException(str(exc)) from exc
+                raise CliError(str(exc)) from exc
         dirtied: list[dict[str, str]] = []
         if closure and (changes.changed or changes.removed):
             graph, _, _ = _load(db_path if db_path is not None else find_db(base))
@@ -717,7 +761,7 @@ def impact(
     graph, files, _ = _load(db_path)
     seeds = analysis.impact_seeds(graph, files, target)
     if not seeds:
-        raise click.ClickException(f"{target!r} matches no file or design unit in the graph")
+        raise CliError(f"{target!r} matches no file or design unit in the graph")
     records = analysis.impact_radius(graph, seeds, max_depth=max_depth)
     if show_files:
         affected = sorted({r.file for r in records if r.file})
@@ -829,7 +873,7 @@ def watch(
             on_error=on_error,
         )
     except WatchUnavailableError as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise CliError(str(exc)) from exc
     except KeyboardInterrupt:
         click.echo("stopped")
 
@@ -918,7 +962,7 @@ def discrepancies(db_path: Path | None, as_json: bool) -> None:
     try:
         items = SqliteStore(_resolve_db(db_path)).load_discrepancies()
     except SchemaVersionError as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise CliError(str(exc)) from exc
     if as_json:
         _emit_json([dataclasses.asdict(d) for d in items])
         return
@@ -951,7 +995,7 @@ def enriched(db_path: Path | None, as_json: bool) -> None:
         graph, _files, _meta = store.load()
         items = store.load_discrepancies()
     except SchemaVersionError as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise CliError(str(exc)) from exc
     summary = summarize_enrichment(graph)
     if as_json:
         _emit_json(
@@ -998,7 +1042,7 @@ def _lint_config(
     try:
         return BuildConfig.load(config_path)
     except ConfigError as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise CliError(str(exc)) from exc
 
 
 def _waiver_desc(waiver: LintWaiver) -> str:
@@ -1077,7 +1121,7 @@ def lint_cmd(
         try:
             waivers.extend(load_waivers(path, waiver_warnings))
         except ConfigError as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise CliError(str(exc)) from exc
     for warning in waiver_warnings:
         click.echo(f"warning: {warning}", err=True)
     error_files = frozenset(f.path for f in files if f.parse_error_count)
@@ -1089,7 +1133,7 @@ def lint_cmd(
             error_files=error_files,
         )
     except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise CliError(str(exc)) from exc
     result = lint.apply_waivers(findings, waivers, checks or None)
     for i in result.unknown:
         click.echo(
@@ -1287,7 +1331,7 @@ def visualize(
     valid_kinds = {k.value for k in NodeKind}
     unknown = sorted({k for k in (*include_kinds, *exclude_kinds) if k not in valid_kinds})
     if unknown:
-        raise click.ClickException(
+        raise CliError(
             f"unknown node kind(s): {', '.join(unknown)}. "
             f"Valid kinds: {', '.join(sorted(valid_kinds))}"
         )
@@ -1310,7 +1354,7 @@ def visualize(
             exclude_kinds=frozenset(exclude_kinds),
         )
     except ValueError as exc:  # --top names nothing: error out, like `tree`
-        raise click.ClickException(str(exc)) from exc
+        raise CliError(str(exc)) from exc
     if result.note:
         click.echo(result.note, err=True)
     click.echo(f"wrote {result.path}")
@@ -1353,7 +1397,7 @@ def export_cmd(db_path: Path | None, output: Path | None, fmt: str) -> None:
     try:
         path = export_graph(graph, output, fmt)
     except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise CliError(str(exc)) from exc
     click.echo(f"wrote {path}")
 
 
@@ -1367,7 +1411,10 @@ def query() -> None:
 @_db_option
 @_json_option
 def instances_of(name: str, db_path: Path | None, as_json: bool) -> None:
-    """List all instantiation sites of design units named NAME."""
+    """List all instantiation sites of design units named NAME.
+
+    Exits 1 if NAME matches nothing (a negative result, not an error).
+    """
     graph, _, _ = _load(db_path)
     records = analysis.instances_of(graph, name)
     if as_json:
@@ -1512,11 +1559,18 @@ def cdc_cmd(db_path: Path | None, as_json: bool) -> None:
 def drivers_cmd(
     signal: str, db_path: Path | None, as_json: bool, readers: bool, module: str | None
 ) -> None:
-    """List what drives (or reads) signals named SIGNAL."""
+    """List what drives (or reads) signals named SIGNAL.
+
+    Exits 1 if SIGNAL matches nothing (a negative result, not an error).
+    """
     graph, _, _ = _load(db_path)
     records = analysis.signal_drivers(graph, signal, module=module, readers=readers)
     if as_json:
         _emit_json(records)
+        if not records:
+            # Empty is a documented negative result (exit 1), in JSON as in text —
+            # matches `instances-of`; the JSON body is still emitted ([]).
+            sys.exit(1)
         return
     if not records:
         verb = "reads" if readers else "drives"
@@ -1598,11 +1652,11 @@ def tree(top: str | None, depth: int, db_path: Path | None, as_json: bool) -> No
             and not data["attrs"].get("unresolved")
         ]
         if not roots:
-            raise click.ClickException(f"module or entity {top!r} not found in the graph")
+            raise CliError(f"module or entity {top!r} not found in the graph")
     else:
         roots = analysis.find_top_modules(graph)
         if not roots:
-            raise click.ClickException("no top modules found")
+            raise CliError("no top modules found")
 
     trees = [analysis.hierarchy_tree(graph, root, max_depth=depth) for root in roots]
     if as_json:
@@ -1654,16 +1708,16 @@ def serve(mcp_mode: bool, db_path: Path | None, http_addr: str | None, token: st
     if db_path is None:
         db_path = find_db(Path.cwd())
         if db_path is None:
-            raise click.ClickException(
+            raise CliError(
                 "no .hdl-kgraph/graph.db found here or in any parent directory; "
                 "run `hdl-kgraph build` first or pass --db"
             )
     if not db_path.is_file():
-        raise click.ClickException(f"database not found: {db_path}")
+        raise CliError(f"database not found: {db_path}")
     try:
         SqliteStore(db_path).load_meta()  # schema check before the MCP handshake
     except SchemaVersionError as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise CliError(str(exc)) from exc
 
     from hdl_kgraph.mcp import McpUnavailableError, create_server
 
@@ -1673,13 +1727,13 @@ def serve(mcp_mode: bool, db_path: Path | None, http_addr: str | None, token: st
     try:
         server = create_server(db_path, token=http_token)
     except McpUnavailableError as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise CliError(str(exc)) from exc
     if http_addr is None:
         server.run()
         return
     host, _, port_text = http_addr.rpartition(":")
     if not host or not port_text.isdigit():
-        raise click.ClickException(f"--http expects HOST:PORT, got {http_addr!r}")
+        raise CliError(f"--http expects HOST:PORT, got {http_addr!r}")
     if token is None and host not in ("127.0.0.1", "localhost", "::1", "[::1]"):
         click.echo(
             f"warning: serving on {host} exposes your design's structure to the "
@@ -1725,7 +1779,7 @@ def setup(
         known = {t.name for t in targets}
         unknown = [a for a in assistants if a not in known]
         if unknown:
-            raise click.ClickException(
+            raise CliError(
                 f"unknown assistant(s) {', '.join(unknown)}; known: {', '.join(sorted(known))}"
             )
         targets = [t for t in targets if t.name in assistants]
@@ -1736,14 +1790,12 @@ def setup(
     if list_only:
         return
     if not detected:
-        raise click.ClickException(
-            "no supported AI assistant detected; see docs/mcp.md for manual setup"
-        )
+        raise CliError("no supported AI assistant detected; see docs/mcp.md for manual setup")
 
     if db_path is None:
         db_path = find_db(Path.cwd())
         if db_path is None:
-            raise click.ClickException(
+            raise CliError(
                 "no .hdl-kgraph/graph.db found here or in any parent directory; "
                 "run `hdl-kgraph build` first or pass --db"
             )
@@ -1764,14 +1816,14 @@ def setup(
             try:
                 click.echo(target.preview(entry), nl=False)
             except ValueError as exc:
-                raise click.ClickException(str(exc)) from exc
+                raise CliError(str(exc)) from exc
             continue
         if not assume_yes and not click.confirm(f"configure {target.name}?", default=True):
             continue
         try:
             changed = write_config(target, entry)
         except ValueError as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise CliError(str(exc)) from exc
         click.echo(f"{target.config_path}: {'updated' if changed else 'already up to date'}")
 
 
