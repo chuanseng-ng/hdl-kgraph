@@ -28,8 +28,9 @@ from typing import TYPE_CHECKING, Any
 import networkx as nx
 
 from hdl_kgraph.graph import analysis, clocks, uvm
-from hdl_kgraph.schema import EdgeKind, Language, NodeKind
-from hdl_kgraph.storage.sqlite_store import FileMeta, SchemaVersionError, SqliteStore
+from hdl_kgraph.schema import EdgeKind, NodeKind
+from hdl_kgraph.storage.query import GraphQuery
+from hdl_kgraph.storage.sqlite_store import FileMeta, SchemaVersionError
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from fastmcp import FastMCP
@@ -42,33 +43,37 @@ class McpUnavailableError(RuntimeError):
 
 
 class GraphContext:
-    """Lazily loads the graph, reloading when the database file changes."""
+    """Runs bounded, index-backed queries without ever loading the whole graph.
+
+    Each tool call goes straight to :class:`~hdl_kgraph.storage.query.GraphQuery`,
+    which hydrates only the subgraph the query touches (so a 10–100+ GB design no
+    longer pays a full in-memory load per call). A fresh read connection per call
+    means a concurrent ``update``/``watch`` swap is always observed — no caching
+    or staleness check needed. :meth:`run` reproduces the previous full-load
+    error contract (missing/busy/incompatible database).
+    """
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
-        self._signature: tuple[int, int] | None = None
-        self._loaded: tuple[nx.MultiDiGraph, list[FileMeta], dict[str, str]] | None = None
+        self.query = GraphQuery(db_path)
 
-    def graph(self) -> tuple[nx.MultiDiGraph, list[FileMeta], dict[str, str]]:
+    def run(self, fn: Any) -> Any:
+        """Invoke ``fn(self.query)``, translating storage errors for the client."""
         try:
-            stat = self.db_path.stat()
+            self.db_path.stat()
         except FileNotFoundError:
             raise RuntimeError(
                 f"graph database not found: {self.db_path}; run `hdl-kgraph build` first"
             ) from None
-        signature = (stat.st_mtime_ns, stat.st_size)
-        if self._loaded is None or signature != self._signature:
-            try:
-                self._loaded = SqliteStore(self.db_path).load()
-            except SchemaVersionError as exc:
-                raise RuntimeError(str(exc)) from exc
-            except sqlite3.OperationalError as exc:
-                # A concurrent `update`/`watch` may be rebuilding the database.
-                raise RuntimeError(
-                    f"graph database is busy ({exc}); a rebuild may be in progress — retry shortly"
-                ) from exc
-            self._signature = signature
-        return self._loaded
+        try:
+            return fn(self.query)
+        except SchemaVersionError as exc:
+            raise RuntimeError(str(exc)) from exc
+        except sqlite3.OperationalError as exc:
+            # A concurrent `update`/`watch` may be rebuilding the database.
+            raise RuntimeError(
+                f"graph database is busy ({exc}); a rebuild may be in progress — retry shortly"
+            ) from exc
 
 
 def _jsonable(value: Any) -> Any:
@@ -96,17 +101,6 @@ def _page(items: list[Any], limit: int, offset: int) -> dict[str, Any]:
         "truncated": offset + len(page) < len(items),
         "items": _jsonable(page),
     }
-
-
-def _resolve_unit(g: nx.MultiDiGraph, name: str) -> list[str]:
-    """Non-stub instantiable units named *name* (VHDL case-insensitive)."""
-    return [
-        node_id
-        for node_id, data in g.nodes(data=True)
-        if data["kind"] in analysis.INSTANTIABLE_KINDS
-        and not data["attrs"].get("unresolved")
-        and data["name"] == (name.lower() if data["language"] is Language.VHDL else name)
-    ]
 
 
 def _find_module_impl(g: nx.MultiDiGraph, name: str, limit: int) -> dict[str, Any]:
@@ -149,27 +143,6 @@ def _prune_tree(root: dict[str, Any], max_nodes: int) -> int:
             node["truncated"] = True
             node["children"] = kept
     return omitted
-
-
-def _get_hierarchy_impl(
-    g: nx.MultiDiGraph, top: str | None, depth: int, max_nodes: int
-) -> dict[str, Any]:
-    if top is None:
-        tops = [
-            {
-                "name": g.nodes[node_id]["name"],
-                "file": g.nodes[node_id]["file"],
-                "kind": g.nodes[node_id]["kind"].value,
-            }
-            for node_id in analysis.find_top_modules(g)
-        ]
-        return {"tops": tops, "hint": "call again with top=<name> for the tree"}
-    roots = _resolve_unit(g, top)
-    if not roots:
-        raise ValueError(f"no module or entity named {top!r} in the graph")
-    tree = _jsonable(analysis.hierarchy_tree(g, roots[0], max_depth=max(1, depth)))
-    omitted = _prune_tree(tree, max(1, max_nodes))
-    return {"root": tree, "nodes_omitted": omitted}
 
 
 def _impact_impl(
@@ -224,22 +197,15 @@ def _uvm_impl(g: nx.MultiDiGraph) -> dict[str, Any]:
     }
 
 
-def _search_impl(
-    g: nx.MultiDiGraph,
-    name: str,
-    kinds: list[str] | None,
-    file: str | None,
-    limit: int,
-    offset: int,
-) -> dict[str, Any]:
-    kind_enums: list[NodeKind] | None = None
-    if kinds:
-        try:
-            kind_enums = [NodeKind(k) for k in kinds]
-        except ValueError:
-            valid = ", ".join(sorted(k.value for k in NodeKind))
-            raise ValueError(f"unknown node kind in {kinds!r}; valid kinds: {valid}") from None
-    return _page(analysis.search_nodes(g, name=name, kinds=kind_enums, file=file), limit, offset)
+def _validate_kinds(kinds: list[str] | None) -> list[NodeKind] | None:
+    """Parse the ``search_nodes`` kind filter, with a helpful error on a typo."""
+    if not kinds:
+        return None
+    try:
+        return [NodeKind(k) for k in kinds]
+    except ValueError:
+        valid = ", ".join(sorted(k.value for k in NodeKind))
+        raise ValueError(f"unknown node kind in {kinds!r}; valid kinds: {valid}") from None
 
 
 def _port_map_impl(g: nx.MultiDiGraph, module: str, instance: str | None) -> dict[str, Any]:
@@ -295,8 +261,7 @@ def create_server(db_path: Path, *, token: str | None = None) -> FastMCP:
     def find_module(name: str, limit: int = 20) -> dict[str, Any]:
         """Find design units (modules/entities/interfaces) by exact name or glob
         pattern, with port/parameter/instantiation counts."""
-        g, _, _ = ctx.graph()
-        return _find_module_impl(g, name, limit)
+        return ctx.run(lambda q: q.find_module(name, limit))
 
     @mcp.tool
     def get_hierarchy(
@@ -305,21 +270,25 @@ def create_server(db_path: Path, *, token: str | None = None) -> FastMCP:
         """Design hierarchy. Without `top`, lists the top-level (never
         instantiated) units; with `top`, returns the instance tree below it,
         capped at `depth` levels and `max_nodes` nodes."""
-        g, _, _ = ctx.graph()
-        return _get_hierarchy_impl(g, top, depth, max_nodes)
+        if top is None:
+            return ctx.run(
+                lambda q: {
+                    "tops": q.top_modules(),
+                    "hint": "call again with top=<name> for the tree",
+                }
+            )
+        return ctx.run(lambda q: q.hierarchy(top, depth, max_nodes))
 
     @mcp.tool
     def who_instantiates(name: str, limit: int = 50, offset: int = 0) -> dict[str, Any]:
         """All instantiation sites of the design unit named `name`."""
-        g, _, _ = ctx.graph()
-        return _page(analysis.instances_of(g, name), limit, offset)
+        return ctx.run(lambda q: q.who_instantiates(name, limit, offset))
 
     @mcp.tool
     def port_map(module: str, instance: str | None = None) -> dict[str, Any]:
         """Ports and parameters of `module` in declaration order; with
         `instance`, also that instance's port connection bindings."""
-        g, _, _ = ctx.graph()
-        return _port_map_impl(g, module, instance)
+        return ctx.run(lambda q: q.port_map(module, instance))
 
     @mcp.tool
     def impact_of_change(
@@ -328,15 +297,13 @@ def create_server(db_path: Path, *, token: str | None = None) -> FastMCP:
         """What breaks if `target` (a file path or design-unit name) changes:
         summary plus the transitively affected units, nearest first.
         `max_depth` 0 means unlimited."""
-        g, files, _ = ctx.graph()
-        return _impact_impl(g, files, target, max_depth, limit, offset)
+        return ctx.run(lambda q: q.impact_of_change(target, max_depth, limit, offset))
 
     @mcp.tool
     def clock_domains() -> dict[str, Any]:
         """Clock domains (with alias nets and process/signal counts) and
         clock-domain-crossing suspects."""
-        g, _, _ = ctx.graph()
-        return _clock_domains_impl(g)
+        return ctx.run(lambda q: q.clock_domains())
 
     @mcp.tool
     def find_signal_drivers(
@@ -348,17 +315,15 @@ def create_server(db_path: Path, *, token: str | None = None) -> FastMCP:
     ) -> dict[str, Any]:
         """What drives (or, with readers=true, reads) signals named `signal`,
         optionally only inside design unit `module`."""
-        g, _, _ = ctx.graph()
-        return _page(
-            analysis.signal_drivers(g, signal, module=module, readers=readers), limit, offset
+        return ctx.run(
+            lambda q: q.find_signal_drivers(signal, module, readers, limit, offset)
         )
 
     @mcp.tool
     def uvm_topology() -> dict[str, Any]:
         """UVM components by role (via EXTENDS chains to uvm_* bases) and
         testbench-to-DUT TEST_COVERS links."""
-        g, _, _ = ctx.graph()
-        return _uvm_impl(g)
+        return ctx.run(lambda q: q.uvm_topology())
 
     @mcp.tool
     def search_nodes(
@@ -370,7 +335,7 @@ def create_server(db_path: Path, *, token: str | None = None) -> FastMCP:
     ) -> dict[str, Any]:
         """Search graph nodes by name glob, node kind (e.g. module, signal,
         class), and/or file glob."""
-        g, _, _ = ctx.graph()
-        return _search_impl(g, name, kinds, file, limit, offset)
+        kind_enums = _validate_kinds(kinds)
+        return ctx.run(lambda q: q.search_nodes(name, kind_enums, file, limit, offset))
 
     return mcp

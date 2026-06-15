@@ -45,6 +45,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import networkx as nx
 
@@ -211,6 +212,40 @@ def _discrepancy_row(d: Discrepancy) -> tuple[object, ...]:
 
 def _ref_index_row(rec: RefRecord) -> tuple[object, ...]:
     return (rec.file, rec.src_id, rec.edge_kind.value, rec.target_name, int(rec.scoped))
+
+
+# -- row deserialization (single source of truth) -----------------------------
+# Both the full-graph ``load()`` and the bounded ``storage.query`` reader build
+# their in-memory nodes/edges here, so the read paths can never drift on how a
+# stored row maps back to a graph node/edge.
+
+#: The ``nodes`` columns in table order — every node read does ``SELECT`` of
+#: exactly these so :func:`add_node_row` can unpack positionally.
+NODE_COLUMNS = "id, kind, name, qualified_name, file, line_start, line_end, language, attrs"
+#: The ``edges`` columns in table order, for :func:`add_edge_row`.
+EDGE_COLUMNS = "src, dst, kind, confidence, attrs"
+
+
+def add_node_row(graph: nx.MultiDiGraph, row: tuple[Any, ...]) -> str:
+    """Add one ``nodes`` row (in :data:`NODE_COLUMNS` order) to *graph*."""
+    node_id, kind, name, qualified_name, file, line_start, line_end, language, attrs = row
+    graph.add_node(
+        node_id,
+        kind=NodeKind(kind),
+        name=name,
+        qualified_name=qualified_name,
+        file=file,
+        line_span=(line_start, line_end),
+        language=Language(language),
+        attrs=json.loads(attrs),
+    )
+    return str(node_id)
+
+
+def add_edge_row(graph: nx.MultiDiGraph, row: tuple[Any, ...]) -> None:
+    """Add one ``edges`` row (in :data:`EDGE_COLUMNS` order) to *graph*."""
+    src, dst, kind, confidence, attrs = row
+    graph.add_edge(src, dst, kind=EdgeKind(kind), confidence=confidence, attrs=json.loads(attrs))
 
 
 def _meta_rows(root: Path, options_hash: str) -> list[tuple[str, str]]:
@@ -517,24 +552,10 @@ class SqliteStore:
                 for row in conn.execute("SELECT * FROM files")
             ]
             graph = nx.MultiDiGraph()
-            for row in conn.execute("SELECT * FROM nodes"):
-                node_id, kind, name, qualified_name, file, line_start, line_end, language, attrs = (
-                    row
-                )
-                graph.add_node(
-                    node_id,
-                    kind=NodeKind(kind),
-                    name=name,
-                    qualified_name=qualified_name,
-                    file=file,
-                    line_span=(line_start, line_end),
-                    language=Language(language),
-                    attrs=json.loads(attrs),
-                )
-            for src, dst, kind, confidence, attrs in conn.execute("SELECT * FROM edges"):
-                graph.add_edge(
-                    src, dst, kind=EdgeKind(kind), confidence=confidence, attrs=json.loads(attrs)
-                )
+            for row in conn.execute(f"SELECT {NODE_COLUMNS} FROM nodes"):
+                add_node_row(graph, row)
+            for row in conn.execute(f"SELECT {EDGE_COLUMNS} FROM edges"):
+                add_edge_row(graph, row)
             return graph, files, meta
 
 
