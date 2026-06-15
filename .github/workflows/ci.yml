@@ -60,15 +60,9 @@ jobs:
       # (tests/test_watch.py) silently skips; without [enrich], the slang
       # enrichment tests skip; without [layout], the precomputed-layout viz
       # branches (numpy/scipy) skip yet count toward the coverage gate (#75).
+      # (The VHDL/ghdl enrichment branch needs the pyGHDL bindings, which the
+      # distro `ghdl` package does not ship, so it stays skip-guarded in CI.)
       - run: pip install -e .[dev,mcp,watch,enrich,layout]
-      # GHDL is a system binary (not a pip package); install it on Linux so the
-      # VHDL enrichment backend's branches run instead of skip-guarding. Best
-      # effort — if the package or its bindings are unavailable the tests skip
-      # exactly as before, so this never fails the build (#75).
-      - name: Install GHDL for VHDL enrichment coverage (Linux)
-        if: runner.os == 'Linux'
-        continue-on-error: true
-        run: sudo apt-get update && sudo apt-get install -y ghdl
       - run: pytest --cov=hdl_kgraph --cov-fail-under=85
 
   # Nudge contributors to record user-visible changes. Only fires on PRs that

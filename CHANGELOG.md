@@ -19,9 +19,15 @@ changes.
   `FileIR`/`UnresolvedRef` pickling (the cross-process worker contract) ([#75]).
 - Branch coverage (`[tool.coverage.run] branch = true`) so resilience/fallback
   branches count toward the gate instead of being half-covered by a line touch,
-  and a CI test leg that installs the `layout` extra (numpy/scipy) plus a
-  best-effort GHDL install so those branches run instead of silently skipping
-  ([#75]).
+  and the CI test leg installs the `layout` extra (numpy/scipy) so those viz
+  branches run instead of silently skipping ([#75]).
+
+### Fixed
+
+- Harden the VHDL-enrichment test skip-guard: `find_spec("pyGHDL.libghdl")`
+  raises `ModuleNotFoundError` when the binary is present but the bindings are
+  not (e.g. a distro `ghdl` package), so guard it instead of letting collection
+  fail ([#75]).
 
 ## [0.13.0] - 2026-06-15
 
