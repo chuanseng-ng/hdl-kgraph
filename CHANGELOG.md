@@ -9,6 +9,24 @@ changes.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-06-15
+
+### Changed
+
+- Unify the CLI exit-code contract so scripts and CI can rely on it (`git
+  diff --exit-code` style): `0` success — including an empty report; `1` a
+  documented negative result (`detect-changes` found changes, or a name lookup
+  matched nothing); `2` any error. Application/usage errors now exit `2`
+  (previously `1`). The policy is documented in `hdl-kgraph --help` ([#73]).
+
+### Fixed
+
+- `query drivers --json` now exits `1` (not `0`) when the signal matches
+  nothing, matching its text mode and `query instances-of` ([#73]).
+- `build`/`update` convert an unexpected pipeline failure into a clean exit-`2`
+  error instead of leaking a raw traceback, and `update` no longer trips a bare
+  `assert` when it produces no build report ([#73]).
+
 ## [0.11.0] - 2026-06-15
 
 ### Added
@@ -180,7 +198,8 @@ Maintenance release — version bump only, no functional changes.
 Releases before `0.6.3` predate this changelog; their history lives in the git
 log.
 
-[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.9.0...v0.10.1
