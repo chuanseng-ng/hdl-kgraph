@@ -31,8 +31,24 @@ from hdl_kgraph.pipeline import run_build
 from hdl_kgraph.schema import EdgeKind, Language, Node, NodeKind
 from hdl_kgraph.storage.sqlite_store import SqliteStore
 
+
+def _ghdl_with_bindings() -> bool:
+    """True only when both the ghdl binary and the pyGHDL bindings are present.
+
+    ``find_spec("pyGHDL.libghdl")`` *raises* ``ModuleNotFoundError`` (rather than
+    returning ``None``) when the parent ``pyGHDL`` package is absent — e.g. the
+    distro ``ghdl`` package ships the binary but no Python bindings — so guard it.
+    """
+    if shutil.which("ghdl") is None:
+        return False
+    try:
+        return importlib.util.find_spec("pyGHDL.libghdl") is not None
+    except ModuleNotFoundError:
+        return False
+
+
 ghdl = pytest.mark.skipif(
-    shutil.which("ghdl") is None or importlib.util.find_spec("pyGHDL.libghdl") is None,
+    not _ghdl_with_bindings(),
     reason="ghdl binary and pyGHDL bindings required for the VHDL enrichment backend",
 )
 

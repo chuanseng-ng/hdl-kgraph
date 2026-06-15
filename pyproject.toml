@@ -125,3 +125,19 @@ follow_imports_for_stubs = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.coverage.run]
+# Branch coverage (not just line) so the resilience/degradation paths — a
+# corrupt-IR fallback, a foreign-DB rebuild, an internal-parser-error catch —
+# count toward the gate instead of being half-covered by a line touch (#75).
+branch = true
+source = ["hdl_kgraph"]
+
+[tool.coverage.report]
+# A `...` body, a TYPE_CHECKING import, or an unreachable guard isn't a coverage
+# gap worth failing on.
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+  "\\.\\.\\.",
+]
