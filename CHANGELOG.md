@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 While the project is in `0.x` (alpha), minor versions may include breaking
 changes.
 
-## [Unreleased]
+## [Released - pypi]
+
+## [1.0.0] - 2026-06-15
+
+## Changed
+
+- NIL
 
 ## [0.16.1] - 2026-06-15
 
