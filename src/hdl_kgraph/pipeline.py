@@ -850,6 +850,9 @@ def run_update(
     if not db_path.is_file():
         return full_rebuild("no existing database")
     store = SqliteStore(db_path)
+    # Bring an older but in-place-upgradable schema forward (#74) before reading
+    # it; an un-migratable database still raises below and falls back to rebuild.
+    store.migrate()
     try:
         meta = store.load_meta()
         stored_hashes = store.load_file_hashes()

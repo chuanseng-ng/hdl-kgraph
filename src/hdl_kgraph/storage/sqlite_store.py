@@ -28,9 +28,14 @@ stored IRs for unchanged files and persists the re-linked result through
 writes only the delta (UPSERT changed nodes/edges/file rows, delete vanished
 ones) under a single WAL transaction — so a one-file edit pays a write cost
 proportional to the change, not the whole design. Migration policy: the
-database is a derived cache, so there is no in-place migration — ``load()``
-raises :class:`SchemaVersionError` on a version mismatch and
-``update``/``watch`` respond by falling back to a full rebuild.
+database is a derived cache. ``update``/``watch`` first try
+:meth:`SqliteStore.migrate`, which upgrades an older schema in place when a
+registered, IR-compatible ladder step exists (e.g. adding the ``summaries``
+table); when no such step exists — a gap in the ladder or a change to the
+persisted IR encoding (``ir_codec.IR_CODEC_VERSION``) — they fall back to a
+full rebuild. Read commands stay read-only: ``load()`` still raises
+:class:`SchemaVersionError` on a version mismatch until a writer migrates the
+database. See ``docs/schema-migrations.md``.
 """
 
 from __future__ import annotations
@@ -41,7 +46,7 @@ import os
 import sqlite3
 import time
 from collections import Counter, defaultdict
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,6 +58,7 @@ from hdl_kgraph import __version__
 from hdl_kgraph.enrich.base import Discrepancy
 from hdl_kgraph.graph.builder import RefRecord
 from hdl_kgraph.schema import EdgeKind, Language, NodeKind
+from hdl_kgraph.storage.ir_codec import IR_CODEC_VERSION
 
 SCHEMA_VERSION = "8"  # v8: summaries table (precomputed whole-design reports)
 
@@ -130,6 +136,51 @@ CREATE TABLE IF NOT EXISTS summaries (
 
 class SchemaVersionError(RuntimeError):
     """The database was written by an incompatible hdl-kgraph version."""
+
+
+# --- Schema migration ladder (issue #74) ----------------------------------
+#
+# A ``SCHEMA_VERSION`` bump used to force a full re-parse of the whole design
+# (the database is a derived cache). For a large design the cache *is* the
+# expensive artifact, so an in-place upgrade is worth having when the change is
+# purely additive. Each registered step upgrades the database from one schema
+# version to the next with additive DDL only (new tables / columns). A
+# transition that changed the persisted pass-1 IR encoding is deliberately
+# *not* registered — a stored IR blob can't be ``ALTER``ed, so it still routes
+# to a full rebuild (see :meth:`SqliteStore.migrate` and ``IR_CODEC_VERSION``).
+#
+# Only register a step here if an older database can be brought forward without
+# re-deriving data: a new table the reader already treats as optional (e.g. an
+# empty ``summaries`` table falls back to on-the-fly computation) is safe; a
+# table the linker depends on for correctness is not.
+
+MigrationFn = Callable[[sqlite3.Connection], None]
+
+
+def _migrate_7_to_8(conn: sqlite3.Connection) -> None:
+    """v7 -> v8: add the precomputed whole-design ``summaries`` table.
+
+    Created empty; until the next build/update repopulates it, readers fall
+    back to computing each summary from the graph (the same path a pre-v8
+    database already takes), so the migrated database stays correct.
+
+    Uses a single ``execute`` (not ``executescript``, which would implicitly
+    commit the caller's migration transaction).
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS summaries ("
+        "  name    TEXT PRIMARY KEY,"
+        "  payload TEXT NOT NULL"
+        ")"
+    )
+
+
+#: from_version -> (to_version, upgrade function). A contiguous chain up to
+#: ``SCHEMA_VERSION`` is run in order; a gap (or an IR-codec change) routes to a
+#: full rebuild instead.
+_MIGRATIONS: dict[str, tuple[str, MigrationFn]] = {
+    "7": ("8", _migrate_7_to_8),
+}
 
 
 @dataclass
@@ -255,6 +306,7 @@ def add_edge_row(graph: nx.MultiDiGraph, row: tuple[Any, ...]) -> None:
 def _meta_rows(root: Path, options_hash: str) -> list[tuple[str, str]]:
     return [
         ("schema_version", SCHEMA_VERSION),
+        ("ir_codec_version", IR_CODEC_VERSION),
         ("root", str(root.resolve())),
         ("built_at", datetime.now(timezone.utc).isoformat(timespec="seconds")),
         ("tool_version", __version__),
@@ -446,6 +498,80 @@ class SqliteStore:
         try:
             conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
             yield conn
+        finally:
+            conn.close()
+
+    def migrate(self) -> str:
+        """Upgrade an older-schema database to ``SCHEMA_VERSION`` in place when a
+        registered, IR-compatible migration path exists.
+
+        Returns one of:
+
+        * ``"absent"``   — no database file;
+        * ``"current"``  — already at ``SCHEMA_VERSION``;
+        * ``"migrated"`` — brought forward in place;
+        * ``"rebuild"``  — no registered path, a changed IR codec, or a
+          foreign/garbage file; the caller should fall back to a full rebuild.
+
+        Never raises on a version/format problem — it reports ``"rebuild"`` and
+        leaves the database untouched. Read paths are unaffected: they stay
+        read-only and still raise :class:`SchemaVersionError` until a writer
+        (``update``/``watch``) migrates the database.
+        """
+        if not self.db_path.is_file():
+            return "absent"
+        conn = sqlite3.connect(self.db_path)
+        conn.isolation_level = None  # drive BEGIN/COMMIT explicitly
+        try:
+            conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
+            try:
+                meta = dict(conn.execute("SELECT key, value FROM meta"))
+            except sqlite3.DatabaseError:
+                return "rebuild"  # foreign / garbage / missing meta table
+            version = meta.get("schema_version")
+            if version == SCHEMA_VERSION:
+                return "current"
+            if version is None:
+                return "rebuild"
+            # Build a contiguous chain version -> ... -> SCHEMA_VERSION.
+            chain: list[MigrationFn] = []
+            cur = version
+            seen: set[str] = set()
+            while cur != SCHEMA_VERSION:
+                step = _MIGRATIONS.get(cur)
+                if step is None or cur in seen:
+                    return "rebuild"  # no registered path (or a cycle)
+                seen.add(cur)
+                chain.append(step[1])
+                cur = step[0]
+            # A change to the persisted IR encoding can't be migrated in place.
+            # Databases written before this feature carry no ir_codec_version
+            # key; trust the registered chain for them (only IR-compatible steps
+            # are ever registered).
+            stored_codec = meta.get("ir_codec_version")
+            if stored_codec is not None and stored_codec != IR_CODEC_VERSION:
+                return "rebuild"
+            mode = conn.execute("PRAGMA journal_mode = WAL").fetchone()
+            if mode is None or str(mode[0]).lower() != "wal":
+                return "rebuild"  # can't safely write in place; rebuild instead
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                for fn in chain:
+                    fn(conn)
+                conn.executemany(
+                    "INSERT INTO meta (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    [
+                        ("schema_version", SCHEMA_VERSION),
+                        ("ir_codec_version", IR_CODEC_VERSION),
+                    ],
+                )
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            return "migrated"
         finally:
             conn.close()
 

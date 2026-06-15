@@ -438,6 +438,29 @@ def test_schema_version_mismatch_falls_back_to_full_rebuild(project: Path) -> No
     assert SqliteStore(db).load()  # readable again
 
 
+def test_old_schema_migrates_in_place_instead_of_rebuilding(project: Path) -> None:
+    """A v7 database (registered, IR-compatible step) is upgraded in place, so
+    ``update`` re-parses only the edited file rather than full-rebuilding."""
+    import sqlite3
+
+    db = project / ".hdl-kgraph" / "graph.db"
+    conn = sqlite3.connect(db)
+    with conn:
+        conn.execute("DROP TABLE IF EXISTS summaries")
+        conn.execute("UPDATE meta SET value = '7' WHERE key = 'schema_version'")
+        conn.execute("DELETE FROM meta WHERE key = 'ir_codec_version'")
+    conn.close()
+
+    path = project / "mid.sv"
+    path.write_text(path.read_text() + "// touched\n")
+    report = run_update(project)
+
+    assert report.full_rebuild_reason is None  # migrated, not rebuilt
+    assert report.reparsed == {"mid.sv": "changed"}
+    _, _, meta = SqliteStore(db).load()
+    assert meta["schema_version"] == "8"
+
+
 def test_forced_full_rebuild(project: Path) -> None:
     report = run_update(project, full=True)
     assert report.full_rebuild_reason == "forced with --full"

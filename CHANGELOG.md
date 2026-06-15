@@ -9,7 +9,18 @@ changes.
 
 ## [Unreleased]
 
-## [0.10.2] - 2026-06-15
+## [0.11.0] - 2026-06-15
+
+### Added
+
+- SQLite schema migration ladder: `update`/`watch` now upgrade an older database
+  in place when a registered, additive, IR-compatible step exists (e.g. the
+  `v7 → v8` summaries table) instead of forcing a full re-parse; transitions with
+  no registered path — or a change to the persisted IR encoding, now versioned
+  explicitly via `ir_codec.IR_CODEC_VERSION` — still fall back to a rebuild. Read
+  commands stay read-only. Policy documented in `docs/schema-migrations.md` ([#74]).
+
+
 
 ### Changed
 
@@ -169,7 +180,8 @@ Maintenance release — version bump only, no functional changes.
 Releases before `0.6.3` predate this changelog; their history lives in the git
 log.
 
-[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.10.2...HEAD
+[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.9.0...v0.10.1
 [0.9.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.8.2...v0.9.0

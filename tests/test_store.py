@@ -406,6 +406,67 @@ def test_save_incremental_falls_back_on_foreign_file(store) -> None:
     assert "foreign.sv::module:fr" in loaded.nodes
 
 
+def _downgrade_to_v7(db_path: Path) -> None:
+    """Make a current (v8) database look like a genuine pre-migration v7 one:
+    drop the summaries table, set the schema version back, and remove the
+    ir_codec_version key (which v7 databases never carried)."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TABLE IF EXISTS summaries")
+        conn.execute("UPDATE meta SET value = '7' WHERE key = 'schema_version'")
+        conn.execute("DELETE FROM meta WHERE key = 'ir_codec_version'")
+
+
+def test_migrate_v7_to_v8_in_place(store) -> None:
+    """A registered, IR-compatible step upgrades in place — no full reparse."""
+    assert SCHEMA_VERSION == "8"
+    sqlite_store, _, _ = store
+    _downgrade_to_v7(sqlite_store.db_path)
+
+    assert sqlite_store.migrate() == "migrated"
+
+    # The database is current again, the summaries table is back (empty, so the
+    # reader falls back to on-the-fly computation), and load() no longer raises.
+    _, _, meta = sqlite_store.load()
+    assert meta["schema_version"] == SCHEMA_VERSION
+    assert meta["ir_codec_version"]  # stamped by the migration
+    assert sqlite_store.load_summary("clock_domains") is None
+
+
+def test_migrate_current_database_is_a_noop(store) -> None:
+    sqlite_store, _, _ = store
+    assert sqlite_store.migrate() == "current"
+
+
+def test_migrate_absent_database(tmp_path) -> None:
+    assert SqliteStore(tmp_path / "nope.db").migrate() == "absent"
+
+
+def test_migrate_unregistered_version_requests_rebuild(store) -> None:
+    """A version with no contiguous ladder path is left untouched for rebuild."""
+    sqlite_store, _, _ = store
+    with sqlite3.connect(sqlite_store.db_path) as conn:
+        conn.execute("UPDATE meta SET value = '5' WHERE key = 'schema_version'")
+    assert sqlite_store.migrate() == "rebuild"
+    with pytest.raises(SchemaVersionError):
+        sqlite_store.load()  # still refused; the caller rebuilds
+
+
+def test_migrate_ir_codec_change_requests_rebuild(store) -> None:
+    """An IR-encoding change can't be migrated in place even with a DDL path."""
+    sqlite_store, _, _ = store
+    _downgrade_to_v7(sqlite_store.db_path)
+    with sqlite3.connect(sqlite_store.db_path) as conn:
+        conn.execute("INSERT INTO meta (key, value) VALUES ('ir_codec_version', '999')")
+    assert sqlite_store.migrate() == "rebuild"
+
+
+def test_migrate_foreign_file_requests_rebuild(tmp_path) -> None:
+    db = tmp_path / ".hdl-kgraph" / "graph.db"
+    db.parent.mkdir(parents=True)
+    db.write_bytes(b"not a sqlite database\n" * 4)
+    assert SqliteStore(db).migrate() == "rebuild"
+
+
 def test_ref_index_round_trips_and_writes_incrementally(store) -> None:
     from hdl_kgraph.graph.builder import RefRecord
 
