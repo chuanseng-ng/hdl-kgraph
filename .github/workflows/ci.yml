@@ -61,6 +61,31 @@ jobs:
       - run: pip install -e .[dev,mcp,watch,enrich]
       - run: pytest --cov=hdl_kgraph --cov-fail-under=85
 
+  # Nudge contributors to record user-visible changes. Only fires on PRs that
+  # touch src/ and skips when the PR carries the `skip-changelog` label (for
+  # docs-only/internal changes). See CONTRIBUTING.md.
+  changelog:
+    if: >-
+      github.event_name == 'pull_request' &&
+      !contains(github.event.pull_request.labels.*.name, 'skip-changelog')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Require a CHANGELOG.md entry when src/ changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          changed=$(git diff --name-only "$BASE_SHA"...HEAD)
+          if echo "$changed" | grep -qE '^src/'; then
+            if ! echo "$changed" | grep -qx 'CHANGELOG.md'; then
+              echo "::error::src/ changed but CHANGELOG.md was not updated. Add an entry under [Unreleased] in CHANGELOG.md, or apply the 'skip-changelog' label."
+              exit 1
+            fi
+          fi
+
   # Early-warning canary (ROADMAP Risks #1/#5): the tree-sitter stack is
   # upper-bounded in pyproject.toml, so a new upstream release can't break
   # users' fresh installs — but we still want to know the moment the latest

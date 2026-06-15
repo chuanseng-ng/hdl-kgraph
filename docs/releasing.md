@@ -32,9 +32,12 @@ The package version is single-sourced from `__version__` in
 
 ## Cutting a release
 
-1. Make sure `__version__` in `src/hdl_kgraph/__init__.py` is the version you
+1. Roll the changelog: in `CHANGELOG.md`, rename the `[Unreleased]` section to a
+   new dated `## [<version>] - YYYY-MM-DD` section (leaving a fresh, empty
+   `[Unreleased]` above it), and add a corresponding compare link at the bottom.
+2. Make sure `__version__` in `src/hdl_kgraph/__init__.py` is the version you
    want to ship and that CI is green on the target commit.
-2. Sanity-check the distribution locally (optional but recommended):
+3. Sanity-check the distribution locally (optional but recommended):
 
    ```sh
    python -m pip install build twine
@@ -42,7 +45,7 @@ The package version is single-sourced from `__version__` in
    twine check dist/*
    ```
 
-3. Tag and push:
+4. Tag and push:
 
    ```sh
    git tag v<version>        # e.g. v0.1.0, on the release commit
@@ -50,9 +53,9 @@ The package version is single-sourced from `__version__` in
    ```
 
    or create a GitHub Release for the new tag via **Releases → Draft a new
-   release** (recommended, so the version gets release notes). Either way the
-   workflow builds and uploads to PyPI.
-4. Verify from a clean environment:
+   release** (recommended) and paste that version's `CHANGELOG.md` section as
+   the release notes. Either way the workflow builds and uploads to PyPI.
+5. Verify from a clean environment:
 
    ```sh
    python -m venv /tmp/venv && /tmp/venv/bin/pip install hdl-kgraph==<version>
