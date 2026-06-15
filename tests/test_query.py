@@ -215,3 +215,33 @@ def test_global_tools_parity(query: GraphQuery, loaded) -> None:
     graph, _ = loaded
     assert query.clock_domains() == srv._clock_domains_impl(graph)
     assert query.uvm_topology() == srv._uvm_impl(graph)
+
+
+def test_no_full_graph_load(
+    query: GraphQuery, loaded, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole point: no tool may fall back to SqliteStore.load() on a current
+    (summary-bearing) database — that is the unbounded path this work removes."""
+    import hdl_kgraph.storage.query as query_mod
+
+    graph, files = loaded
+    top = query.top_modules()[0]["name"]
+    signal = _names_of_kinds(graph, frozenset({NodeKind.SIGNAL, NodeKind.PORT}))[0]
+    file_target = files[0].path
+
+    def boom(self: object) -> None:
+        raise AssertionError("the query path loaded the whole graph")
+
+    monkeypatch.setattr(query_mod.SqliteStore, "load", boom)
+
+    query.find_module("*", 20)
+    query.search_nodes("*", [NodeKind.MODULE], None, 50, 0)
+    query.who_instantiates(top, 50, 0)
+    query.port_map(top, None)
+    query.hierarchy(top, 3, 500)
+    query.top_modules()
+    query.find_signal_drivers(signal, None, False, 50, 0)
+    query.impact_of_change(file_target, 0, 100, 0)
+    # precomputed -> read the summary blob, never the graph
+    query.clock_domains()
+    query.uvm_topology()

@@ -18,8 +18,6 @@ Design notes:
 
 from __future__ import annotations
 
-import dataclasses
-import enum
 import sqlite3
 from collections import Counter, deque
 from pathlib import Path
@@ -27,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 import networkx as nx
 
-from hdl_kgraph.graph import analysis, clocks, uvm
+from hdl_kgraph.graph import analysis, summary
 from hdl_kgraph.schema import EdgeKind, NodeKind
 from hdl_kgraph.storage.query import GraphQuery
 from hdl_kgraph.storage.sqlite_store import FileMeta, SchemaVersionError
@@ -76,17 +74,9 @@ class GraphContext:
             ) from exc
 
 
-def _jsonable(value: Any) -> Any:
-    """Recursively convert enums/dataclasses/tuples to JSON-safe values."""
-    if isinstance(value, enum.Enum):
-        return value.value
-    if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return _jsonable(dataclasses.asdict(value))
-    if isinstance(value, dict):
-        return {k: _jsonable(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_jsonable(v) for v in value]
-    return value
+#: JSON-safe conversion (enums/dataclasses/tuples), shared with the build-time
+#: summary writer so a precomputed summary and a live one are byte-identical.
+_jsonable = summary.jsonable
 
 
 def _page(items: list[Any], limit: int, offset: int) -> dict[str, Any]:
@@ -172,29 +162,11 @@ def _impact_impl(
 
 
 def _clock_domains_impl(g: nx.MultiDiGraph) -> dict[str, Any]:
-    domains = [
-        {
-            "clock": d.clock_names[0] if d.clock_names else d.clock_id,
-            "aliases": d.clock_names,
-            "process_count": len(d.process_ids),
-            "signal_count": len(d.signal_ids),
-            "min_confidence": d.min_confidence,
-        }
-        for d in clocks.clock_domains(g)
-    ]
-    suspects = clocks.cdc_suspects(g)
-    return {
-        "domains": domains,
-        "cdc_suspect_count": len(suspects),
-        "cdc_suspects": _jsonable(suspects[:50]),
-    }
+    return summary.clock_summary(g)
 
 
 def _uvm_impl(g: nx.MultiDiGraph) -> dict[str, Any]:
-    return {
-        "components": _jsonable(uvm.uvm_topology(g)),
-        "test_covers": _jsonable(uvm.test_covers(g)),
-    }
+    return summary.uvm_summary(g)
 
 
 def _validate_kinds(kinds: list[str] | None) -> list[NodeKind] | None:

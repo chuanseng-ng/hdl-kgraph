@@ -63,6 +63,7 @@ from hdl_kgraph.enrich import (
 )
 from hdl_kgraph.enrich.base import Discrepancy
 from hdl_kgraph.graph.builder import RefRecord, link_graph, link_incremental
+from hdl_kgraph.graph.summary import build_summaries
 from hdl_kgraph.ids import file_node_id, library_node_id
 from hdl_kgraph.incremental import (
     ChangeSet,
@@ -695,6 +696,10 @@ def _execute(
     progress(f"writing {db_path}")
     store = SqliteStore(db_path)
     persist = store.save_incremental if incremental else store.save
+    # Whole-design summaries (clock domains, UVM topology) cannot be answered
+    # from a bounded subgraph, so compute them once here — the graph is already
+    # in memory — and persist them for the MCP server to read without a load.
+    summaries = {name: json.dumps(payload) for name, payload in build_summaries(graph).items()}
     persist(
         graph,
         files_meta,
@@ -703,6 +708,7 @@ def _execute(
         options_hash=options_hash(base, options, inputs),
         discrepancies=discrepancies,
         ref_records=ref_records,
+        summaries=summaries,
     )
     return report
 

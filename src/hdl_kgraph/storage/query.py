@@ -293,19 +293,28 @@ class GraphQuery:
             # (identical result) and runs the real impact_radius on it.
             return _impact_impl(graph, files, target, max_depth, limit, offset)
 
-    # -- genuinely-global tools (summary tables, else full load) ---------------
+    # -- genuinely-global tools (precomputed summary, else full load) ----------
 
     def clock_domains(self) -> dict[str, Any]:
-        from hdl_kgraph.mcp.server import _clock_domains_impl
+        from hdl_kgraph.graph.summary import clock_summary
 
-        graph, _, _ = self._store.load()
-        return _clock_domains_impl(graph)
+        return self._summary("clock_domains", clock_summary)
 
     def uvm_topology(self) -> dict[str, Any]:
-        from hdl_kgraph.mcp.server import _uvm_impl
+        from hdl_kgraph.graph.summary import uvm_summary
 
+        return self._summary("uvm_topology", uvm_summary)
+
+    def _summary(self, name: str, builder: Any) -> dict[str, Any]:
+        """Read a precomputed whole-design summary; for a pre-v8 database with
+        no summaries table, fall back to computing it from the full graph."""
+        import json
+
+        payload = self._store.load_summary(name)
+        if payload is not None:
+            return dict(json.loads(payload))
         graph, _, _ = self._store.load()
-        return _uvm_impl(graph)
+        return dict(builder(graph))
 
     # -- subgraph builders -----------------------------------------------------
 
