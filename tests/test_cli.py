@@ -667,7 +667,10 @@ def test_build_verbose_reports_stages_and_per_file_diagnostics(diag_project: Pat
     assert "broken.sv:" in result.output  # per-file parse-error count
     assert "broken.sv:6: syntax error near `" in result.output  # exact error location
     assert 'cannot resolve `include "missing.svh"' in result.output
-    assert "`include search path: (no incdirs configured)" in result.output
+    # No explicit -I, but auto-incdir adds the source dir; the search path line
+    # reflects that and a hint points at the fix.
+    assert "`include search path: (none) + 1 auto-discovered source dir(s)" in result.output
+    assert "hint:" in result.output
 
 
 def test_build_verbose_lists_incdirs_for_unresolved_includes(diag_project: Path) -> None:

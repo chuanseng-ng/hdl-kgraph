@@ -22,6 +22,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from hdl_kgraph.parser.base import within_root
 from hdl_kgraph.parser.systemverilog import SUFFIXES as SV_SUFFIXES
 from hdl_kgraph.parser.systemverilog import SYSTEMVERILOG_SUFFIXES
 from hdl_kgraph.parser.vhdl import SUFFIXES as VHDL_SUFFIXES
@@ -187,3 +188,22 @@ def discover_from_paths(
         seen.add(path)
         results.append(check_file(path, base, exclude, max_file_size_kb))
     return results
+
+
+def source_dirs(discovered: list[DiscoveredFile], base: Path) -> list[Path]:
+    """Distinct parent directories of non-skipped discovered files, within *base*.
+
+    Used as automatic ``\\`include`` search directories so a header/define file
+    that lives anywhere in the scanned tree resolves without an explicit ``-I``.
+    Directories are confined to *base* (#68) and returned deduped and sorted, so
+    a bare ``\\`include "abc.svh"`` resolves to a deterministic first match.
+    """
+    base = base.resolve()
+    dirs: set[Path] = set()
+    for found in discovered:
+        if found.skipped_reason is not None:
+            continue
+        directory = found.path.parent.resolve()
+        if within_root(directory, base):
+            dirs.add(directory)
+    return sorted(dirs)

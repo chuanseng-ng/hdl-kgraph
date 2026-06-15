@@ -208,6 +208,23 @@ def test_resolve_defaults() -> None:
     options = resolve_build_options(BuildConfig())
     assert options.filelists == []
     assert options.max_file_size_kb is None
+    assert options.auto_incdirs is True  # on by default
+
+
+def test_auto_incdir_config_and_cli(tmp_path: Path) -> None:
+    # Default on; the toml key and the CLI flag each turn it off; the CLI flag
+    # also overrides a config that left it on.
+    assert BuildConfig().auto_incdirs is True
+    off = BuildConfig.load(write_config(tmp_path, "[build]\nauto_incdirs = false\n"))
+    assert off.auto_incdirs is False
+    assert resolve_build_options(off).auto_incdirs is False
+    assert resolve_build_options(BuildConfig(), cli_no_auto_incdir=True).auto_incdirs is False
+    assert resolve_build_options(BuildConfig()).auto_incdirs is True
+
+
+def test_auto_incdir_must_be_boolean(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="auto_incdirs must be a boolean"):
+        BuildConfig.load(write_config(tmp_path, "[build]\nauto_incdirs = 'yes'\n"))
 
 
 def test_parse_lib() -> None:

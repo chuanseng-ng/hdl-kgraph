@@ -193,6 +193,7 @@ class Preprocessor:
         *,
         base: Path,
         incdirs: Sequence[Path] = (),
+        auto_incdirs: Sequence[Path] = (),
         macros: MacroTable | None = None,
         branch_mode: Literal["select", "both"] = "select",
         max_include_depth: int = DEFAULT_MAX_INCLUDE_DEPTH,
@@ -200,10 +201,14 @@ class Preprocessor:
     ) -> None:
         self.base = base.resolve()
         self.incdirs = [Path(d).resolve() for d in incdirs]
+        # Fallback search dirs (discovered source dirs); explicit incdirs win.
+        self.auto_incdirs = [Path(d).resolve() for d in auto_incdirs]
         self.macros = macros if macros is not None else MacroTable()
         self.branch_mode = branch_mode
         self.max_include_depth = max_include_depth
         self.max_expansion_depth = max_expansion_depth
+        # Memoize resolution so a header included from many files is stat'd once.
+        self._include_cache: dict[tuple[Path, str], Path | None] = {}
 
     def preprocess(self, path: Path, text: str | None = None) -> PreprocessedFile:
         path = path.resolve()
@@ -375,11 +380,20 @@ class Preprocessor:
         self._process(resolved, header_rel, text, include_stack=(*include_stack, resolved))
 
     def _resolve_include(self, path_text: str, includer_dir: Path) -> Path | None:
-        for directory in [includer_dir, *self.incdirs]:
+        key = (includer_dir, path_text)
+        if key in self._include_cache:
+            return self._include_cache[key]
+        resolved: Path | None = None
+        # Explicit incdirs win over the auto-discovered fallback; the loop stops
+        # at the first hit, so an already-resolvable include never stats the
+        # auto dirs.
+        for directory in [includer_dir, *self.incdirs, *self.auto_incdirs]:
             candidate = (directory / path_text).resolve()
             if candidate.is_file():
-                return candidate
-        return None
+                resolved = candidate
+                break
+        self._include_cache[key] = resolved
+        return resolved
 
     def _within_allowed(self, path: Path) -> bool:
         """True if *path* is inside the build root or any configured incdir.

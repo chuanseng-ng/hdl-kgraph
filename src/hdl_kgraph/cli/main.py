@@ -223,7 +223,13 @@ def _input_options(f: Callable) -> Callable:
             "incdirs",
             multiple=True,
             type=click.Path(path_type=Path),
-            help="`include search directory (repeatable).",
+            help="`include search directory, searched before auto-discovered dirs (repeatable).",
+        ),
+        click.option(
+            "--no-auto-incdir",
+            is_flag=True,
+            help="Do not auto-search discovered source directories for "
+            "`` `include``s; resolve against -I/+incdir+ dirs only.",
         ),
         click.option(
             "--lib",
@@ -272,6 +278,7 @@ def _resolve_options(
     no_config: bool,
     excludes: tuple[str, ...],
     max_file_size: int | None,
+    no_auto_incdir: bool = False,
 ) -> BuildOptions:
     """Merge config-file and CLI build inputs (the ``build`` precedence rules)."""
     if no_config:
@@ -292,6 +299,7 @@ def _resolve_options(
             cli_exclude=excludes,
             cli_max_file_size_kb=max_file_size,
             cli_libs=libs,
+            cli_no_auto_incdir=no_auto_incdir,
         )
     except ConfigError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -330,8 +338,15 @@ def _echo_build_report(report: BuildReport, verbose: bool = False) -> None:
             includes += f", {report.includes_unresolved} unresolved"
         click.echo(includes)
         if verbose and report.includes_unresolved:
-            search = ", ".join(report.incdirs) if report.incdirs else "(no incdirs configured)"
+            search = ", ".join(report.incdirs) if report.incdirs else "(none)"
+            if report.auto_incdir_count:
+                search += f" + {report.auto_incdir_count} auto-discovered source dir(s)"
             click.echo(f"      `include search path: {search}")
+            if report.auto_incdir_count:
+                hint = "header may be outside the scanned tree; add its dir with -I DIR"
+            else:
+                hint = "add the header's dir with -I DIR, or drop --no-auto-incdir"
+            click.echo(f"      hint: {hint}")
     if report.preproc_warning_count:
         click.echo(f"  preprocessor warnings: {report.preproc_warning_count}")
         if verbose:
@@ -415,10 +430,20 @@ def build(
     verbose: bool,
     jobs: int | None,
     enrich: bool,
+    no_auto_incdir: bool,
 ) -> None:
     """Build the knowledge graph from HDL sources under SOURCE."""
     options = _resolve_options(
-        source, filelists, defines, incdirs, libs, config_path, no_config, excludes, max_file_size
+        source,
+        filelists,
+        defines,
+        incdirs,
+        libs,
+        config_path,
+        no_config,
+        excludes,
+        max_file_size,
+        no_auto_incdir,
     )
     options.jobs = jobs
     options.enrich = options.enrich or enrich
@@ -469,6 +494,7 @@ def update(
     jobs: int | None,
     enrich: bool,
     full: bool,
+    no_auto_incdir: bool,
 ) -> None:
     """Incrementally update the graph: re-parse only changed files.
 
@@ -478,7 +504,16 @@ def update(
     options changed.
     """
     options = _resolve_options(
-        source, filelists, defines, incdirs, libs, config_path, no_config, excludes, max_file_size
+        source,
+        filelists,
+        defines,
+        incdirs,
+        libs,
+        config_path,
+        no_config,
+        excludes,
+        max_file_size,
+        no_auto_incdir,
     )
     options.jobs = jobs
     options.enrich = options.enrich or enrich
@@ -555,6 +590,7 @@ def detect_changes(
     p4_rev: str | None,
     use_vcs: bool,
     closure: bool,
+    no_auto_incdir: bool,
 ) -> None:
     """List build inputs that changed since the last build (or a VCS ref).
 
@@ -578,6 +614,7 @@ def detect_changes(
             no_config,
             excludes,
             max_file_size,
+            no_auto_incdir,
         )
         base = source.resolve()
         base = base.parent if base.is_file() else base
@@ -729,12 +766,22 @@ def watch(
     verbose: bool,
     jobs: int | None,
     debounce: int,
+    no_auto_incdir: bool,
 ) -> None:
     """Watch SOURCE and incrementally update the graph on every save burst."""
     from hdl_kgraph.watch import WatchUnavailableError, run_watch
 
     options = _resolve_options(
-        source, filelists, defines, incdirs, libs, config_path, no_config, excludes, max_file_size
+        source,
+        filelists,
+        defines,
+        incdirs,
+        libs,
+        config_path,
+        no_config,
+        excludes,
+        max_file_size,
+        no_auto_incdir,
     )
     options.jobs = jobs
 

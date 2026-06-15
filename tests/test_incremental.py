@@ -351,6 +351,32 @@ def test_changed_filelist_define_falls_back_to_full_rebuild(tmp_path: Path) -> N
     assert "options changed" in report.full_rebuild_reason
 
 
+def test_toggling_auto_incdir_falls_back_to_full_rebuild(tmp_path: Path) -> None:
+    # auto_incdirs feeds the preprocessor globally, so flipping it must
+    # invalidate an incremental reuse (it is fingerprinted in options_hash).
+    (tmp_path / "a.sv").write_text("module a;\nendmodule\n")
+    from hdl_kgraph.config import BuildOptions
+
+    run_build(tmp_path, options=BuildOptions())  # auto_incdirs default True
+    report = run_update(tmp_path, options=BuildOptions(auto_incdirs=False))
+    assert report.full_rebuild_reason is not None
+    assert "options changed" in report.full_rebuild_reason
+
+
+def test_auto_incdir_resolves_header_in_other_dir_end_to_end(tmp_path: Path) -> None:
+    # The reported bug: a `` `include`` of a define file in a *different* project
+    # directory resolves out of the box (auto_incdirs on by default).
+    (tmp_path / "rtl").mkdir()
+    (tmp_path / "include").mkdir()
+    (tmp_path / "include" / "defs.svh").write_text("`define W 4\n")
+    (tmp_path / "rtl" / "top.sv").write_text(
+        '`include "defs.svh"\nmodule top(output logic [`W-1:0] o);\nendmodule\n'
+    )
+    report = run_build(tmp_path)
+    assert report.includes_resolved == 1
+    assert report.includes_unresolved == 0
+
+
 def test_filelist_membership_change_is_incremental(tmp_path: Path) -> None:
     (tmp_path / "a.sv").write_text("module a;\nendmodule\n")
     (tmp_path / "b.sv").write_text("module b;\nendmodule\n")
