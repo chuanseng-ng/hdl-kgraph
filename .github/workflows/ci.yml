@@ -54,11 +54,21 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      # [mcp]/[watch]/[enrich] here, not in lint: the lint job proves the
-      # package imports and type-checks without the optional extras installed.
-      # Without [watch], the only real-observer test (tests/test_watch.py)
-      # silently skips; without [enrich], the slang enrichment tests skip.
-      - run: pip install -e .[dev,mcp,watch,enrich]
+      # [mcp]/[watch]/[enrich]/[layout] here, not in lint: the lint job proves
+      # the package imports and type-checks without the optional extras
+      # installed. Without [watch], the only real-observer test
+      # (tests/test_watch.py) silently skips; without [enrich], the slang
+      # enrichment tests skip; without [layout], the precomputed-layout viz
+      # branches (numpy/scipy) skip yet count toward the coverage gate (#75).
+      - run: pip install -e .[dev,mcp,watch,enrich,layout]
+      # GHDL is a system binary (not a pip package); install it on Linux so the
+      # VHDL enrichment backend's branches run instead of skip-guarding. Best
+      # effort — if the package or its bindings are unavailable the tests skip
+      # exactly as before, so this never fails the build (#75).
+      - name: Install GHDL for VHDL enrichment coverage (Linux)
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        run: sudo apt-get update && sudo apt-get install -y ghdl
       - run: pytest --cov=hdl_kgraph --cov-fail-under=85
 
   # Nudge contributors to record user-visible changes. Only fires on PRs that

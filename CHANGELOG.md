@@ -9,6 +9,20 @@ changes.
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-06-15
+
+### Added
+
+- Tests for previously-unexercised degradation paths: a corrupt stored IR row
+  falling back to a fresh parse, an internal parser-walker exception being
+  caught, non-UTF-8 sources tolerated via `errors="replace"`, and pass-1
+  `FileIR`/`UnresolvedRef` pickling (the cross-process worker contract) ([#75]).
+- Branch coverage (`[tool.coverage.run] branch = true`) so resilience/fallback
+  branches count toward the gate instead of being half-covered by a line touch,
+  and a CI test leg that installs the `layout` extra (numpy/scipy) plus a
+  best-effort GHDL install so those branches run instead of silently skipping
+  ([#75]).
+
 ## [0.13.0] - 2026-06-15
 
 ### Added
@@ -215,7 +229,8 @@ Maintenance release — version bump only, no functional changes.
 Releases before `0.6.3` predate this changelog; their history lives in the git
 log.
 
-[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.10.2...v0.11.0
@@ -244,6 +259,7 @@ log.
 [#71]: https://github.com/chuanseng-ng/hdl-kgraph/issues/71
 [#73]: https://github.com/chuanseng-ng/hdl-kgraph/issues/73
 [#74]: https://github.com/chuanseng-ng/hdl-kgraph/issues/74
+[#75]: https://github.com/chuanseng-ng/hdl-kgraph/issues/75
 [#78]: https://github.com/chuanseng-ng/hdl-kgraph/pull/78
 [#81]: https://github.com/chuanseng-ng/hdl-kgraph/issues/81
 [#108]: https://github.com/chuanseng-ng/hdl-kgraph/pull/108
