@@ -963,3 +963,32 @@ def test_serve_http_warns_on_non_loopback_bind(
     assert tokened.exit_code == 0, tokened.output
     assert "no authentication" not in tokened.output
     assert seen[-1] == "s3cret"
+
+
+def test_serve_http_ipv6_and_port_validation(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[dict] = []
+
+    class DummyServer:
+        def run(self, **kwargs: object) -> None:
+            calls.append(dict(kwargs))
+
+    import hdl_kgraph.mcp
+
+    monkeypatch.setattr(
+        hdl_kgraph.mcp, "create_server", lambda db_path, *, token=None: DummyServer()
+    )
+
+    # IPv6 [host]:port parses (rpartition would have dropped the bracket); being
+    # loopback with no token it binds [::1] and emits no exposure warning.
+    ipv6 = CliRunner().invoke(main, ["serve", "--http", "[::1]:8123", *db_args(project)])
+    assert ipv6.exit_code == 0, ipv6.output
+    assert calls[-1]["host"] == "[::1]" and calls[-1]["port"] == 8123
+    assert "no authentication" not in ipv6.output
+
+    # Out-of-range / zero ports are now rejected (int() used to accept them).
+    for bad in ("127.0.0.1:99999", "127.0.0.1:0", "[::1]:70000"):
+        result = CliRunner().invoke(main, ["serve", "--http", bad, *db_args(project)])
+        assert result.exit_code == 2, (bad, result.output)
+        assert "HOST:PORT" in result.output

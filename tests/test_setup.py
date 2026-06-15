@@ -41,6 +41,17 @@ def fake_home(monkeypatch, tmp_path: Path) -> Path:
     return home
 
 
+def test_setup_explicit_missing_db_errors(monkeypatch, tmp_path: Path) -> None:
+    """An explicit ``--db`` that does not exist is rejected before any config is
+    written (matching ``serve``), so assistants are never pointed at a missing DB."""
+    monkeypatch.setattr(
+        mcp_setup, "detect_targets", lambda *a, **k: [_target(tmp_path / "cfg.json")]
+    )
+    result = CliRunner().invoke(main, ["setup", "--db", str(tmp_path / "nope.db"), "--yes"])
+    assert result.exit_code == 2, result.output
+    assert "database not found" in result.output
+
+
 def test_plan_entry_points_at_serve() -> None:
     db = Path("/work/.hdl-kgraph/graph.db")
     entry = plan_entry(db)
