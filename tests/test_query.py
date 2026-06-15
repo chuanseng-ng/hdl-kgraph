@@ -170,6 +170,40 @@ def test_find_signal_drivers_parity(query: GraphQuery, loaded) -> None:
             )
 
 
+def test_find_signal_drivers_scopes_edge_hydration_to_module(
+    query: GraphQuery, loaded, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#108: a `module`-scoped query hydrates DRIVES/READS for only that unit's
+    signals, not every design-wide signal of the same name."""
+    from hdl_kgraph.schema import EdgeKind
+
+    graph, _ = loaded
+    # A signal/port name owned by >= 2 distinct units (so scoping can shrink it).
+    owners: dict[str, set[str]] = {}
+    for nid, d in graph.nodes(data=True):
+        if d["kind"] in (NodeKind.SIGNAL, NodeKind.PORT):
+            _, names = analysis._signal_unit_names(graph, nid)
+            owners.setdefault(d["name"], set()).update(n for n in names if n)
+    multi = [(name, sorted(units)) for name, units in owners.items() if len(units) >= 2]
+    assert multi, "fixture should have a signal/port name shared by >= 2 units"
+    name, units = multi[0]
+
+    captured: list[int] = []
+    real = type(query)._hydrate_in_edges
+
+    def spy(self, g, conn, ids, kinds=None):  # type: ignore[no-untyped-def]
+        ids = list(ids)
+        if kinds and EdgeKind.DRIVES in kinds:
+            captured.append(len(ids))
+        return real(self, g, conn, ids, kinds)
+
+    monkeypatch.setattr(type(query), "_hydrate_in_edges", spy)
+    query.find_signal_drivers(name, None, False, 50, 0)
+    query.find_signal_drivers(name, units[0], False, 50, 0)
+    unscoped, scoped = captured[0], captured[1]
+    assert scoped < unscoped  # the module filter dropped the other units' fanout
+
+
 def test_search_nodes_parity(query: GraphQuery, loaded) -> None:
     graph, _ = loaded
     cases: list[tuple[str, list[NodeKind] | None, str | None]] = [

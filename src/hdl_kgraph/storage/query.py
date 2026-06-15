@@ -239,10 +239,23 @@ class GraphQuery:
             graph = nx.MultiDiGraph()
             sig_ids = self._ids_by_name(conn, (NodeKind.SIGNAL.value, NodeKind.PORT.value), signal)
             self._hydrate_nodes(graph, conn, sig_ids)
-            # The driving/reading sites (and the unit each signal belongs to,
-            # reached by climbing reverse DECLARES) must be present.
-            self._hydrate_in_edges(graph, conn, sig_ids, (EdgeKind.DRIVES, EdgeKind.READS))
+            # Each signal's owning unit (reached by climbing reverse DECLARES)
+            # must be present before we can scope by module.
             self._climb_declares(graph, conn, sig_ids)
+            # The DRIVES/READS fanout is the expensive part. When a module is
+            # given, hydrate it only for signals that unit actually owns —
+            # `analysis.signal_drivers` skips the rest before touching their
+            # edges, so the result is identical (reuse its exact unit-name rule).
+            if module is None:
+                drivers_of = sig_ids
+            else:
+                drivers_of = [
+                    sid
+                    for sid in sig_ids
+                    if (module.lower() if graph.nodes[sid]["language"] is Language.VHDL else module)
+                    in analysis._signal_unit_names(graph, sid)[1]
+                ]
+            self._hydrate_in_edges(graph, conn, drivers_of, (EdgeKind.DRIVES, EdgeKind.READS))
             self._ensure_endpoints(graph, conn)
             results = analysis.signal_drivers(graph, signal, module=module, readers=readers)
             return _page(results, limit, offset)
@@ -378,6 +391,12 @@ class GraphQuery:
         architectures) relation as ``analysis.hierarchy_tree``, loading one level
         past *depth* so its lookahead for the depth-cap ``truncated`` flag still
         sees whether a capped unit had children.
+
+        Note (#108): this loads the whole subtree to *depth*, not just the first
+        ``max_nodes``. An early-stop cannot be byte-identical because the tool's
+        ``nodes_omitted`` is the *full* count of pruned nodes (``_prune_tree`` →
+        ``_count_tree`` over each cut subtree), which requires the entire
+        unfolded tree. Bounding it would change that output contract.
         """
         graph = nx.MultiDiGraph()
         self._hydrate_nodes(graph, conn, [root_id])
