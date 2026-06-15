@@ -370,6 +370,31 @@ waits on (or runs out of memory loading) the whole graph.
 `scripts/bench_query.py` and `scripts/bench_incremental.py` (latency + bounded
 read/write volume). Detail in [docs/scalability.md](docs/scalability.md).
 
+---
+
+## M8–M10 are an exploratory track, not a delivery commitment
+
+M8–M10 span roughly a dozen languages and ecosystems (C/C++, Python/cocotb,
+Chisel/FIRRTL, Amaranth, SpinalHDL, Tcl/SDC, UPF, Perl, SLN). For a
+single-maintainer project, bus-factor is the dominant risk, so these milestones
+are scoped as an **exploratory / community-contribution track** rather than a
+committed delivery schedule. The plan is to deepen **one wedge at a time**; the
+**SDC/XDC slice (issue #25)** is the chosen first wedge — it has the highest
+analysis-quality payoff per line of code (it upgrades the M5 clock heuristics to
+authoritative `create_clock` evidence and lets `set_clock_groups`/`set_false_path`
+suppress CDC suspects), and its schema, parser scaffold, and fixtures are already
+staged.
+
+Bus-factor is held down by the existing levers: the schema contract in
+`schema.py`, parser isolation behind `parser/base.py`, and the "smallest file that
+breaks extraction" fixture funnel.
+
+**The v1.0 "stable public API + schema freeze" is deliberately deferred** (see
+the M8 note below) until the schema and CLI surface have stabilized across a few
+real external designs — gated on the SQLite migration ladder (issue #74) and the
+unified CLI/exit-code contract (issue #73). v1.0 ships when those prerequisites
+land and the surface has proven stable, not on a fixed feature count.
+
 ## M8 — v1.0: C/C++/Python boundary + API stability (stretch)
 
 **Goal:** the full system picture — DPI, cosim, testbench scripting.
@@ -380,8 +405,16 @@ read/write volume). Detail in [docs/scalability.md](docs/scalability.md).
       `READS`/`DRIVES` (confidence 0.6); pytest/cocotb test discovery →
       `TEST_COVERS`
 - [ ] Stable public Python API (`hdl_kgraph.api`), semver commitment, schema
-      freeze with documented migration policy
-- [ ] PyPI 1.0 release; documentation site
+      freeze with documented migration policy — **deferred until the prerequisites
+      land and the surface proves stable on real designs.** The schema reached v8
+      in the project's first weeks, so a freeze is premature without (a) the
+      SQLite schema migration ladder (#74) so a version bump no longer forces a
+      full re-parse, and (b) the unified CLI exit-code / empty-result contract
+      (#73) so the scripting surface is stable. The pre-1.0 CLI rename TODOs
+      (issue #22) also resolve before any freeze.
+- [ ] PyPI 1.0 release; documentation site — **the package name is already
+      claimed and published (https://pypi.org/project/hdl-kgraph/); only the 1.0
+      tag/release remains.**
 
 **Acceptance:** a cocotb-driven SV design with DPI-C calls shows one connected
 graph spanning all three languages.

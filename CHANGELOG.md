@@ -9,6 +9,15 @@ changes.
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-06-15
+
+### Changed
+
+- Clarify the v1 scope: re-frame M8–M10 as an exploratory / community-contribution
+  track (one wedge at a time, SDC/XDC first) and defer the M8 API/schema freeze
+  until the migration ladder ([#74]) and the unified CLI exit-code contract
+  ([#73]) land and the surface proves stable on real designs ([#81]).
+
 ## [0.10.1] - 2026-06-15
 
 ### Changed
@@ -160,7 +169,8 @@ Maintenance release — version bump only, no functional changes.
 Releases before `0.6.3` predate this changelog; their history lives in the git
 log.
 
-[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.10.2...HEAD
+[0.10.2]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.9.0...v0.10.1
 [0.9.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.8.1...v0.8.2
@@ -182,5 +192,8 @@ log.
 [#69]: https://github.com/chuanseng-ng/hdl-kgraph/pull/69
 [#76]: https://github.com/chuanseng-ng/hdl-kgraph/pull/76
 [#77]: https://github.com/chuanseng-ng/hdl-kgraph/pull/77
+[#73]: https://github.com/chuanseng-ng/hdl-kgraph/issues/73
+[#74]: https://github.com/chuanseng-ng/hdl-kgraph/issues/74
 [#78]: https://github.com/chuanseng-ng/hdl-kgraph/pull/78
+[#81]: https://github.com/chuanseng-ng/hdl-kgraph/issues/81
 [#108]: https://github.com/chuanseng-ng/hdl-kgraph/pull/108
