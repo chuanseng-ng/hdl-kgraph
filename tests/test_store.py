@@ -162,13 +162,12 @@ def test_schema_version_mismatch_raises(store) -> None:
 
 
 def test_old_database_is_refused(store) -> None:
-    """The ref_index table (#64) bumped the schema to v7: an older (v6)
-    database must be refused with the rebuild message — rebuild *is* the
-    migration."""
-    assert SCHEMA_VERSION == "7"
+    """The summaries table bumped the schema to v8: an older (v7) database must
+    be refused with the rebuild message — rebuild *is* the migration."""
+    assert SCHEMA_VERSION == "8"
     sqlite_store, _, _ = store
     with sqlite3.connect(sqlite_store.db_path) as conn:
-        conn.execute("UPDATE meta SET value = '6' WHERE key = 'schema_version'")
+        conn.execute("UPDATE meta SET value = '7' WHERE key = 'schema_version'")
     with pytest.raises(SchemaVersionError, match="hdl-kgraph build"):
         sqlite_store.load()
 

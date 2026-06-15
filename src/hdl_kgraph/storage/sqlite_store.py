@@ -45,6 +45,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import networkx as nx
 
@@ -53,7 +54,7 @@ from hdl_kgraph.enrich.base import Discrepancy
 from hdl_kgraph.graph.builder import RefRecord
 from hdl_kgraph.schema import EdgeKind, Language, NodeKind
 
-SCHEMA_VERSION = "7"  # v7: ref_index table (incremental link, #64)
+SCHEMA_VERSION = "8"  # v8: summaries table (precomputed whole-design reports)
 
 # How long a reader waits on a residual write lock before giving up.
 _BUSY_TIMEOUT_MS = 5_000
@@ -120,6 +121,10 @@ CREATE TABLE IF NOT EXISTS ref_index (
 );
 CREATE INDEX IF NOT EXISTS idx_ref_index_target ON ref_index(target_name);
 CREATE INDEX IF NOT EXISTS idx_ref_index_file ON ref_index(file);
+CREATE TABLE IF NOT EXISTS summaries (
+  name    TEXT PRIMARY KEY,
+  payload TEXT NOT NULL
+);
 """
 
 
@@ -213,6 +218,40 @@ def _ref_index_row(rec: RefRecord) -> tuple[object, ...]:
     return (rec.file, rec.src_id, rec.edge_kind.value, rec.target_name, int(rec.scoped))
 
 
+# -- row deserialization (single source of truth) -----------------------------
+# Both the full-graph ``load()`` and the bounded ``storage.query`` reader build
+# their in-memory nodes/edges here, so the read paths can never drift on how a
+# stored row maps back to a graph node/edge.
+
+#: The ``nodes`` columns in table order — every node read does ``SELECT`` of
+#: exactly these so :func:`add_node_row` can unpack positionally.
+NODE_COLUMNS = "id, kind, name, qualified_name, file, line_start, line_end, language, attrs"
+#: The ``edges`` columns in table order, for :func:`add_edge_row`.
+EDGE_COLUMNS = "src, dst, kind, confidence, attrs"
+
+
+def add_node_row(graph: nx.MultiDiGraph, row: tuple[Any, ...]) -> str:
+    """Add one ``nodes`` row (in :data:`NODE_COLUMNS` order) to *graph*."""
+    node_id, kind, name, qualified_name, file, line_start, line_end, language, attrs = row
+    graph.add_node(
+        node_id,
+        kind=NodeKind(kind),
+        name=name,
+        qualified_name=qualified_name,
+        file=file,
+        line_span=(line_start, line_end),
+        language=Language(language),
+        attrs=json.loads(attrs),
+    )
+    return str(node_id)
+
+
+def add_edge_row(graph: nx.MultiDiGraph, row: tuple[Any, ...]) -> None:
+    """Add one ``edges`` row (in :data:`EDGE_COLUMNS` order) to *graph*."""
+    src, dst, kind, confidence, attrs = row
+    graph.add_edge(src, dst, kind=EdgeKind(kind), confidence=confidence, attrs=json.loads(attrs))
+
+
 def _meta_rows(root: Path, options_hash: str) -> list[tuple[str, str]]:
     return [
         ("schema_version", SCHEMA_VERSION),
@@ -243,6 +282,7 @@ class SqliteStore:
         options_hash: str = "",
         discrepancies: list[Discrepancy] | None = None,
         ref_records: list[RefRecord] | None = None,
+        summaries: dict[str, str] | None = None,
     ) -> None:
         """Write the full graph to a sibling temp file, then swap it into place.
 
@@ -289,6 +329,10 @@ class SqliteStore:
                 "INSERT INTO ref_index VALUES (?, ?, ?, ?, ?)",
                 [_ref_index_row(r) for r in (ref_records or [])],
             )
+            conn.executemany(
+                "INSERT INTO summaries (name, payload) VALUES (?, ?)",
+                list((summaries or {}).items()),
+            )
             conn.commit()
             # Fold the WAL back into the main file so the temp database is a
             # self-contained single file ready for the atomic swap.
@@ -313,6 +357,7 @@ class SqliteStore:
         options_hash: str = "",
         discrepancies: list[Discrepancy] | None = None,
         ref_records: list[RefRecord] | None = None,
+        summaries: dict[str, str] | None = None,
     ) -> None:
         """Write only the rows that changed since the stored build, in place.
 
@@ -329,7 +374,9 @@ class SqliteStore:
         this is the contract ``test_update_graph_matches_full_rebuild`` pins.
         """
         if not self.db_path.is_file():
-            self.save(graph, files, root, units, options_hash, discrepancies, ref_records)
+            self.save(
+                graph, files, root, units, options_hash, discrepancies, ref_records, summaries
+            )
             return
         conn = sqlite3.connect(self.db_path)
         conn.isolation_level = None  # we drive BEGIN/COMMIT explicitly
@@ -339,7 +386,9 @@ class SqliteStore:
                 self._check_version(conn)
             except SchemaVersionError:
                 conn.close()
-                self.save(graph, files, root, units, options_hash, discrepancies)
+                self.save(
+                    graph, files, root, units, options_hash, discrepancies, ref_records, summaries
+                )
                 return
             mode = conn.execute("PRAGMA journal_mode = WAL").fetchone()
             if mode is None or str(mode[0]).lower() != "wal":
@@ -348,12 +397,22 @@ class SqliteStore:
                 # a concurrent reader, so fall back to the full save(), whose
                 # os.replace swap is non-blocking regardless of journal mode.
                 conn.close()
-                self.save(graph, files, root, units, options_hash, discrepancies)
+                self.save(
+                    graph, files, root, units, options_hash, discrepancies, ref_records, summaries
+                )
                 return
             conn.execute("BEGIN IMMEDIATE")
             try:
                 stats = _apply_delta(
-                    conn, graph, files, root, units, options_hash, discrepancies, ref_records
+                    conn,
+                    graph,
+                    files,
+                    root,
+                    units,
+                    options_hash,
+                    discrepancies,
+                    ref_records,
+                    summaries,
                 )
                 conn.execute("COMMIT")
             except BaseException:
@@ -368,10 +427,18 @@ class SqliteStore:
 
     @contextlib.contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
-        """A read connection that waits out a concurrent writer and is closed
-        deterministically (an open handle blocks the ``save()`` swap on
-        Windows)."""
-        conn = sqlite3.connect(self.db_path)
+        """A read-only connection that waits out a concurrent writer and is
+        closed deterministically (an open handle blocks the ``save()`` swap on
+        Windows).
+
+        Opened ``mode=ro`` via a file: URI so a read can never create or write
+        the database — without it, a plain ``connect`` to a path that a
+        concurrent rebuild has momentarily removed would silently materialize an
+        empty database. All writers (``save``/``save_incremental``) use their own
+        connections, so this only constrains the read paths.
+        """
+        uri = f"file:{self.db_path.resolve().as_posix()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
         try:
             conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
             yield conn
@@ -499,6 +566,17 @@ class SqliteStore:
                 )
             ]
 
+    def load_summary(self, name: str) -> str | None:
+        """The precomputed JSON payload for whole-design summary *name*, or None.
+
+        ``None`` means the build predates summaries (or did not compute this
+        one), so the reader falls back to computing it from the full graph.
+        """
+        with self._connect() as conn:
+            self._check_version(conn)
+            row = conn.execute("SELECT payload FROM summaries WHERE name = ?", (name,)).fetchone()
+            return row[0] if row else None
+
     def load(self) -> tuple[nx.MultiDiGraph, list[FileMeta], dict[str, str]]:
         """Load (graph, file metadata, meta key/values) from the database."""
         with self._connect() as conn:
@@ -517,24 +595,10 @@ class SqliteStore:
                 for row in conn.execute("SELECT * FROM files")
             ]
             graph = nx.MultiDiGraph()
-            for row in conn.execute("SELECT * FROM nodes"):
-                node_id, kind, name, qualified_name, file, line_start, line_end, language, attrs = (
-                    row
-                )
-                graph.add_node(
-                    node_id,
-                    kind=NodeKind(kind),
-                    name=name,
-                    qualified_name=qualified_name,
-                    file=file,
-                    line_span=(line_start, line_end),
-                    language=Language(language),
-                    attrs=json.loads(attrs),
-                )
-            for src, dst, kind, confidence, attrs in conn.execute("SELECT * FROM edges"):
-                graph.add_edge(
-                    src, dst, kind=EdgeKind(kind), confidence=confidence, attrs=json.loads(attrs)
-                )
+            for row in conn.execute(f"SELECT {NODE_COLUMNS} FROM nodes"):
+                add_node_row(graph, row)
+            for row in conn.execute(f"SELECT {EDGE_COLUMNS} FROM edges"):
+                add_edge_row(graph, row)
             return graph, files, meta
 
 
@@ -547,6 +611,7 @@ def _apply_delta(
     options_hash: str,
     discrepancies: list[Discrepancy] | None,
     ref_records: list[RefRecord] | None = None,
+    summaries: dict[str, str] | None = None,
 ) -> dict[str, int]:
     """UPSERT/delete only the rows that differ from what is stored.
 
@@ -555,6 +620,7 @@ def _apply_delta(
     units = units or {}
     discrepancies = discrepancies or []
     ref_records = ref_records or []
+    summaries = summaries or {}
 
     # -- nodes (PK id): UPSERT changed rows, delete vanished ids ---------------
     stored_nodes = {row[0]: row for row in conn.execute("SELECT * FROM nodes")}
@@ -624,6 +690,10 @@ def _apply_delta(
         "INSERT INTO discrepancies VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         [_discrepancy_row(d) for d in discrepancies],
     )
+
+    # -- summaries (a handful of whole-design JSON blobs): refresh wholesale ---
+    conn.execute("DELETE FROM summaries")
+    conn.executemany("INSERT INTO summaries (name, payload) VALUES (?, ?)", list(summaries.items()))
 
     # -- meta: refresh built_at / options_hash / tool_version -----------------
     conn.executemany(
