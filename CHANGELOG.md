@@ -20,6 +20,13 @@ changes.
   configured: an agent can shell out instead. Uses the bounded, index-backed
   reader (not a full-graph load), so it stays fast on large designs, and needs
   only the base install — no `[mcp]` extra. See [docs/mcp.md](docs/mcp.md).
+- `hdl-kgraph setup` now also seeds each detected assistant's instruction file
+  (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, a Cursor/Windsurf rule, or
+  `.github/copilot-instructions.md`) with notes on querying the graph — telling
+  the assistant to prefer the graph over grepping raw RTL and documenting both
+  the MCP tools and the `hdl-kgraph tools` CLI fallback. The notes live in a
+  managed `<!-- hdl-kgraph:start -->`…`<!-- hdl-kgraph:end -->` block (rewritten
+  in place, surrounding content preserved); `--no-instructions` skips it.
 
 ## [1.0.0] - 2026-06-15
 

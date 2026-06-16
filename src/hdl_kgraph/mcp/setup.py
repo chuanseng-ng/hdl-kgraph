@@ -28,6 +28,12 @@ except ImportError:  # Python 3.10
 
 SERVER_KEY = "hdl-kgraph"
 
+#: Sentinels delimiting the block ``setup`` manages inside an assistant's
+#: instruction file. Everything between them is ours to overwrite on a re-run;
+#: everything outside is the user's and is preserved.
+INSTRUCTIONS_START = "<!-- hdl-kgraph:start -->"
+INSTRUCTIONS_END = "<!-- hdl-kgraph:end -->"
+
 
 @dataclass
 class Target:
@@ -40,6 +46,13 @@ class Target:
     servers_key: str = "mcpServers"  # VS Code uses "servers", Codex "mcp_servers"
     fmt: str = "json"  # "json" or "toml" (Codex config.toml)
     entry_extras: dict[str, object] = field(default_factory=dict)
+    #: The assistant's project instruction/memory file (CLAUDE.md, AGENTS.md,
+    #: …) that ``setup`` seeds with usage notes; ``None`` if it has no such
+    #: convention (e.g. Claude Desktop has no project memory).
+    instructions_path: Path | None = None
+    #: Text prepended only when *creating* the instruction file — used for the
+    #: YAML frontmatter a dedicated Cursor ``.mdc`` rule needs to auto-apply.
+    instructions_frontmatter: str | None = None
 
     def full_entry(self, entry: dict[str, object]) -> dict[str, object]:
         """*entry* plus this assistant's required extras (e.g. VS Code's type)."""
@@ -65,6 +78,95 @@ class Target:
 def plan_entry(db_path: Path) -> dict[str, object]:
     """The MCP server entry every assistant config gets."""
     return {"command": "hdl-kgraph", "args": ["serve", "--mcp", "--db", str(db_path)]}
+
+
+#: The usage notes ``setup`` writes into each assistant's instruction file. Tells
+#: the assistant the graph exists and to prefer it over grepping raw RTL, and
+#: documents both the MCP tools and the ``hdl-kgraph tools`` CLI fallback (for
+#: when MCP is not available). Confidence wording mirrors ``server._INSTRUCTIONS``.
+INSTRUCTIONS_BODY = """\
+## Querying the hdl-kgraph design graph
+
+This repository has a knowledge graph of its HDL design (SystemVerilog / Verilog
+/ VHDL) built by [hdl-kgraph](https://github.com/chuanseng-ng/hdl-kgraph). For
+structural questions about the design — module hierarchy, where a unit is
+instantiated, what drives a signal, clock domains, the impact of a change —
+**query the graph instead of grepping the raw RTL**: it resolves cross-file
+references and scores each edge by confidence (1.0 resolved, 0.8 unique
+cross-file match, 0.6 ambiguous, 0.4 naming heuristic). VHDL names match
+case-insensitively. The graph is read-only; rebuild it with `hdl-kgraph build`
+or `hdl-kgraph update`.
+
+**Via MCP** (configured for this assistant) — use the tools `find_module`,
+`get_hierarchy`, `who_instantiates`, `port_map`, `impact_of_change`,
+`find_signal_drivers`, `clock_domains`, `uvm_topology`, `search_nodes`. Start
+with `get_hierarchy` or `find_module` to orient.
+
+**Without MCP** (from a shell, or where MCP is not set up) — the same tools are
+CLI commands that print the same JSON, for example:
+
+```sh
+hdl-kgraph tools find-module fifo
+hdl-kgraph tools hierarchy                # tops; add a name for its tree
+hdl-kgraph tools impact adder
+hdl-kgraph tools find-signal-drivers stage --module df_top
+```
+"""
+
+
+def instructions_block() -> str:
+    """The managed instruction block, sentinels included (no trailing newline)."""
+    note = "<!-- Managed by `hdl-kgraph setup`; edits between these markers are overwritten. -->"
+    return f"{INSTRUCTIONS_START}\n{note}\n\n{INSTRUCTIONS_BODY.rstrip()}\n{INSTRUCTIONS_END}"
+
+
+def merged_instructions_text(text: str, block: str) -> str:
+    """*text* with our block replaced in place, or appended if not present.
+
+    Only the region between the sentinels is touched; any content the user keeps
+    around it is preserved verbatim. An empty file becomes just the block.
+    """
+    start = text.find(INSTRUCTIONS_START)
+    if start != -1:
+        end = text.find(INSTRUCTIONS_END, start)
+        if end != -1:
+            return text[:start] + block + text[end + len(INSTRUCTIONS_END) :]
+    if not text:
+        return block + "\n"
+    separator = "" if text.endswith("\n\n") else ("\n" if text.endswith("\n") else "\n\n")
+    return text + separator + block + "\n"
+
+
+def instructions_preview(target: Target) -> str:
+    """The exact file content ``write_instructions`` would produce for *target*."""
+    if target.instructions_path is None:
+        raise ValueError(f"{target.name} has no instruction file")
+    text = (
+        target.instructions_path.read_text(encoding="utf-8")
+        if target.instructions_path.is_file()
+        else ""
+    )
+    block = instructions_block()
+    if not text and target.instructions_frontmatter:
+        return target.instructions_frontmatter + block + "\n"
+    return merged_instructions_text(text, block)
+
+
+def write_instructions(target: Target) -> bool:
+    """Seed *target*'s instruction file with the usage notes. True if it changed.
+
+    Project-scope and self-contained (only our sentinel block is ever rewritten),
+    so unlike user-level configs it needs no ``.bak``.
+    """
+    path = target.instructions_path
+    if path is None:
+        raise ValueError(f"{target.name} has no instruction file")
+    new_text = instructions_preview(target)
+    if path.is_file() and new_text == path.read_text(encoding="utf-8"):
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(new_text, encoding="utf-8")
+    return True
 
 
 def _home() -> Path:
@@ -96,12 +198,15 @@ def detect_targets(project_dir: Path | None = None) -> list[Target]:
             config_path=project_dir / ".mcp.json",
             detected=bool(shutil.which("claude") or os.environ.get("CLAUDECODE")),
             backup=False,
+            instructions_path=project_dir / "CLAUDE.md",
         ),
         Target(
             name="claude-desktop",
             config_path=desktop_dir / "claude_desktop_config.json",
             detected=desktop_dir.is_dir(),
             backup=True,
+            # Claude Desktop is a chat app with no per-project memory file.
+            instructions_path=None,
         ),
         Target(
             name="cursor",
@@ -109,6 +214,11 @@ def detect_targets(project_dir: Path | None = None) -> list[Target]:
             config_path=project_dir / ".cursor" / "mcp.json",
             detected=(home / ".cursor").is_dir() or (project_dir / ".cursor").is_dir(),
             backup=False,
+            # A dedicated, always-applied Cursor rule (its own .mdc file).
+            instructions_path=project_dir / ".cursor" / "rules" / "hdl-kgraph.mdc",
+            instructions_frontmatter=(
+                "---\ndescription: Query the hdl-kgraph design graph\nalwaysApply: true\n---\n\n"
+            ),
         ),
         Target(
             name="codex",
@@ -117,18 +227,21 @@ def detect_targets(project_dir: Path | None = None) -> list[Target]:
             backup=True,
             servers_key="mcp_servers",
             fmt="toml",
+            instructions_path=project_dir / "AGENTS.md",
         ),
         Target(
             name="windsurf",
             config_path=home / ".codeium" / "windsurf" / "mcp_config.json",
             detected=(home / ".codeium" / "windsurf").is_dir(),
             backup=True,
+            instructions_path=project_dir / ".windsurf" / "rules" / "hdl-kgraph.md",
         ),
         Target(
             name="gemini-cli",
             config_path=home / ".gemini" / "settings.json",
             detected=bool(shutil.which("gemini")) or (home / ".gemini").is_dir(),
             backup=True,
+            instructions_path=project_dir / "GEMINI.md",
         ),
         Target(
             name="vscode",
@@ -138,6 +251,7 @@ def detect_targets(project_dir: Path | None = None) -> list[Target]:
             backup=False,
             servers_key="servers",
             entry_extras={"type": "stdio"},
+            instructions_path=project_dir / ".github" / "copilot-instructions.md",
         ),
     ]
 

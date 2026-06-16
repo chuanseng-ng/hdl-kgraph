@@ -42,7 +42,31 @@ other key in the file is preserved (Codex's TOML is edited textually, so
 comments survive too). Useful flags: `--list` (report detection only),
 `--dry-run` (print the resulting file content without writing), `--yes`
 (skip prompts), `--assistant NAME` (restrict targets), `--db PATH` (point
-at a specific database).
+at a specific database), `--no-instructions` (skip the instruction-file
+seeding described next).
+
+### Instruction files
+
+Besides the MCP config, `setup` also seeds each assistant's **instruction
+file** with notes telling it the graph exists, to prefer it over grepping raw
+RTL for structural questions, and how to call it — both the MCP tools and the
+`hdl-kgraph tools …` CLI fallback (see [Using the graph without MCP](#using-the-graph-without-mcp)):
+
+| Assistant | Instruction file |
+|---|---|
+| Claude Code | `CLAUDE.md` |
+| Codex | `AGENTS.md` |
+| Gemini CLI | `GEMINI.md` |
+| Cursor | `.cursor/rules/hdl-kgraph.mdc` (always-applied rule) |
+| Windsurf | `.windsurf/rules/hdl-kgraph.md` |
+| VS Code (Copilot) | `.github/copilot-instructions.md` |
+| Claude Desktop | — (no project-memory file) |
+
+The notes live inside a managed block delimited by `<!-- hdl-kgraph:start -->`
+and `<!-- hdl-kgraph:end -->`. Only that block is rewritten on a re-run —
+anything you keep around it is preserved, and the file is created if absent.
+Each instruction prompt is separate from the config prompt (so you can decline
+one and accept the other); pass `--no-instructions` to skip them entirely.
 
 ## Manual configuration
 
