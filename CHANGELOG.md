@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 As of `1.0`, the public CLI and graph schema are stable: breaking changes bump
 the major version, and schema changes ship with a migration.
 
+## [Unreleased]
+
 ## [Released - pypi]
 
 ## [1.0.1] - 2026-06-16
