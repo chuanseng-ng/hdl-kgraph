@@ -4,16 +4,59 @@ All notable changes to **hdl-kgraph** are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-While the project is in `0.x` (alpha), minor versions may include breaking
-changes.
+As of `1.0`, the public CLI and graph schema are stable: breaking changes bump
+the major version, and schema changes ship with a migration.
+
+## [Unreleased]
 
 ## [Released - pypi]
 
+## [1.0.1] - 2026-06-16
+
+### Changed
+
+- Documentation updated for the v1 release: the README status, `CONTRIBUTING`,
+  and the changelog versioning note now describe the project as stable rather
+  than alpha, and the roadmap no longer pins v1.0 to the deferred M8
+  C/C++/Python boundary work.
+- PyPI `Development Status` classifier moved from `3 - Alpha` to
+  `5 - Production/Stable`.
+
 ## [1.0.0] - 2026-06-15
 
-## Changed
+First stable release. v1.0 is a stability/API-freeze baseline on top of the
+0.16.1 surface — no new features land in this version; it marks milestones
+M1–M7 as delivered with a stable CLI and graph schema.
 
-- NIL
+### Delivered (M1–M7)
+
+- **Extraction.** SystemVerilog/Verilog and VHDL parsing (tree-sitter,
+  `ERROR`-tolerant) with mixed-language pass-2 linking; design hierarchy, port
+  connectivity, parameters, packages, class/UVM inheritance, and the
+  clock/reset/CDC dataflow graph, each cross-file edge carrying a confidence
+  score.
+- **Real-world build inputs.** `.f` filelists, the SV preprocessor
+  (defines, includes, `` `ifdef `` branch selection), VHDL library mapping, and
+  `hdl-kgraph.toml` config, with per-file diagnostics.
+- **Incremental rebuilds.** `update`/`watch` re-parse and re-link only the
+  changed files and their dependents; `detect-changes`/`impact` answer "what
+  changed and what does it affect?" in CI.
+- **Analyses & visualization.** Clock domains, reset trees, CDC suspects,
+  signal drivers/readers, UVM topology, graph lint, fan-in/out and hub/bridge
+  metrics, plus a self-contained interactive HTML visualization.
+- **MCP server.** `setup`/`serve` expose read-only, paginated tools so AI
+  assistants can query the design.
+- **Semantic enrichment.** Opt-in `build --enrich` overlays the pyslang and
+  GHDL frontends for elaborated precision, with a discrepancy report.
+
+### Stability
+
+- Scalability hardening for 10–100+ GB designs: bounded, index-backed reads,
+  precomputed whole-design summaries, and dirty-closure-scoped incremental
+  writes.
+- Stable public CLI with a unified exit-code / empty-result contract, and a
+  versioned SQLite schema with a migration ladder (no forced full re-parse on
+  a schema bump).
 
 ## [0.16.1] - 2026-06-15
 
@@ -284,7 +327,9 @@ Maintenance release — version bump only, no functional changes.
 Releases before `0.6.3` predate this changelog; their history lives in the git
 log.
 
-[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.16.1...HEAD
+[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.0.0...v1.0.1
+[1.0.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.16.1...v1.0.0
 [0.16.1]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.14.0...v0.15.0

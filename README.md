@@ -8,7 +8,7 @@ instances, ports, parameters, signals, classes, packages, and the
 relationships between them — design hierarchy, port connectivity, package
 imports, class inheritance, clock domains, and more.
 
-> **Status: alpha (v0.10).** Milestones M1–M7 are in: SystemVerilog/Verilog
+> **Status: v1.0 — stable.** Milestones M1–M7 are in: SystemVerilog/Verilog
 > and VHDL extraction with mixed-language linking, the SV preprocessor and
 > real-world build inputs (`.f` filelists, defines, `hdl-kgraph.toml`),
 > incremental rebuilds and watch mode, the clock/reset/CDC/lint/metrics
@@ -147,7 +147,7 @@ full list, the confidence convention, and the schema pointers live in
 | M5 (v0.5) | Clock/reset/CDC analyses, lint checks, visualization |
 | M6 (v0.6) | MCP server for AI assistants |
 | M7 (v0.7) | Semantic enrichment via native frontends (pyslang + GHDL elaboration) |
-| M8 (v1.0) | C/C++/Python boundary (DPI-C, cocotb), stable API |
+| M8 (v1.x) | C/C++/Python boundary (DPI-C, cocotb) |
 | M9 (v1.x) | Chisel/FIRRTL, Amaranth, SpinalHDL |
 | M10 (v1.x) | Tcl/SDC/UPF constraints, Perl scripting, SLN portable stimulus |
 
