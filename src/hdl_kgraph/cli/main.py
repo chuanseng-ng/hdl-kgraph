@@ -26,6 +26,7 @@ from hdl_kgraph.cli.analyze import (
 from hdl_kgraph.cli.build import build, update, watch
 from hdl_kgraph.cli.query import query
 from hdl_kgraph.cli.serve import serve, setup
+from hdl_kgraph.cli.tools import tools
 
 __all__ = ["main", "_ProgressRenderer"]
 
@@ -62,5 +63,6 @@ for _cmd in (
     serve,
     setup,
     query,
+    tools,
 ):
     main.add_command(_cmd)

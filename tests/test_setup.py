@@ -9,7 +9,15 @@ from click.testing import CliRunner
 
 from hdl_kgraph.cli.main import main
 from hdl_kgraph.mcp import setup as mcp_setup
-from hdl_kgraph.mcp.setup import Target, detect_targets, plan_entry, write_config
+from hdl_kgraph.mcp.setup import (
+    INSTRUCTIONS_END,
+    INSTRUCTIONS_START,
+    Target,
+    detect_targets,
+    plan_entry,
+    write_config,
+    write_instructions,
+)
 
 try:
     import tomllib
@@ -287,3 +295,82 @@ def test_cli_setup_missing_db(monkeypatch, fake_home: Path, tmp_path: Path) -> N
     result = CliRunner().invoke(main, ["setup", "--yes"])
     assert result.exit_code != 0
     assert "run `hdl-kgraph build` first" in result.output
+
+
+# -- instruction files -------------------------------------------------------
+
+
+def _md_target(path: Path, frontmatter: str | None = None) -> Target:
+    return Target(
+        name="t",
+        config_path=path.parent / "cfg.json",
+        detected=True,
+        backup=False,
+        instructions_path=path,
+        instructions_frontmatter=frontmatter,
+    )
+
+
+def test_write_instructions_creates_block(tmp_path: Path) -> None:
+    md = tmp_path / "CLAUDE.md"
+    assert write_instructions(_md_target(md)) is True
+    text = md.read_text()
+    assert text.startswith(INSTRUCTIONS_START)
+    assert text.rstrip().endswith(INSTRUCTIONS_END)
+    # Documents both surfaces the user asked for.
+    assert "get_hierarchy" in text  # MCP tool
+    assert "hdl-kgraph tools" in text  # CLI fallback
+
+
+def test_write_instructions_is_idempotent(tmp_path: Path) -> None:
+    md = tmp_path / "CLAUDE.md"
+    assert write_instructions(_md_target(md)) is True
+    assert write_instructions(_md_target(md)) is False  # no change second time
+
+
+def test_write_instructions_preserves_surrounding_content(tmp_path: Path) -> None:
+    md = tmp_path / "CLAUDE.md"
+    md.write_text("# My project\n\nKeep me.\n")
+    write_instructions(_md_target(md))
+    text = md.read_text()
+    assert "# My project" in text and "Keep me." in text
+    assert text.count(INSTRUCTIONS_START) == 1
+
+    # A re-run after the block's body is edited rewrites only our block, leaving
+    # the user's prose intact (and never duplicating the block).
+    md.write_text(text.replace("## Querying the hdl-kgraph design graph", "## TAMPERED"))
+    write_instructions(_md_target(md))
+    text = md.read_text()
+    assert "## TAMPERED" not in text
+    assert "# My project" in text and "Keep me." in text
+    assert text.count(INSTRUCTIONS_START) == 1
+
+
+def test_write_instructions_frontmatter_only_on_create(tmp_path: Path) -> None:
+    md = tmp_path / ".cursor" / "rules" / "hdl-kgraph.mdc"
+    frontmatter = "---\nalwaysApply: true\n---\n\n"
+    write_instructions(_md_target(md, frontmatter))
+    assert md.read_text().startswith(frontmatter)
+
+
+def test_cli_setup_writes_instructions(detected_project: Path) -> None:
+    result = CliRunner().invoke(main, ["setup", "--yes"])
+    assert result.exit_code == 0, result.output
+    claude_md = detected_project / "CLAUDE.md"
+    assert claude_md.is_file()
+    assert "hdl-kgraph tools" in claude_md.read_text()
+    assert "CLAUDE.md" in result.output
+
+
+def test_cli_setup_no_instructions_flag(detected_project: Path) -> None:
+    result = CliRunner().invoke(main, ["setup", "--yes", "--no-instructions"])
+    assert result.exit_code == 0, result.output
+    assert not (detected_project / "CLAUDE.md").exists()
+    assert (detected_project / ".mcp.json").is_file()  # config still written
+
+
+def test_cli_setup_dry_run_writes_no_instructions(detected_project: Path) -> None:
+    result = CliRunner().invoke(main, ["setup", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert "CLAUDE.md" in result.output  # previewed
+    assert not (detected_project / "CLAUDE.md").exists()  # but not written

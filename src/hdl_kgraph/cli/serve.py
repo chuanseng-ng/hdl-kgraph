@@ -114,12 +114,19 @@ def serve(mcp_mode: bool, db_path: Path | None, http_addr: str | None, token: st
 @click.option("--list", "list_only", is_flag=True, help="Only report what is detected.")
 @click.option("--dry-run", is_flag=True, help="Show what would be written without writing.")
 @click.option("--yes", "assume_yes", is_flag=True, help="Configure without confirmation prompts.")
+@click.option(
+    "--no-instructions",
+    is_flag=True,
+    help="Do not seed assistant instruction files (CLAUDE.md, AGENTS.md, …) "
+    "with hdl-kgraph usage notes; only write the MCP server config.",
+)
 def setup(
     db_path: Path | None,
     assistants: tuple[str, ...],
     list_only: bool,
     dry_run: bool,
     assume_yes: bool,
+    no_instructions: bool,
 ) -> None:
     """Detect installed AI assistants and configure them to use this graph.
 
@@ -127,10 +134,20 @@ def setup(
     assistant's config — project-scope files for Claude Code (``.mcp.json``),
     Cursor (``.cursor/mcp.json``), and VS Code (``.vscode/mcp.json``);
     user-level files for Claude Desktop, Codex (``~/.codex/config.toml``),
-    Windsurf, and Gemini CLI. Re-running is safe: the entry is updated in
-    place and everything else in the file is preserved.
+    Windsurf, and Gemini CLI. Unless ``--no-instructions`` is given, it also
+    seeds each assistant's instruction file (``CLAUDE.md``, ``AGENTS.md``,
+    ``GEMINI.md``, a Cursor/Windsurf rule, or ``.github/copilot-instructions.md``)
+    with notes on querying the graph. Re-running is safe: the MCP entry and the
+    managed instruction block are both updated in place and everything else in
+    each file is preserved.
     """
-    from hdl_kgraph.mcp.setup import detect_targets, plan_entry, write_config
+    from hdl_kgraph.mcp.setup import (
+        detect_targets,
+        instructions_preview,
+        plan_entry,
+        write_config,
+        write_instructions,
+    )
 
     targets = detect_targets()
     if assistants:
@@ -171,17 +188,28 @@ def setup(
         )
 
     for target in detected:
+        # MCP server config (the machine-readable .mcp.json/config.toml entry).
         if dry_run:
             click.echo(f"would write {target.config_path}:")
             try:
                 click.echo(target.preview(entry), nl=False)
             except ValueError as exc:
                 raise CliError(str(exc)) from exc
+        elif assume_yes or click.confirm(f"configure {target.name}?", default=True):
+            try:
+                changed = write_config(target, entry)
+            except ValueError as exc:
+                raise CliError(str(exc)) from exc
+            click.echo(f"{target.config_path}: {'updated' if changed else 'already up to date'}")
+
+        # Usage notes in the assistant's instruction file (decoupled from the
+        # config above — useful even where the MCP server itself isn't wired up).
+        if no_instructions or target.instructions_path is None:
             continue
-        if not assume_yes and not click.confirm(f"configure {target.name}?", default=True):
-            continue
-        try:
-            changed = write_config(target, entry)
-        except ValueError as exc:
-            raise CliError(str(exc)) from exc
-        click.echo(f"{target.config_path}: {'updated' if changed else 'already up to date'}")
+        ipath = target.instructions_path
+        if dry_run:
+            click.echo(f"would write {ipath}:")
+            click.echo(instructions_preview(target), nl=False)
+        elif assume_yes or click.confirm(f"add hdl-kgraph usage notes to {ipath}?", default=True):
+            changed = write_instructions(target)
+            click.echo(f"{ipath}: {'updated' if changed else 'already up to date'}")

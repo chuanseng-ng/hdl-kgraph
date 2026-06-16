@@ -42,7 +42,31 @@ other key in the file is preserved (Codex's TOML is edited textually, so
 comments survive too). Useful flags: `--list` (report detection only),
 `--dry-run` (print the resulting file content without writing), `--yes`
 (skip prompts), `--assistant NAME` (restrict targets), `--db PATH` (point
-at a specific database).
+at a specific database), `--no-instructions` (skip the instruction-file
+seeding described next).
+
+### Instruction files
+
+Besides the MCP config, `setup` also seeds each assistant's **instruction
+file** with notes telling it the graph exists, to prefer it over grepping raw
+RTL for structural questions, and how to call it — both the MCP tools and the
+`hdl-kgraph tools …` CLI fallback (see [Using the graph without MCP](#using-the-graph-without-mcp)):
+
+| Assistant | Instruction file |
+|---|---|
+| Claude Code | `CLAUDE.md` |
+| Codex | `AGENTS.md` |
+| Gemini CLI | `GEMINI.md` |
+| Cursor | `.cursor/rules/hdl-kgraph.mdc` (always-applied rule) |
+| Windsurf | `.windsurf/rules/hdl-kgraph.md` |
+| VS Code (Copilot) | `.github/copilot-instructions.md` |
+| Claude Desktop | — (no project-memory file) |
+
+The notes live inside a managed block delimited by `<!-- hdl-kgraph:start -->`
+and `<!-- hdl-kgraph:end -->`. Only that block is rewritten on a re-run —
+anything you keep around it is preserved, and the file is created if absent.
+Each instruction prompt is separate from the config prompt (so you can decline
+one and accept the other); pass `--no-instructions` to skip them entirely.
 
 ## Manual configuration
 
@@ -118,6 +142,38 @@ case-insensitively everywhere.
 | `find_signal_drivers` | `signal`, `module`, `readers`, `limit`, `offset` | "what drives signal X in module Y?" (`readers=true` for the readers) |
 | `uvm_topology` | — | UVM components by role and testbench→DUT `TEST_COVERS` links |
 | `search_nodes` | `name` glob, `kinds` (e.g. `module`, `signal`, `class`), `file` glob, `limit`, `offset` | anything else — the general node search |
+
+## Using the graph without MCP
+
+If the MCP server cannot be configured in your environment (or you'd rather an
+agent shell out than speak MCP), the same nine tools are available as plain
+commands under `hdl-kgraph tools`, printing the **identical** JSON envelope to
+stdout. These use the same bounded, index-backed reader the MCP server does —
+not a full-graph load — so they stay fast on large designs, and they need only
+the base install (no `[mcp]` extra):
+
+```sh
+hdl-kgraph tools find-module 'fifo*' --limit 5
+hdl-kgraph tools hierarchy                       # top-level units
+hdl-kgraph tools hierarchy df_top --depth 2
+hdl-kgraph tools find-signal-drivers stage --module df_top
+hdl-kgraph tools impact adder | jq '.summary'
+hdl-kgraph tools search-nodes '*' --kind signal --file 'rtl/*'
+```
+
+Subcommand names and options mirror the tools above
+(`find-module`, `hierarchy`, `who-instantiates`, `port-map`, `impact`,
+`clock-domains`, `find-signal-drivers`, `uvm-topology`, `search-nodes`); pass
+`--db` to point at a specific `graph.db`. Pipe through `jq` to slice the result.
+
+Two other MCP-free fallbacks exist:
+
+- **HTTP transport** — `hdl-kgraph serve --mcp --http 127.0.0.1:8000` exposes the
+  same tools over streamable HTTP (see [HTTP authentication](#http-authentication)).
+  Still the MCP protocol, so the client must speak MCP-over-HTTP.
+- **Static export** — `hdl-kgraph export --format json` dumps the whole graph to a
+  node-link JSON file an agent can read directly (loads everything; best for
+  whole-design-in-context rather than per-query lookups).
 
 ## Cold-checkout walkthrough
 
