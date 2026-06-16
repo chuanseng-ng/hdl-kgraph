@@ -119,6 +119,8 @@ hub/bridge metrics, and a self-contained interactive HTML visualization
 writes their MCP config; `hdl-kgraph serve` exposes nine read-only,
 paginated tools (`pip install 'hdl-kgraph[mcp]'`). Each tool answers from the
 bounded subgraph it needs (v0.9), so queries stay fast on very large designs.
+Can't run MCP? The same nine tools are available as plain JSON-printing
+commands under `hdl-kgraph tools …` (no `[mcp]` extra needed).
 → [docs/mcp.md](docs/mcp.md)
 
 ## What gets extracted

@@ -119,6 +119,38 @@ case-insensitively everywhere.
 | `uvm_topology` | — | UVM components by role and testbench→DUT `TEST_COVERS` links |
 | `search_nodes` | `name` glob, `kinds` (e.g. `module`, `signal`, `class`), `file` glob, `limit`, `offset` | anything else — the general node search |
 
+## Using the graph without MCP
+
+If the MCP server cannot be configured in your environment (or you'd rather an
+agent shell out than speak MCP), the same nine tools are available as plain
+commands under `hdl-kgraph tools`, printing the **identical** JSON envelope to
+stdout. These use the same bounded, index-backed reader the MCP server does —
+not a full-graph load — so they stay fast on large designs, and they need only
+the base install (no `[mcp]` extra):
+
+```sh
+hdl-kgraph tools find-module 'fifo*' --limit 5
+hdl-kgraph tools hierarchy                       # top-level units
+hdl-kgraph tools hierarchy df_top --depth 2
+hdl-kgraph tools find-signal-drivers stage --module df_top
+hdl-kgraph tools impact adder | jq '.summary'
+hdl-kgraph tools search-nodes '*' --kind signal --file 'rtl/*'
+```
+
+Subcommand names and options mirror the tools above
+(`find-module`, `hierarchy`, `who-instantiates`, `port-map`, `impact`,
+`clock-domains`, `find-signal-drivers`, `uvm-topology`, `search-nodes`); pass
+`--db` to point at a specific `graph.db`. Pipe through `jq` to slice the result.
+
+Two other MCP-free fallbacks exist:
+
+- **HTTP transport** — `hdl-kgraph serve --mcp --http 127.0.0.1:8000` exposes the
+  same tools over streamable HTTP (see [HTTP authentication](#http-authentication)).
+  Still the MCP protocol, so the client must speak MCP-over-HTTP.
+- **Static export** — `hdl-kgraph export --format json` dumps the whole graph to a
+  node-link JSON file an agent can read directly (loads everything; best for
+  whole-design-in-context rather than per-query lookups).
+
 ## Cold-checkout walkthrough
 
 The M6 acceptance flow, from nothing to answers:

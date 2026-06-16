@@ -9,6 +9,18 @@ changes.
 
 ## [Released - pypi]
 
+## [Unreleased]
+
+### Added
+
+- `hdl-kgraph tools` command group: the nine MCP tools (`find-module`,
+  `hierarchy`, `who-instantiates`, `port-map`, `impact`, `clock-domains`,
+  `find-signal-drivers`, `uvm-topology`, `search-nodes`) as plain commands that
+  print the same JSON envelope to stdout. For environments where MCP cannot be
+  configured: an agent can shell out instead. Uses the bounded, index-backed
+  reader (not a full-graph load), so it stays fast on large designs, and needs
+  only the base install — no `[mcp]` extra. See [docs/mcp.md](docs/mcp.md).
+
 ## [1.0.0] - 2026-06-15
 
 ## Changed
