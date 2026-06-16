@@ -9,7 +9,7 @@ changes.
 
 ## [Released - pypi]
 
-## [Unreleased]
+## [1.1.0] - 2026-06-16
 
 ### Added
 
