@@ -389,13 +389,13 @@ Bus-factor is held down by the existing levers: the schema contract in
 `schema.py`, parser isolation behind `parser/base.py`, and the "smallest file that
 breaks extraction" fixture funnel.
 
-**The v1.0 "stable public API + schema freeze" is deliberately deferred** (see
-the M8 note below) until the schema and CLI surface have stabilized across a few
-real external designs — gated on the SQLite migration ladder (issue #74) and the
-unified CLI/exit-code contract (issue #73). v1.0 ships when those prerequisites
-land and the surface has proven stable, not on a fixed feature count.
+**v1.0 has shipped as a stable-API + schema baseline** once its prerequisites
+landed — the SQLite migration ladder (issue #74) and the unified CLI/exit-code
+contract (issue #73) — rather than on a fixed feature count. The C/C++/Python
+boundary work that M8 originally bundled with v1.0 is now a post-v1 (v1.x)
+target on the exploratory track above.
 
-## M8 — v1.0: C/C++/Python boundary + API stability (stretch)
+## M8 — v1.x: C/C++/Python boundary (stretch)
 
 **Goal:** the full system picture — DPI, cosim, testbench scripting.
 
@@ -404,17 +404,16 @@ land and the surface has proven stable, not on a fixed feature count.
 - [ ] Python testbench scanning: cocotb `dut.signal` attribute access →
       `READS`/`DRIVES` (confidence 0.6); pytest/cocotb test discovery →
       `TEST_COVERS`
-- [ ] Stable public Python API (`hdl_kgraph.api`), semver commitment, schema
-      freeze with documented migration policy — **deferred until the prerequisites
-      land and the surface proves stable on real designs.** The schema reached v8
-      in the project's first weeks, so a freeze is premature without (a) the
+- [x] Stable public CLI + graph schema, semver commitment, documented
+      migration policy — **shipped in v1.0** once its prerequisites landed: the
       SQLite schema migration ladder (#74) so a version bump no longer forces a
-      full re-parse, and (b) the unified CLI exit-code / empty-result contract
-      (#73) so the scripting surface is stable. The pre-1.0 CLI rename TODOs
-      (issue #22) also resolve before any freeze.
-- [ ] PyPI 1.0 release; documentation site — **the package name is already
-      claimed and published (https://pypi.org/project/hdl-kgraph/); only the 1.0
-      tag/release remains.**
+      full re-parse, and the unified CLI exit-code / empty-result contract (#73)
+      so the scripting surface is stable. A stable public Python API
+      (`hdl_kgraph.api`) remains a v1.x follow-up.
+- [ ] PyPI 1.0 release — the package is published at
+      https://pypi.org/project/hdl-kgraph/ and the code is at 1.0; pushing the
+      `v1.0.x` tag fires the publish workflow (see docs/releasing.md). A
+      documentation site is a v1.x follow-up.
 
 **Acceptance:** a cocotb-driven SV design with DPI-C calls shows one connected
 graph spanning all three languages.
