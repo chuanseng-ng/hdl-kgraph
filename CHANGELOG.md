@@ -9,6 +9,14 @@ the major version, and schema changes ship with a migration.
 
 ## [Unreleased]
 
+### Added
+
+- `build`/`update`/`watch` gain `--allow-outside-root`: an opt-in flag that
+  honors filelist source/`-v`/`-y`/`-f` and `+incdir+` tokens resolving outside
+  the build root instead of dropping them. The default keeps the #68
+  containment (out-of-tree tokens dropped with a warning); use the flag only
+  with filelists you trust.
+
 ## [Released - pypi]
 
 ## [1.1.0] - 2026-06-16
