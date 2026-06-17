@@ -91,3 +91,40 @@ graph — `search_nodes("*")`, `get_hierarchy` of a top that directly contains
 the whole design, `find_signal_drivers` of a net present in every module —
 necessarily touches the whole graph and is not faster than a load. These are
 reported separately by the script; the target covers the localized tools.
+
+## Per-phase timing: gauging the parallel-build / merge payoff
+
+`hdl-kgraph build --timings` prints a per-phase wall-clock breakdown:
+
+```bash
+hdl-kgraph build path/to/design --timings
+```
+
+```text
+  timings:
+      discover            0.41s  (  3.0%)
+      parse (pass 0+1)    9.80s  ( 71.0%)
+      link (pass 2)       2.90s  ( 21.0%)
+      persist             0.70s  (  5.0%)
+      parallelizable      10.21s ( 74.0%)  [discover+parse: split across partitions]
+      serial link          2.90s ( 21.0%)  [paid once at merge]
+```
+
+The split answers whether a *distributed build + database merge* would pay off.
+A merge runs discovery and pass 0+1 (preprocess + parse) independently on each
+partition — that is the `parallelizable` line — and pays pass 2 (link) **once**
+over the combined IRs at merge time (the `serial link` line). When parse
+dominates (as above), splitting across machines / IP blocks and merging cuts
+wall-clock roughly in proportion to the parallelizable share divided by the
+worker count; when the link dominates, merging saves little, because the link is
+not parallelized by splitting the build.
+
+Note pass 0 (preprocess) and pass 1 (parse) are fused in `parse`: the pipeline
+streams parse tasks to the worker pool as it preprocesses each unit, so they
+cannot be timed apart without serializing them. Pass 1 is *already*
+`--jobs`-parallel on one machine, so the unique wins a multi-invocation merge
+adds are (a) parallelizing the otherwise-serial pass 0 across partitions and
+(b) scaling pass 0+1 beyond one box's cores.
+
+Measure on a representative design (or generate one with
+`python scripts/gen_corpus.py`) before committing to the merge feature.

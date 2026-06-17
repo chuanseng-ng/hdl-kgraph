@@ -175,6 +175,17 @@ class BuildReport:
     # (a silent re-resolve-everything regression shows up here). 0/0 on a full link.
     refs_reresolved: int = 0
     refs_total: int = 0
+    # Per-phase wall-clock (seconds), for capacity planning — chiefly the
+    # parallel-build/merge feasibility question (does the parallelizable
+    # discover+parse work dominate the serial pass-2 link?). ``parse_s`` fuses
+    # pass 0 (preprocess) and pass 1 (parse): the pipeline streams parse tasks
+    # to the worker pool as it preprocesses each unit, so the two cannot be
+    # timed apart without serializing them. Surfaced by ``build --timings``.
+    discover_s: float = 0.0
+    parse_s: float = 0.0  # pass 0 (preprocess) + pass 1 (parse), interleaved
+    link_s: float = 0.0  # pass 2 (link)
+    enrich_s: float = 0.0  # pass 3 (M7 enrichment); 0.0 unless --enrich
+    persist_s: float = 0.0  # serialize + write the database
 
 
 @dataclass
@@ -445,7 +456,9 @@ def _execute(
     # -- file set --------------------------------------------------------------
     if discovered is None:
         progress(f"discovering source files under {root}")
+        _t0 = time.perf_counter()
         discovered = _discover(root, base, options, inputs, max_kb)
+        report.discover_s = time.perf_counter() - _t0
 
     # Auto-discovered `include search dirs: every source directory in the tree,
     # so a header/define file resolves without an explicit ``-I``. Explicit
@@ -561,6 +574,7 @@ def _execute(
     # so `irs` order must match a serial build) which also bounds how many
     # expanded texts stay in memory at once.
     pending: deque[_PendingUnit] = deque()
+    _t_parse = time.perf_counter()
     with contextlib.ExitStack() as stack:
         executor = stack.enter_context(ProcessPoolExecutor(max_workers=jobs)) if jobs > 1 else None
         for index, found in enumerate(discovered, start=1):
@@ -654,6 +668,7 @@ def _execute(
             progress(f"pass 1: waiting for {len(pending)} parse result(s)")
             while pending:
                 finalize(pending.popleft())
+    report.parse_s = time.perf_counter() - _t_parse
     report.macros_defined = len(macro_keys)
 
     # Nothing parseable: the CLI treats this as an error, so leave any
@@ -672,9 +687,11 @@ def _execute(
         irs.append(_library_ir(vhdl_file_libs, options.vhdl_libraries))
 
     progress(f"pass 2: linking {len(irs)} unit(s) into the graph")
+    _t_link = time.perf_counter()
     graph, ref_records = _link_pass2(
         irs, db_path, options, discovered, incremental, dirty_files, report
     )
+    report.link_s = time.perf_counter() - _t_link
     report.node_count = graph.number_of_nodes()
     report.edge_count = graph.number_of_edges()
     report.unresolved_count = sum(
@@ -695,13 +712,16 @@ def _execute(
             and f.relpath not in consumed
             and f.language in (Language.VERILOG, Language.SYSTEMVERILOG, Language.VHDL)
         ]
+        _t_enrich = time.perf_counter()
         discrepancies = _enrich(
             graph, base, options, inputs, enrich_files, vhdl_file_libs, report, progress
         )
+        report.enrich_s = time.perf_counter() - _t_enrich
         report.node_count = graph.number_of_nodes()
         report.edge_count = graph.number_of_edges()
 
     progress(f"writing {db_path}")
+    _t_persist = time.perf_counter()
     store = SqliteStore(db_path)
     # Whole-design summaries (clock domains, UVM topology) cannot be answered
     # from a bounded subgraph, so compute them once here — the graph is already
@@ -736,6 +756,7 @@ def _execute(
             ref_records=ref_records,
             summaries=summaries,
         )
+    report.persist_s = time.perf_counter() - _t_persist
     return report
 
 

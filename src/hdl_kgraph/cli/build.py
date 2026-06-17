@@ -97,12 +97,56 @@ def _echo_build_report(report: BuildReport, verbose: bool = False) -> None:
         click.echo("  (per-file details: re-run with -v, or `hdl-kgraph status --errors`)")
 
 
+def _echo_timings(report: BuildReport) -> None:
+    """Per-phase wall-clock breakdown (``build --timings``).
+
+    Capacity-planning aid for the parallel-build/merge question: phases above
+    the rule are *per-partition parallelizable* (a distributed build runs them
+    independently on each partition), while the link is *serial* and a merge
+    pays it once over the whole union. When parse dominates, splitting the build
+    and merging pays off; when the link dominates, it does not.
+    """
+    phases = [
+        ("discover", report.discover_s, True),
+        ("parse (pass 0+1)", report.parse_s, True),
+        ("link (pass 2)", report.link_s, False),
+        ("enrich (pass 3)", report.enrich_s, False),
+        ("persist", report.persist_s, False),
+    ]
+    measured = sum(s for _, s, _ in phases)
+    if measured <= 0:
+        return
+    click.echo("  timings:")
+    parallelizable = 0.0
+    for name, secs, is_parallel in phases:
+        if secs <= 0 and name == "enrich (pass 3)":
+            continue  # only ran with --enrich
+        pct = 100 * secs / measured
+        click.echo(f"      {name:<18} {secs:7.3f}s  ({pct:5.1f}%)")
+        if is_parallel:
+            parallelizable += secs
+    share = 100 * parallelizable / measured
+    click.echo(
+        f"      {'parallelizable':<18} {parallelizable:7.3f}s  ({share:5.1f}%)  "
+        "[discover+parse: split across partitions]"
+    )
+    click.echo(
+        f"      {'serial link':<18} {report.link_s:7.3f}s  "
+        f"({100 * report.link_s / measured:5.1f}%)  [paid once at merge]"
+    )
+
+
 @click.command()
 @_input_options
 @_verbose_option
 @_jobs_option
 @_allow_outside_root_option
 @_enrich_option
+@click.option(
+    "--timings",
+    is_flag=True,
+    help="Print a per-phase wall-clock breakdown (parse vs link vs persist).",
+)
 def build(
     source: Path,
     db_path: Path | None,
@@ -119,6 +163,7 @@ def build(
     allow_outside_root: bool,
     enrich: bool,
     no_auto_incdir: bool,
+    timings: bool,
 ) -> None:
     """Build the knowledge graph from HDL sources under SOURCE."""
     options = _resolve_options(
@@ -145,6 +190,8 @@ def build(
     )
     renderer.finish()
     _echo_build_report(report, verbose=verbose)
+    if timings:
+        _echo_timings(report)
 
 
 def _echo_update_report(report: UpdateReport, verbose: bool = False) -> None:
