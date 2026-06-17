@@ -58,6 +58,24 @@ def test_build_reports_summary(project: Path, fixtures_dir: Path) -> None:
     assert "unresolved:" in result.output  # ghost_mod etc.
 
 
+def test_build_timings_breakdown(project: Path) -> None:
+    """``build --timings`` prints the per-phase split used to gate the merge
+    feature (parallelizable discover+parse vs. the serial link)."""
+    result = CliRunner().invoke(main, ["build", str(project), "--timings"])
+    assert result.exit_code == 0
+    assert "timings:" in result.output
+    for phase in ("discover", "parse (pass 0+1)", "link (pass 2)", "persist"):
+        assert phase in result.output
+    assert "parallelizable" in result.output
+    assert "serial link" in result.output
+
+
+def test_build_no_timings_by_default(project: Path) -> None:
+    result = CliRunner().invoke(main, ["build", str(project)])
+    assert result.exit_code == 0
+    assert "timings:" not in result.output
+
+
 def test_build_empty_dir_fails(tmp_path: Path) -> None:
     result = CliRunner().invoke(main, ["build", str(tmp_path)])
     assert result.exit_code != 0
