@@ -12,6 +12,7 @@ from hdl_kgraph.cli._common import (
     _run_pipeline,
 )
 from hdl_kgraph.cli._options import (
+    _allow_outside_root_option,
     _enrich_option,
     _input_options,
     _jobs_option,
@@ -100,6 +101,7 @@ def _echo_build_report(report: BuildReport, verbose: bool = False) -> None:
 @_input_options
 @_verbose_option
 @_jobs_option
+@_allow_outside_root_option
 @_enrich_option
 def build(
     source: Path,
@@ -114,6 +116,7 @@ def build(
     max_file_size: int | None,
     verbose: bool,
     jobs: int | None,
+    allow_outside_root: bool,
     enrich: bool,
     no_auto_incdir: bool,
 ) -> None:
@@ -131,6 +134,7 @@ def build(
         no_auto_incdir,
     )
     options.jobs = jobs
+    options.allow_outside_root = allow_outside_root
     options.enrich = options.enrich or enrich
     renderer = _ProgressRenderer()
     report = _run_pipeline(
@@ -166,6 +170,7 @@ def _echo_update_report(report: UpdateReport, verbose: bool = False) -> None:
 @_input_options
 @_verbose_option
 @_jobs_option
+@_allow_outside_root_option
 @_enrich_option
 @click.option("--full", is_flag=True, help="Force a full rebuild.")
 def update(
@@ -181,6 +186,7 @@ def update(
     max_file_size: int | None,
     verbose: bool,
     jobs: int | None,
+    allow_outside_root: bool,
     enrich: bool,
     full: bool,
     no_auto_incdir: bool,
@@ -205,6 +211,7 @@ def update(
         no_auto_incdir,
     )
     options.jobs = jobs
+    options.allow_outside_root = allow_outside_root
     options.enrich = options.enrich or enrich
     renderer = _ProgressRenderer()
     report = _run_pipeline(
@@ -226,6 +233,7 @@ def update(
 @_input_options
 @_verbose_option
 @_jobs_option
+@_allow_outside_root_option
 @click.option(
     "--debounce",
     type=int,
@@ -247,6 +255,7 @@ def watch(
     max_file_size: int | None,
     verbose: bool,
     jobs: int | None,
+    allow_outside_root: bool,
     debounce: int,
     no_auto_incdir: bool,
 ) -> None:
@@ -266,6 +275,7 @@ def watch(
         no_auto_incdir,
     )
     options.jobs = jobs
+    options.allow_outside_root = allow_outside_root
 
     renderer = _ProgressRenderer()
 

@@ -218,7 +218,8 @@ class _Inputs:
 
 def _resolve_inputs(options: BuildOptions, base: Path) -> _Inputs:
     inputs = _Inputs(incdirs=list(options.incdirs))
-    inputs.filelists = [parse_filelist(path, root=base) for path in options.filelists]
+    confine = None if options.allow_outside_root else base
+    inputs.filelists = [parse_filelist(path, root=confine) for path in options.filelists]
     for fl in inputs.filelists:
         inputs.defines.update(flattened_defines(fl))
         inputs.incdirs.extend(flattened_incdirs(fl))
@@ -262,6 +263,9 @@ def options_hash(base: Path, options: BuildOptions, inputs: _Inputs) -> str:
         # The derived dir list is a function of the (already-hashed) file set,
         # so only the flag itself needs fingerprinting.
         "auto_incdirs": options.auto_incdirs,
+        # Lifting root containment changes which filelist sources/includes
+        # resolve, so an incremental reuse across a flag flip is invalid.
+        "allow_outside_root": options.allow_outside_root,
         "sources": sorted(options.sources),
         "exclude": sorted(options.exclude),
         "max_file_size_kb": options.max_file_size_kb,
