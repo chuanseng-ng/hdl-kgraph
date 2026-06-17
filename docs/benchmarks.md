@@ -100,7 +100,7 @@ reported separately by the script; the target covers the localized tools.
 hdl-kgraph build path/to/design --timings
 ```
 
-```
+```text
   timings:
       discover            0.41s  (  3.0%)
       parse (pass 0+1)    9.80s  ( 71.0%)
