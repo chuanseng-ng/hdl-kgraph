@@ -9,6 +9,8 @@ the major version, and schema changes ship with a migration.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-06-17
+
 ### Added
 
 - `build`/`update`/`watch` gain `--allow-outside-root`: an opt-in flag that
@@ -16,6 +18,12 @@ the major version, and schema changes ship with a migration.
   the build root instead of dropping them. The default keeps the #68
   containment (out-of-tree tokens dropped with a warning); use the flag only
   with filelists you trust.
+- `build --timings`: prints a per-phase wall-clock breakdown (discover, parse
+  [pass 0+1], link [pass 2], enrich, persist) plus a parallelizable-vs-serial
+  summary. A capacity-planning aid for deciding whether a distributed build +
+  database merge would pay off — the discover+parse work is per-partition
+  parallelizable, while the pass-2 link is paid once over the combined graph.
+  See [docs/benchmarks.md](docs/benchmarks.md).
 
 ## [Released - pypi]
 
@@ -354,7 +362,9 @@ Maintenance release — version bump only, no functional changes.
 Releases before `0.6.3` predate this changelog; their history lives in the git
 log.
 
-[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.16.1...v1.0.0
 [0.16.1]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v0.16.0...v0.16.1
