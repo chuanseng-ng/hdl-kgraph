@@ -9,6 +9,8 @@ the major version, and schema changes ship with a migration.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-06-18
+
 ### Added
 
 - `build --enrich --timings` now breaks the `enrich (pass 3)` line into its
@@ -374,7 +376,8 @@ Maintenance release — version bump only, no functional changes.
 Releases before `0.6.3` predate this changelog; their history lives in the git
 log.
 
-[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.0.0...v1.0.1
