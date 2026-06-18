@@ -150,12 +150,8 @@ def _echo_enrich_phases(report: BuildReport) -> None:
     if not timings or report.enrich_s <= 0:
         return
     total = report.enrich_s
-    top = sorted(
-        ((n, s) for n, s in timings.items() if "/" not in n), key=lambda x: -x[1]
-    )
-    detail = sorted(
-        ((n, s) for n, s in timings.items() if "/" in n), key=lambda x: -x[1]
-    )
+    top = sorted(((n, s) for n, s in timings.items() if "/" not in n), key=lambda x: -x[1])
+    detail = sorted(((n, s) for n, s in timings.items() if "/" in n), key=lambda x: -x[1])
     click.echo("  enrich phases (% of pass 3):")
     for name, secs in top:
         click.echo(f"      {name:<22} {secs:8.3f}s  ({100 * secs / total:5.1f}%)")
