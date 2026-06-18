@@ -185,6 +185,10 @@ class BuildReport:
     parse_s: float = 0.0  # pass 0 (preprocess) + pass 1 (parse), interleaved
     link_s: float = 0.0  # pass 2 (link)
     enrich_s: float = 0.0  # pass 3 (M7 enrichment); 0.0 unless --enrich
+    # Phase breakdown *within* enrich_s (see enrich._profile); empty unless
+    # --enrich ran. Top-level keys (``slang:enrich``, ``slang:apply``) tile the
+    # pass; ``parent/child`` keys (``slang/elaborate_root`` …) detail one.
+    enrich_phase_s: dict[str, float] = field(default_factory=dict)
     persist_s: float = 0.0  # serialize + write the database
 
 
@@ -804,6 +808,7 @@ def _enrich(
     report.enrich_generates_unrolled = summary.generates_unrolled
     report.discrepancy_count = len(enrich_report.discrepancies)
     report.enrich_diagnostics = enrich_report.diagnostics
+    report.enrich_phase_s = enrich_report.phase_timings
     return enrich_report.discrepancies
 
 
