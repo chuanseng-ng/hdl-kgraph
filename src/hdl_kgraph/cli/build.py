@@ -134,6 +134,29 @@ def _echo_timings(report: BuildReport) -> None:
         f"      {'serial link':<18} {report.link_s:7.3f}s  "
         f"({100 * report.link_s / measured:5.1f}%)  [paid once at merge]"
     )
+    _echo_enrich_phases(report)
+
+
+def _echo_enrich_phases(report: BuildReport) -> None:
+    """Break the ``enrich (pass 3)`` line into its internal phases.
+
+    Surfaces the pass-3 profiler (:mod:`hdl_kgraph.enrich._profile`) so it is
+    clear which part of elaboration dominates — slang parse vs ``getRoot``
+    elaboration vs the Python-side tree walk vs the graph delta-apply. Top-level
+    spans (no ``/``) tile the pass; ``parent/child`` spans detail one of them.
+    Percentages are of the enrichment pass, not the whole build.
+    """
+    timings = report.enrich_phase_s
+    if not timings or report.enrich_s <= 0:
+        return
+    total = report.enrich_s
+    top = sorted(((n, s) for n, s in timings.items() if "/" not in n), key=lambda x: -x[1])
+    detail = sorted(((n, s) for n, s in timings.items() if "/" in n), key=lambda x: -x[1])
+    click.echo("  enrich phases (% of pass 3):")
+    for name, secs in top:
+        click.echo(f"      {name:<22} {secs:8.3f}s  ({100 * secs / total:5.1f}%)")
+    for name, secs in detail:
+        click.echo(f"        {name:<20} {secs:8.3f}s  ({100 * secs / total:5.1f}%)")
 
 
 @click.command()

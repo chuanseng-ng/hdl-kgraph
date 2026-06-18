@@ -9,6 +9,18 @@ the major version, and schema changes ship with a migration.
 
 ## [Unreleased]
 
+### Added
+
+- `build --enrich --timings` now breaks the `enrich (pass 3)` line into its
+  internal phases (slang parse / `getRoot` elaboration / elaborated-tree walk /
+  summarize / graph delta-apply), so it is clear which part of elaboration
+  dominates. Collected by a near-free `perf_counter` profiler on the real code
+  path (`hdl_kgraph.enrich._profile`). See [docs/benchmarks.md](docs/benchmarks.md).
+- [docs/merge-design.md](docs/merge-design.md): design proposal for a
+  `hdl-kgraph merge` command (IP-block assembly + subtree caching), scoped from
+  the `--timings` evidence — merge the per-file IRs and re-link once, with
+  enrichment kept as a post-merge whole-design step.
+
 ## [1.2.0] - 2026-06-17
 
 ### Added

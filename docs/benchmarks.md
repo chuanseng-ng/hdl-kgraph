@@ -128,3 +128,40 @@ adds are (a) parallelizing the otherwise-serial pass 0 across partitions and
 
 Measure on a representative design (or generate one with
 `python scripts/gen_corpus.py`) before committing to the merge feature.
+
+### Enrichment phase breakdown
+
+On large designs `--enrich` (pass 3, native-frontend elaboration) is the
+dominant phase — and a database merge **cannot** parallelize it, since
+elaboration is whole-design and runs once over the full source. When the
+`enrich (pass 3)` line dominates, optimize *it*, not the parallelizable split.
+
+To see where elaboration spends its time, `--timings` breaks pass 3 down further
+whenever it ran:
+
+```text
+  enrich phases (% of pass 3):
+      slang:enrich        2200.000s  ( 96.6%)
+      slang:apply           77.000s  (  3.4%)
+        slang/elaborate_root 1400.000s ( 61.5%)
+        slang/walk_tree       640.000s ( 28.1%)
+        slang/parse_trees     150.000s (  6.6%)
+        slang/diagnostics       8.000s (  0.4%)
+        slang/summarize         2.000s (  0.1%)
+        slang/setup             0.100s (  0.0%)
+```
+
+Top-level spans (`slang:enrich`, `slang:apply`) tile the pass and sum to
+`enrich (pass 3)`; the indented `slang/...` rows detail `slang:enrich`:
+
+- `slang/parse_trees` — `SyntaxTree.fromFile` + `addSyntaxTree` per file;
+- `slang/elaborate_root` — `Compilation.getRoot()` (forces elaboration);
+- `slang/diagnostics` — realizing elaboration diagnostics;
+- `slang/walk_tree` — the Python-side recursion over the elaborated instance
+  tree (cost grows with elaborated instance count, i.e. generate unrolling);
+- `slang/summarize` — folding per-instance children into the multiplicity map;
+- `slang:apply` — applying the delta (upgrades, elaborated nodes) to the graph.
+
+The breakdown is collected by `hdl_kgraph.enrich._profile` via near-free
+`perf_counter` spans on the real code path, so the numbers reflect production
+behaviour, not a separate harness.
