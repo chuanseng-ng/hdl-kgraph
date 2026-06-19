@@ -9,6 +9,21 @@ the major version, and schema changes ship with a migration.
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-06-19
+
+### Changed
+
+- Enrichment (`build --enrich`) skips re-descending into instance bodies it has
+  already walked. slang canonicalizes identical instance bodies (same module +
+  parameters share one body), but the pass-3 elaborated-tree walk previously
+  re-walked every duplicate — the dominant build cost on unroll-heavy designs
+  (a wide instance array walked the same body once per element). The walk now
+  descends into each unique body once and records the rest at their parent
+  level; output is unchanged (the `children` map is keyed by definition and
+  folded by max, and parameterized specializations keep distinct bodies). The
+  `--timings` breakdown gains a `walk_bodies` line (unique bodies + dedup
+  factor). See [docs/benchmarks.md](docs/benchmarks.md).
+
 ## [1.4.0] - 2026-06-19
 
 ### Added
@@ -389,7 +404,8 @@ Maintenance release — version bump only, no functional changes.
 Releases before `0.6.3` predate this changelog; their history lives in the git
 log.
 
-[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.1.0...v1.2.0

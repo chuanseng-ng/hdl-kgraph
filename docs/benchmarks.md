@@ -141,16 +141,17 @@ whenever it ran:
 
 ```text
   enrich phases (% of pass 3):
-      slang:enrich        2232.525s  ( 99.4%)
-      slang:apply            1.425s  (  0.1%)
-        slang/walk_tree     2191.596s ( 97.6%)
-        slang/walk_members  1400.000s ( 62.3%)
-        slang/walk_hierpath  760.000s ( 33.8%)
-        slang/parse_trees     31.693s (  1.4%)
-        slang/reconcile        3.978s (  0.2%)
-        slang/summarize        2.171s (  0.1%)
-        slang/elaborate_root   0.947s (  0.0%)
-        walk_instances     9,876,543  (221.90 us/instance)
+      slang:enrich        2252.036s  ( 99.4%)
+      slang:apply            1.444s  (  0.1%)
+        slang/walk_tree     2208.899s ( 97.5%)
+        slang/walk_members   447.123s ( 19.7%)
+        slang/walk_hierpath   43.405s (  1.9%)
+        slang/parse_trees     33.835s (  1.5%)
+        slang/reconcile        4.088s (  0.2%)
+        slang/summarize        2.067s (  0.1%)
+        slang/elaborate_root   0.950s (  0.0%)
+        walk_instances     2,379,941  (928.13 us/instance)
+        walk_bodies          312,889  (7.6x dedup)
 ```
 
 Top-level spans (`slang:enrich`, `slang:apply`) tile the pass and sum to
@@ -170,11 +171,24 @@ Top-level spans (`slang:enrich`, `slang:apply`) tile the pass and sum to
     reconstructed by walking up the parent chain — the suspected super-linear
     term);
   - the residual (`walk_tree − members − hierpath`) is pure Python recursion;
-- `walk_instances` — count of elaborated instances visited, with the derived
-  per-instance cost (`walk_tree / walk_instances`). A per-instance cost that
-  rises with design size confirms a super-linear walk;
+- `walk_instances` — elaborated instances recorded, with the derived
+  per-instance cost (`walk_tree / walk_instances`). Measured flat across designs
+  (~0.9–1.1 ms/instance on a small CPU block and a multi-million-instance SoC
+  alike), so the walk is **linear in elaborated-instance count** — the cost is
+  inherent slang elaboration paid through the binding, not an algorithmic blowup;
+- `walk_bodies` — unique instance bodies actually descended into. slang
+  canonicalizes identical instance bodies (same module + parameters share one
+  body), so the walk descends into each unique body once and records the rest at
+  their parent level; `walk_instances / walk_bodies` is the dedup factor. On
+  unroll-heavy designs (wide instance arrays / generate loops) this is the lever
+  that cuts the walk, since the body map is keyed by definition and folded by max;
 - `slang/summarize` — folding per-instance children into the multiplicity map;
 - `slang:apply` — applying the delta (upgrades, elaborated nodes) to the graph.
+
+`slang/walk_hierpath` is consistently ~2% — reconstructing `hierarchicalPath`
+is **not** the bottleneck. The dominant residual is the lazy elaboration forced
+by touching each instance (`.definition`, `.body`), which is why reducing the
+number of bodies walked (above) is the effective optimization.
 
 The breakdown is collected by `hdl_kgraph.enrich._profile` via near-free
 `perf_counter` accumulators on the real code path (the hot walk uses bare
