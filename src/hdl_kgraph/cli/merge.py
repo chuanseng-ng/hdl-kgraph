@@ -24,6 +24,7 @@ def _echo_merge_report(report: MergeReport) -> None:
     click.echo(f"  edges:          {report.edge_count}")
     if report.unresolved_count:
         click.echo(f"  unresolved:     {report.unresolved_count}")
+    click.echo(f"  linked in {report.link_s:.2f}s ({report.elapsed_s:.2f}s total)")
 
 
 @click.command()

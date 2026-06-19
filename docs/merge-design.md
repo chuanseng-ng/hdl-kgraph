@@ -133,6 +133,38 @@ This needs no new storage — it is the merge command plus a convention of keepi
 per-block DBs around. A thin `--cache-dir` helper that maps block → DB path is a
 possible ergonomic add-on, not required for v1.
 
+### Workflow
+
+Build each block once into its own cached database under a shared `--root`
+(each block is a subtree, selected via `--sources`/a filelist), then merge:
+
+```bash
+# One-time: build each block's cache (run per team / per machine).
+hdl-kgraph build ./soc -f blocks/cpu.f    --db cache/cpu.db
+hdl-kgraph build ./soc -f blocks/dma.f    --db cache/dma.db
+hdl-kgraph build ./soc -f blocks/fabric.f --db cache/fabric.db
+hdl-kgraph merge cache/*.db --db soc.db        # assemble the SoC graph
+
+# Later: only the DMA block changed. Rebuild *just* it, then re-merge —
+# cpu.db and fabric.db are reused from cache, never re-parsed.
+hdl-kgraph build ./soc -f blocks/dma.f --db cache/dma.db
+hdl-kgraph merge cache/*.db --db soc.db
+```
+
+The re-merged `soc.db` is byte-identical to a monolithic `build ./soc` of the
+whole tree. `merge` prints its link/total wall-clock so you can see the re-link
+is paid once and is cheap relative to the avoided parse;
+`scripts/bench_merge.py` quantifies the payoff (see
+[benchmarks.md](benchmarks.md)).
+
+**Conventions / caveats** (beyond the merge caveats below): keep one DB per
+block under a stable path (e.g. `cache/<block>.db`); use the *same* build
+options (defines/incdirs/libraries) for every block so the partitions agree;
+and keep blocks **preprocessing-self-contained** — a header used by a block
+must be reachable when that block builds (a macro defined in a sibling block
+and used by bare name won't resolve). Editing a *shared* file invalidates every
+block that includes it, so rebuild each of those.
+
 ## Correctness traps (must-handle)
 
 1. **Silent node-id dedup** in the linker (`builder.py:348`) — dedup at the

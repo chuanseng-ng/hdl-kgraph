@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -81,6 +82,11 @@ class MergeReport:
     edge_count: int = 0
     unresolved_count: int = 0
     warnings: list[str] = field(default_factory=list)
+    # Wall-clock of the single pass-2 link over the unioned IRs, and of the
+    # whole merge. The link is "paid once" no matter how many blocks merge —
+    # the value subtree caching trades a re-parse for (see docs/benchmarks.md).
+    link_s: float = 0.0
+    elapsed_s: float = 0.0
 
 
 @dataclass
@@ -253,6 +259,8 @@ def run_merge(
     if not sources:
         raise MergeError("merge needs at least one source database")
 
+    started = time.perf_counter()
+
     def emit(line: str) -> None:
         if progress is not None:
             progress(line)
@@ -329,7 +337,9 @@ def run_merge(
     combined_irs = [rec.ir for rec in kept.values()] + [adapters.to_ir(parser_node_ids)]
     emit(f"linking {len(combined_irs)} unit(s) into the graph")
     warnings: list[str] = []
+    _t_link = time.perf_counter()
     graph, ref_records = link_graph(combined_irs, warnings=warnings)
+    report.link_s = time.perf_counter() - _t_link
 
     summaries = {name: json.dumps(payload) for name, payload in build_summaries(graph).items()}
 
@@ -365,4 +375,5 @@ def run_merge(
         1 for _, data in graph.nodes(data=True) if data["attrs"].get("unresolved")
     )
     report.warnings = warnings
+    report.elapsed_s = time.perf_counter() - started
     return report

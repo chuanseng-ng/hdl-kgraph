@@ -196,3 +196,33 @@ The breakdown is collected by `hdl_kgraph.enrich._profile` via near-free
 accumulators rather than a per-node context manager, so the instrumentation does
 not distort the per-instance measurement), so the numbers reflect production
 behaviour, not a separate harness.
+
+## Subtree caching: re-parse only the changed block
+
+```bash
+python scripts/bench_merge.py --files 2000 --blocks 4
+```
+
+`bench_merge.py` splits a synthetic corpus into N blocks, builds each into its
+own cached database, and merges them. It then edits one block-private file,
+rebuilds **only that block**, and re-merges — reusing the other blocks' cached
+per-file IRs. It asserts the re-merged graph is byte-identical to a fresh
+monolithic build and that the cached rebuild re-parses only the changed block.
+
+### Recorded results
+
+| corpus | full build | full parse | changed block | block parse | re-merge link |
+|---|---|---|---|---|---|
+| 2000 files, 14 086 nodes (4 blocks) | 2.75 s | 0.92 s | 502 files (25%) | **0.23 s** | **0.53 s** |
+
+*Recorded on a Linux CI container, `--files 2000 --blocks 4`.* The headline:
+**parse cost scales with the change** — editing a quarter of the design re-parses
+a quarter of it (0.23 s ≈ ¼ of the 0.92 s full parse), not the whole tree — while
+the pass-2 link is **paid once** over the unioned IRs (`merge` prints
+`linked in …s`). Caching trades a re-parse of the unchanged blocks for a re-read
+of their cached IRs plus that single link, so it wins whenever parse dominates
+(large syntactic designs); on a tiny corpus the O(design) IR re-load can swamp
+the parse saving, so the script gates on the parse-cost claim, not end-to-end
+wall-clock. The same caveats as the merge command apply (same-root, syntactic
+graph only, preprocessing-self-contained blocks) — see
+[merge-design.md](merge-design.md).
