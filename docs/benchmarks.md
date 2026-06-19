@@ -170,11 +170,24 @@ Top-level spans (`slang:enrich`, `slang:apply`) tile the pass and sum to
     reconstructed by walking up the parent chain — the suspected super-linear
     term);
   - the residual (`walk_tree − members − hierpath`) is pure Python recursion;
-- `walk_instances` — count of elaborated instances visited, with the derived
-  per-instance cost (`walk_tree / walk_instances`). A per-instance cost that
-  rises with design size confirms a super-linear walk;
+- `walk_instances` — elaborated instances recorded, with the derived
+  per-instance cost (`walk_tree / walk_instances`). Measured flat across designs
+  (~0.9–1.1 ms/instance on a small CPU block and a multi-million-instance SoC
+  alike), so the walk is **linear in elaborated-instance count** — the cost is
+  inherent slang elaboration paid through the binding, not an algorithmic blowup;
+- `walk_bodies` — unique instance bodies actually descended into. slang
+  canonicalizes identical instance bodies (same module + parameters share one
+  body), so the walk descends into each unique body once and records the rest at
+  their parent level; `walk_instances / walk_bodies` is the dedup factor. On
+  unroll-heavy designs (wide instance arrays / generate loops) this is the lever
+  that cuts the walk, since the body map is keyed by definition and folded by max;
 - `slang/summarize` — folding per-instance children into the multiplicity map;
 - `slang:apply` — applying the delta (upgrades, elaborated nodes) to the graph.
+
+`slang/walk_hierpath` is consistently ~2% — reconstructing `hierarchicalPath`
+is **not** the bottleneck. The dominant residual is the lazy elaboration forced
+by touching each instance (`.definition`, `.body`), which is why reducing the
+number of bodies walked (above) is the effective optimization.
 
 The breakdown is collected by `hdl_kgraph.enrich._profile` via near-free
 `perf_counter` accumulators on the real code path (the hot walk uses bare

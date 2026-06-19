@@ -164,6 +164,21 @@ def _elaborate(inp: EnrichmentInput, result: EnrichmentResult) -> _ChildMap | No
     walk_members_s = 0.0
     walk_path_s = 0.0
     inst = 0
+    # slang canonicalizes identical instance bodies: every instantiation of a
+    # module with the same parameters shares one InstanceBodySymbol (which is why
+    # getRoot() above is ~free). The walk used to re-descend into that shared body
+    # once per *elaborated* instance — the dominant cost on unroll-heavy designs
+    # (a 1000-wide instance array walked the same body 1000 times). Skip a body
+    # already walked: the ``children`` map is keyed by container *definition* and
+    # folded by max, so an identical body contributes identical entries, while
+    # distinct parameterized specializations keep distinct bodies (walked apart),
+    # preserving the max-across-specializations behaviour described above. Every
+    # instance is still recorded at its parent level, so multiplicities stay
+    # exact — only the redundant re-descent is elided. Membership is by object
+    # (the wrapper is held in the set, so it stays alive and slang's pointer→
+    # object identity holds); a build whose bodies are not shared simply degrades
+    # to the old full walk. ``seen_bodies`` size is the unique-body count.
+    seen_bodies: set[Any] = set()
 
     def walk(scope: Any, container_path: str, container_def: str) -> None:
         nonlocal walk_members_s, walk_path_s, inst
@@ -181,7 +196,10 @@ def _elaborate(inp: EnrichmentInput, result: EnrichmentResult) -> _ChildMap | No
                 walk_path_s += perf_counter() - _t
                 suffix = path[len(container_path) + 1 :] if container_path else path
                 per_instance[container_path].setdefault((m.name, child_def), []).append(suffix)
-                walk(getattr(m, "body", m), path, child_def)
+                body = getattr(m, "body", m)
+                if body not in seen_bodies:
+                    seen_bodies.add(body)
+                    walk(body, path, child_def)
             elif kind in (SymbolKind.GenerateBlock, SymbolKind.GenerateBlockArray):
                 walk(m, container_path, container_def)
 
@@ -190,10 +208,13 @@ def _elaborate(inp: EnrichmentInput, result: EnrichmentResult) -> _ChildMap | No
             top_def = top.definition.name if getattr(top, "definition", None) else top.name
             walk(getattr(top, "body", top), top.hierarchicalPath, top_def)
     # Sub-breakdown of walk_tree: members (lazy elaboration) vs hierarchicalPath
-    # (string reconstruction) vs the residual (pure Python recursion).
+    # (string reconstruction) vs the residual (pure Python recursion). The
+    # instance count is recorded-instances; walk_bodies is the unique bodies
+    # actually descended into — their ratio is the dedup factor.
     add("slang/walk_members", walk_members_s)
     add("slang/walk_hierpath", walk_path_s)
     count("walk_instances", inst)
+    count("walk_bodies", len(seen_bodies))
 
     with phase("slang/summarize"):
         children: _ChildMap = {}
