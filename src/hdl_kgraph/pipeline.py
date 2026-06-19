@@ -894,6 +894,12 @@ def run_update(
         return full_rebuild(str(exc))
     if meta.get("root") != str(base):
         return full_rebuild(f"build root changed (was {meta.get('root')})")
+    if meta.get("options_hash", "").startswith("merged:"):
+        # A merged database has no single set of build inputs to diff against;
+        # re-link from sources rather than attempt an incremental update.
+        return full_rebuild(
+            "database was produced by `merge` and does not support incremental update"
+        )
 
     inputs = _resolve_inputs(options, base)
     if meta.get("options_hash") != options_hash(base, options, inputs):

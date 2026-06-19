@@ -24,6 +24,7 @@ from hdl_kgraph.cli.analyze import (
     visualize,
 )
 from hdl_kgraph.cli.build import build, update, watch
+from hdl_kgraph.cli.merge import merge
 from hdl_kgraph.cli.query import query
 from hdl_kgraph.cli.serve import serve, setup
 from hdl_kgraph.cli.tools import tools
@@ -49,6 +50,7 @@ def main() -> None:
 for _cmd in (
     build,
     update,
+    merge,
     watch,
     detect_changes,
     impact,

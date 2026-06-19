@@ -9,6 +9,19 @@ the major version, and schema changes ship with a migration.
 
 ## [Unreleased]
 
+### Added
+
+- `hdl-kgraph merge DB1 DB2 ... --db OUT` assembles several independently-built
+  block databases into one SoC-level graph (IP-block assembly). It unions the
+  per-file IRs across the sources and re-links once, so the result is
+  byte-identical to a monolithic `build` of the same files under the same
+  `--root` (Mode A). All sources must share the build root; FILELIST and VHDL
+  `library` adapter nodes are reconstructed faithfully from each source graph.
+  `--on-conflict error|first|last` controls overlapping files that differ.
+  Enriched source databases are refused (enrich the merged design as a
+  whole-design step instead), and a merged database falls back to a full
+  rebuild on `update`. See [docs/merge-design.md](docs/merge-design.md).
+
 ## [1.6.0] - 2026-06-19
 
 ### Removed

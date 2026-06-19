@@ -67,6 +67,7 @@ pip install hdl-kgraph
 
 hdl-kgraph build ./rtl            # parse sources -> ./rtl/.hdl-kgraph/graph.db
 hdl-kgraph build -f sim/tb.f      # or drive the build from a vendor-style filelist
+hdl-kgraph merge a.db b.db --db soc.db  # assemble per-block DBs into one SoC graph
 hdl-kgraph status                 # files, parse errors, node/edge counts
 hdl-kgraph tree soc_top           # print the design hierarchy from a top module
 hdl-kgraph query instances-of fifo
