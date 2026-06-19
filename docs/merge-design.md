@@ -1,8 +1,30 @@
-# Design proposal: database merge — IP-block assembly & subtree caching
+# Design: database merge — IP-block assembly & subtree caching
 
-> **Status: proposal, not implemented.** This documents the planned `hdl-kgraph
-> merge` feature and why it is scoped the way it is. See
-> [benchmarks.md](benchmarks.md) for the timing evidence behind the scope.
+> **Status: implemented** (`hdl-kgraph merge`, see
+> [CHANGELOG](../CHANGELOG.md)). This documents the `hdl-kgraph merge` feature
+> and why it is scoped the way it is. See [benchmarks.md](benchmarks.md) for the
+> timing evidence behind the scope. Subtree caching is a convention layered on
+> the merge command (see below) and ships no extra storage.
+
+## Implementation notes
+
+- **FILELIST / VHDL `library` adapter IRs are recovered from each source
+  graph**, not reconstructed from `file:` node attrs. Those adapter nodes carry
+  attrs that exist *only* in the persisted graph — FILELIST `incdirs`/`defines`/
+  `library_dirs`/`warnings` and per-edge `order`, and the LIBRARY node's
+  `attrs["path"]` (from the `--lib` mapping) — so reading them straight from the
+  source graph is the only faithful option and keeps merge byte-identical for
+  VHDL-library and filelist designs too (the trap-2 corner). v1 therefore
+  *supports* these designs rather than detect-and-refusing them. A FILELIST /
+  LIBRARY node id appearing in two sources with diverging attrs is a real
+  inconsistent-inputs conflict and is refused.
+- **Same-root only (Mode A):** all sources must share `meta["root"]`; node ids
+  are root-relative, so the union is a direct one with no path rewriting.
+- **Merged DB does not support `update`:** the merged `options_hash` is a
+  `merged:` sentinel, and `update` detects it and falls back to a full rebuild.
+- The implementation lives in `src/hdl_kgraph/merge.py` (`run_merge`) and
+  `src/hdl_kgraph/cli/merge.py`; the equivalence gate is
+  `tests/test_merge_equivalence.py`.
 
 ## Why (and why this scope)
 
