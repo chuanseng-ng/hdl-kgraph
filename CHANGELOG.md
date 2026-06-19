@@ -9,6 +9,8 @@ the major version, and schema changes ship with a migration.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-06-19
+
 ### Added
 
 - `hdl-kgraph merge DB1 DB2 ... --db OUT` assembles several independently-built
@@ -21,6 +23,14 @@ the major version, and schema changes ship with a migration.
   Enriched source databases are refused (enrich the merged design as a
   whole-design step instead), and a merged database falls back to a full
   rebuild on `update`. See [docs/merge-design.md](docs/merge-design.md).
+- **Subtree caching** workflow on top of `merge`: keep each block's database as
+  a cached artifact, rebuild only the block that changed, and re-merge — the
+  unchanged blocks' cached per-file IRs are reused instead of being re-parsed,
+  so the only parse cost paid is for the changed block while the pass-2 link is
+  paid once. `merge` now reports its link/total wall-clock, and
+  `scripts/bench_merge.py` measures the re-parse-only-the-changed-block payoff
+  (see [docs/benchmarks.md](docs/benchmarks.md) and
+  [docs/merge-design.md](docs/merge-design.md)).
 
 ## [1.6.0] - 2026-06-19
 

@@ -102,6 +102,14 @@ writes ~0.04 % of the rows, not the whole graph. `detect-changes`
 and `impact` answer "what changed, and what does it affect?" in CI.
 → [docs/incremental.md](docs/incremental.md)
 
+**Database merge & subtree caching.** `merge` assembles independently-built
+block databases into one SoC graph by unioning their per-file IRs and re-linking
+once — byte-identical to a monolithic build of the same files. Keep each block's
+DB as a cache: when one block changes, rebuild only it and re-merge, reusing the
+unchanged blocks' cached IRs instead of re-parsing them (parse cost scales with
+the change; the link is paid once).
+→ [docs/merge-design.md](docs/merge-design.md)
+
 **Mixed Verilog/VHDL designs link into one hierarchy.** `tree` and `query`
 cross the language boundary in both directions; cross-language matches are
 scored ≤0.8, never 1.0.
