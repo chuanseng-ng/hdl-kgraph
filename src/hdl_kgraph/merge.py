@@ -340,9 +340,10 @@ def run_merge(
         meta for path, meta in extra_files.items() if path not in kept
     ]
     units_out = {path: rec.unit for path, rec in kept.items()}
-    sentinel = MERGED_SENTINEL_PREFIX + hashlib.sha256(
-        ",".join(sorted(source_option_hashes)).encode()
-    ).hexdigest()[:16]
+    sentinel = (
+        MERGED_SENTINEL_PREFIX
+        + hashlib.sha256(",".join(sorted(source_option_hashes)).encode()).hexdigest()[:16]
+    )
     root_path = Path(merged_root) if merged_root else db_path.parent
 
     emit(f"writing {db_path}")

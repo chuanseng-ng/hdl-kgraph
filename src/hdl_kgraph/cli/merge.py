@@ -57,9 +57,7 @@ def merge(sources: tuple[Path, ...], db_path: Path | None, on_conflict: str) -> 
         raise CliError("merge requires an output database: --db OUT")
     renderer = _ProgressRenderer()
     try:
-        report = run_merge(
-            list(sources), db_path, OnConflict(on_conflict), progress=renderer.stage
-        )
+        report = run_merge(list(sources), db_path, OnConflict(on_conflict), progress=renderer.stage)
     except (MergeError, SchemaVersionError) as exc:
         raise CliError(str(exc)) from exc
     except click.ClickException:
