@@ -164,11 +164,6 @@ def _echo_enrich_phases(report: BuildReport) -> None:
     if instances and walk_s > 0:
         per_us = 1_000_000 * walk_s / instances
         click.echo(f"        {'walk_instances':<20} {instances:>9,}  ({per_us:.2f} us/instance)")
-    # Unique instance bodies actually descended into; instances/bodies is the
-    # body-dedup factor (how much the shared-body skip saved).
-    bodies = report.enrich_phase_counts.get("walk_bodies", 0)
-    if bodies and instances:
-        click.echo(f"        {'walk_bodies':<20} {bodies:>9,}  ({instances / bodies:.1f}x dedup)")
 
 
 @click.command()
