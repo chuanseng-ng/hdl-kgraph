@@ -29,12 +29,13 @@ value upgrades are a documented follow-on within M7.
 from __future__ import annotations
 
 from collections import defaultdict
+from time import perf_counter
 from typing import Any
 
 import networkx as nx
 
 from hdl_kgraph.enrich._graphutil import enclosing_module, instantiates_target
-from hdl_kgraph.enrich._profile import phase
+from hdl_kgraph.enrich._profile import add, count, phase
 from hdl_kgraph.enrich.base import (
     Capabilities,
     Discrepancy,
@@ -152,13 +153,32 @@ def _elaborate(inp: EnrichmentInput, result: EnrichmentResult) -> _ChildMap | No
         except TypeError:
             return []
 
+    # Hot loop: ``walk`` runs once per elaborated instance (generate-unrolled),
+    # so it dominates the enrichment pass on large designs. The two suspected
+    # costs — forcing lazy member elaboration (``members``) and reconstructing
+    # each instance's hierarchical-path string (``hierarchicalPath``) — are timed
+    # with bare perf_counter accumulators (not ``phase()`` per node, whose
+    # context-manager overhead would itself distort a per-instance measurement),
+    # then recorded once below. ``inst`` counts instances so the CLI can report
+    # per-instance cost. See docs/benchmarks.md and slang_backend profiling.
+    walk_members_s = 0.0
+    walk_path_s = 0.0
+    inst = 0
+
     def walk(scope: Any, container_path: str, container_def: str) -> None:
+        nonlocal walk_members_s, walk_path_s, inst
         container_def_of[container_path] = container_def
-        for m in members(scope):
+        _t = perf_counter()
+        scope_members = members(scope)
+        walk_members_s += perf_counter() - _t
+        for m in scope_members:
             kind = getattr(m, "kind", None)
             if kind == SymbolKind.Instance:
+                inst += 1
                 child_def = m.definition.name if getattr(m, "definition", None) else ""
+                _t = perf_counter()
                 path = m.hierarchicalPath
+                walk_path_s += perf_counter() - _t
                 suffix = path[len(container_path) + 1 :] if container_path else path
                 per_instance[container_path].setdefault((m.name, child_def), []).append(suffix)
                 walk(getattr(m, "body", m), path, child_def)
@@ -169,6 +189,11 @@ def _elaborate(inp: EnrichmentInput, result: EnrichmentResult) -> _ChildMap | No
         for top in root.topInstances:
             top_def = top.definition.name if getattr(top, "definition", None) else top.name
             walk(getattr(top, "body", top), top.hierarchicalPath, top_def)
+    # Sub-breakdown of walk_tree: members (lazy elaboration) vs hierarchicalPath
+    # (string reconstruction) vs the residual (pure Python recursion).
+    add("slang/walk_members", walk_members_s)
+    add("slang/walk_hierpath", walk_path_s)
+    count("walk_instances", inst)
 
     with phase("slang/summarize"):
         children: _ChildMap = {}

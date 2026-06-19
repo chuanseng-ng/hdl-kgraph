@@ -141,27 +141,43 @@ whenever it ran:
 
 ```text
   enrich phases (% of pass 3):
-      slang:enrich        2200.000s  ( 96.6%)
-      slang:apply           77.000s  (  3.4%)
-        slang/elaborate_root 1400.000s ( 61.5%)
-        slang/walk_tree       640.000s ( 28.1%)
-        slang/parse_trees     150.000s (  6.6%)
-        slang/diagnostics       8.000s (  0.4%)
-        slang/summarize         2.000s (  0.1%)
-        slang/setup             0.100s (  0.0%)
+      slang:enrich        2232.525s  ( 99.4%)
+      slang:apply            1.425s  (  0.1%)
+        slang/walk_tree     2191.596s ( 97.6%)
+        slang/walk_members  1400.000s ( 62.3%)
+        slang/walk_hierpath  760.000s ( 33.8%)
+        slang/parse_trees     31.693s (  1.4%)
+        slang/reconcile        3.978s (  0.2%)
+        slang/summarize        2.171s (  0.1%)
+        slang/elaborate_root   0.947s (  0.0%)
+        walk_instances     9,876,543  (221.90 us/instance)
 ```
 
 Top-level spans (`slang:enrich`, `slang:apply`) tile the pass and sum to
 `enrich (pass 3)`; the indented `slang/...` rows detail `slang:enrich`:
 
 - `slang/parse_trees` — `SyntaxTree.fromFile` + `addSyntaxTree` per file;
-- `slang/elaborate_root` — `Compilation.getRoot()` (forces elaboration);
-- `slang/diagnostics` — realizing elaboration diagnostics;
+- `slang/elaborate_root` — `Compilation.getRoot()`. Measured at well under a
+  second even on multi-million-node designs: slang elaborates **lazily**, so
+  `getRoot()` is nearly free and the real elaboration happens on demand during
+  the walk below;
 - `slang/walk_tree` — the Python-side recursion over the elaborated instance
-  tree (cost grows with elaborated instance count, i.e. generate unrolling);
+  tree, the dominant cost (cost grows with elaborated instance count, i.e.
+  generate unrolling). Split into:
+  - `slang/walk_members` — iterating each scope's members (`list(scope)`), which
+    forces the lazy elaboration;
+  - `slang/walk_hierpath` — reading each instance's `hierarchicalPath` (a string
+    reconstructed by walking up the parent chain — the suspected super-linear
+    term);
+  - the residual (`walk_tree − members − hierpath`) is pure Python recursion;
+- `walk_instances` — count of elaborated instances visited, with the derived
+  per-instance cost (`walk_tree / walk_instances`). A per-instance cost that
+  rises with design size confirms a super-linear walk;
 - `slang/summarize` — folding per-instance children into the multiplicity map;
 - `slang:apply` — applying the delta (upgrades, elaborated nodes) to the graph.
 
 The breakdown is collected by `hdl_kgraph.enrich._profile` via near-free
-`perf_counter` spans on the real code path, so the numbers reflect production
+`perf_counter` accumulators on the real code path (the hot walk uses bare
+accumulators rather than a per-node context manager, so the instrumentation does
+not distort the per-instance measurement), so the numbers reflect production
 behaviour, not a separate harness.

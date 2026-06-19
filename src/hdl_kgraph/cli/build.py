@@ -157,6 +157,13 @@ def _echo_enrich_phases(report: BuildReport) -> None:
         click.echo(f"      {name:<22} {secs:8.3f}s  ({100 * secs / total:5.1f}%)")
     for name, secs in detail:
         click.echo(f"        {name:<20} {secs:8.3f}s  ({100 * secs / total:5.1f}%)")
+    # Per-instance cost of the elaborated-tree walk — the line that says whether
+    # the walk is super-linear (cost/instance rising with design size).
+    instances = report.enrich_phase_counts.get("walk_instances", 0)
+    walk_s = timings.get("slang/walk_tree", 0.0)
+    if instances and walk_s > 0:
+        per_us = 1_000_000 * walk_s / instances
+        click.echo(f"        {'walk_instances':<20} {instances:>9,}  ({per_us:.2f} us/instance)")
 
 
 @click.command()

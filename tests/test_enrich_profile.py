@@ -45,6 +45,8 @@ class _FakeBackend:
             result.new_edges.append(
                 Edge(src="m", dst="elab:instance:top.u", kind=EdgeKind.DECLARES)
             )
+        _profile.add("fake/segment", 0.001)  # a pre-measured raw duration
+        _profile.count("fake_instances", 3)  # an integer tally
         return result
 
 
@@ -58,7 +60,10 @@ def test_run_enrichment_records_phase_timings() -> None:
     assert "fake:enrich" in report.phase_timings
     assert "fake:apply" in report.phase_timings
     assert "fake/work" in report.phase_timings
+    assert report.phase_timings["fake/segment"] >= 0.001  # add() raw duration
     assert all(v >= 0 for v in report.phase_timings.values())
+    # Integer tallies travel on a separate channel.
+    assert report.phase_counts["fake_instances"] == 3
     # The delta was actually applied (node added under the apply span).
     assert graph.has_node("elab:instance:top.u")
 
@@ -90,6 +95,7 @@ def test_echo_enrich_phases_rendered(capsys) -> None:
             "slang/elaborate_root": 5.0,
             "slang/walk_tree": 1.5,
         },
+        enrich_phase_counts={"walk_instances": 3_000_000},
     )
     _echo_timings(report)
     out = capsys.readouterr().out
@@ -99,6 +105,10 @@ def test_echo_enrich_phases_rendered(capsys) -> None:
     assert "slang/elaborate_root" in out
     # Percentage is of the pass (5.0 / 8.0 = 62.5%), not the whole build.
     assert "62.5%" in out
+    # Per-instance cost line: 1.5s / 3,000,000 = 0.50 us/instance.
+    assert "walk_instances" in out
+    assert "3,000,000" in out
+    assert "0.50 us/instance" in out
 
 
 def test_echo_enrich_phases_absent_without_enrich(capsys) -> None:
