@@ -95,7 +95,7 @@ def test_echo_enrich_phases_rendered(capsys) -> None:
             "slang/elaborate_root": 5.0,
             "slang/walk_tree": 1.5,
         },
-        enrich_phase_counts={"walk_instances": 3_000_000, "walk_bodies": 600_000},
+        enrich_phase_counts={"walk_instances": 3_000_000},
     )
     _echo_timings(report)
     out = capsys.readouterr().out
@@ -108,9 +108,6 @@ def test_echo_enrich_phases_rendered(capsys) -> None:
     # Per-instance cost line: 1.5s / 3,000,000 = 0.50 us/instance.
     assert "walk_instances" in out
     assert "0.50 us/instance" in out
-    # Body-dedup line: 3,000,000 / 600,000 = 5.0x dedup.
-    assert "walk_bodies" in out
-    assert "5.0x dedup" in out
     assert "3,000,000" in out
     assert "0.50 us/instance" in out
 

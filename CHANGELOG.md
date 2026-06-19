@@ -9,6 +9,20 @@ the major version, and schema changes ship with a migration.
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-06-19
+
+### Removed
+
+- The 1.5.0 instance-body deduplication in `build --enrich` (and its
+  `walk_bodies` timing line) is removed: measured on two real designs it never
+  fired. slang canonicalizes identical instance bodies in C++, but pyslang
+  returns a fresh wrapper object per `.body` access, so identity-based dedup
+  finds no shared bodies (`walk_instances == unique bodies`, 1.0x, on both a
+  small CPU block and a multi-million-instance SoC). Outputs were always
+  identical; the change was simply inert, so it is reverted to keep the walk
+  honest. The pass-3 profiling (`slang/walk_*`, `walk_instances`) from 1.4.0 is
+  retained. See [docs/benchmarks.md](docs/benchmarks.md).
+
 ## [1.5.0] - 2026-06-19
 
 ### Changed
@@ -404,7 +418,8 @@ Maintenance release — version bump only, no functional changes.
 Releases before `0.6.3` predate this changelog; their history lives in the git
 log.
 
-[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.2.0...v1.3.0
