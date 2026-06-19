@@ -28,10 +28,13 @@ from collections.abc import Iterator
 
 
 class PhaseTimer:
-    """Accumulates wall-clock seconds per named phase across a single pass."""
+    """Accumulates wall-clock seconds (and integer counts) per named phase."""
 
     def __init__(self) -> None:
         self.totals: dict[str, float] = defaultdict(float)
+        #: Integer tallies (e.g. elaborated instances visited) keyed by name,
+        #: so a phase's cost can be normalized per unit of work.
+        self.counts: dict[str, int] = defaultdict(int)
 
     @contextlib.contextmanager
     def span(self, name: str) -> Iterator[None]:
@@ -61,3 +64,21 @@ def phase(name: str) -> Iterator[None]:
     else:
         with _active.span(name):
             yield
+
+
+def add(name: str, seconds: float) -> None:
+    """Add a pre-measured *seconds* to *name* in the active timer, if any.
+
+    For hot inner loops where wrapping each iteration in :func:`phase` (a
+    context manager) would itself distort the measurement: the caller times the
+    segment with a bare :func:`time.perf_counter` accumulator and records the
+    total once.
+    """
+    if _active is not None:
+        _active.totals[name] += seconds
+
+
+def count(name: str, n: int) -> None:
+    """Add *n* to the integer tally *name* in the active timer, if any."""
+    if _active is not None:
+        _active.counts[name] += n

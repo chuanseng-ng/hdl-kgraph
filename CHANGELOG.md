@@ -9,6 +9,19 @@ the major version, and schema changes ship with a migration.
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-06-19
+
+### Added
+
+- `build --enrich --timings` now splits the dominant `slang/walk_tree` phase
+  into `slang/walk_members` (forcing slang's lazy member elaboration) and
+  `slang/walk_hierpath` (reconstructing each instance's `hierarchicalPath`), and
+  reports `walk_instances` — the count of elaborated instances visited with the
+  derived per-instance cost. This pinpoints whether the elaborated-tree walk is
+  super-linear (rising cost per instance) and which term to optimize. Measured
+  with bare `perf_counter` accumulators so the per-node instrumentation does not
+  distort the hot loop. See [docs/benchmarks.md](docs/benchmarks.md).
+
 ## [1.3.0] - 2026-06-18
 
 ### Added
@@ -376,7 +389,8 @@ Maintenance release — version bump only, no functional changes.
 Releases before `0.6.3` predate this changelog; their history lives in the git
 log.
 
-[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/chuanseng-ng/hdl-kgraph/compare/v1.0.1...v1.1.0

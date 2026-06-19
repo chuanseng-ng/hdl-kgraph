@@ -189,6 +189,9 @@ class BuildReport:
     # --enrich ran. Top-level keys (``slang:enrich``, ``slang:apply``) tile the
     # pass; ``parent/child`` keys (``slang/elaborate_root`` …) detail one.
     enrich_phase_s: dict[str, float] = field(default_factory=dict)
+    # Integer tallies from the enrich pass (e.g. ``walk_instances``), to
+    # normalize a phase's cost per unit of work. Empty unless --enrich ran.
+    enrich_phase_counts: dict[str, int] = field(default_factory=dict)
     persist_s: float = 0.0  # serialize + write the database
 
 
@@ -809,6 +812,7 @@ def _enrich(
     report.discrepancy_count = len(enrich_report.discrepancies)
     report.enrich_diagnostics = enrich_report.diagnostics
     report.enrich_phase_s = enrich_report.phase_timings
+    report.enrich_phase_counts = enrich_report.phase_counts
     return enrich_report.discrepancies
 
 

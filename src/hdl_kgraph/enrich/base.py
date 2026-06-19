@@ -122,6 +122,9 @@ class EnrichmentReport:
     #: Per-phase wall-clock seconds for the pass (see :mod:`._profile`); a
     #: top-level span name tiles the pass, a ``parent/child`` name details one.
     phase_timings: dict[str, float] = field(default_factory=dict)
+    #: Integer tallies recorded during the pass (e.g. ``walk_instances``), so a
+    #: phase's cost can be normalized per unit of work.
+    phase_counts: dict[str, int] = field(default_factory=dict)
 
 
 class EnrichmentBackend(Protocol):

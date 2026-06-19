@@ -101,4 +101,5 @@ def run_enrichment(
     finally:
         _profile.set_active(None)
     report.phase_timings = dict(timer.totals)
+    report.phase_counts = dict(timer.counts)
     return report
