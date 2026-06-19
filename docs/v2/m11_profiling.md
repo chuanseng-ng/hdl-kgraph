@@ -140,7 +140,7 @@ cost:
    attrs-codec change and read-pattern/index tuning are *not* M12 levers (note them, do
    not gate on them).
 
-3. **The dominant cost — NetworkX graph construction & footprint — is exactly what a
+3. **The dominant cost — NetworkX graph construction & footprint — is precisely what a
    compact/out-of-core representation attacks.**
 
 ### → Primary M12 path: out-of-core graph layer (off-the-shelf first)
