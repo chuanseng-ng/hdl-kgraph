@@ -144,10 +144,11 @@ whenever it ran:
       slang:enrich        2232.525s  ( 99.4%)
       slang:apply            1.425s  (  0.1%)
         slang/walk_tree     2191.596s ( 97.6%)
-        slang/parse_trees     31.693s (  1.4%)
         slang/walk_members  1400.000s ( 62.3%)
         slang/walk_hierpath  760.000s ( 33.8%)
+        slang/parse_trees     31.693s (  1.4%)
         slang/reconcile        3.978s (  0.2%)
+        slang/summarize        2.171s (  0.1%)
         slang/elaborate_root   0.947s (  0.0%)
         walk_instances     9,876,543  (221.90 us/instance)
 ```
