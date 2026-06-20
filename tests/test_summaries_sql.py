@@ -92,6 +92,7 @@ _UVM_FIXTURE_SETS = [
 def test_sql_uvm_summary_matches_oracle(
     tmp_path: Path, fixtures_dir: Path, names: list[str]
 ) -> None:
+    """The bounded subgraph scan equals the NetworkX UVM oracle, byte for byte."""
     db = _build(tmp_path, fixtures_dir, names)
     graph, _f, _m = SqliteStore(db).load()
     oracle = summary.uvm_summary(graph)
@@ -103,6 +104,8 @@ def test_sql_uvm_summary_matches_oracle(
 def test_graphquery_falls_back_to_sql_uvm_without_summary(
     tmp_path: Path, fixtures_dir: Path
 ) -> None:
+    """With the persisted UVM summary deleted, GraphQuery serves it via the bounded
+    subgraph fallback (no full load) and still equals the oracle."""
     # Drop the persisted summary so GraphQuery takes the out-of-core subgraph path.
     db = _build(tmp_path, fixtures_dir, ["uvm_tb.sv", "verif_constructs.sv"])
     graph, _f, _m = SqliteStore(db).load()
