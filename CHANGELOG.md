@@ -9,6 +9,24 @@ the major version, and schema changes ship with a migration.
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-06-20
+
+### Added
+
+- `hdl-kgraph review [--json] [--metrics]` emits a **content-free review digest** of a
+  built graph — counts, ratios, distributions, and build timings, with **no identifiers**
+  (no module/clock/signal names, file paths, or expression text). It's designed to be
+  snapshotted out of an isolated/air-gapped environment (where the source and `graph.db`
+  cannot leave) and **diffed across builds** to review parse health, link quality, design
+  shape, and performance. The digest consolidates the `meta`/`files` tables, node/edge-kind
+  histograms, unresolved-stub ratio, edge-confidence distribution, and the persisted
+  clock/CDC/UVM summaries as counts; `--metrics` adds fan-in/hub/community metrics (values
+  only). See [docs/review.md](docs/review.md).
+- `build`/`update` now persist content-free build telemetry (`build_stats`: per-phase
+  timings + the `enriched` flag) into the `meta` table, so `review` can report `timings_s`
+  from a static database. Databases built before this release simply report `timings_s:
+  null` (no migration needed — `meta` is key/value).
+
 ## [1.7.0] - 2026-06-19
 
 ### Added

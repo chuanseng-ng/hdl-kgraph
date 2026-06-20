@@ -39,6 +39,7 @@ from hdl_kgraph.pipeline import (
     find_db,
     scan_changes,
 )
+from hdl_kgraph.review import build_review_digest
 from hdl_kgraph.schema import Language, NodeKind
 from hdl_kgraph.storage.sqlite_store import SchemaVersionError, SqliteStore
 from hdl_kgraph.vcs import detect_vcs, detect_vcs_changes
@@ -358,6 +359,62 @@ def status(db_path: Path | None, as_json: bool, show_errors: bool) -> None:
         click.echo(f"          {count:6} {kind}")
     if stubs:
         click.echo(f"unresolved: {len(stubs)}")
+
+
+@click.command()
+@_db_option
+@_json_option
+@click.option(
+    "--metrics",
+    "with_metrics",
+    is_flag=True,
+    help="Include graph metrics (fan-in/hubs/communities); loads the whole graph.",
+)
+def review(db_path: Path | None, as_json: bool, with_metrics: bool) -> None:
+    """Emit a content-free review digest — counts, ratios, distributions, timings;
+    no names, paths, or expressions.
+
+    Designed to be snapshotted out of an isolated/air-gapped environment (where the
+    source and graph.db cannot leave) and diffed across builds to review parse
+    health, link quality, design shape, and performance. ``--json`` (recommended)
+    prints the full digest; otherwise a short summary. ``--metrics`` adds
+    betweenness/community metrics (loads the whole graph).
+    """
+    db = _resolve_db(db_path)
+    store = SqliteStore(db)
+    try:
+        graph, files, meta = store.load()
+        clock_payload = store.load_summary("clock_domains")
+        uvm_payload = store.load_summary("uvm_topology")
+    except SchemaVersionError as exc:
+        raise CliError(str(exc)) from exc
+    digest = build_review_digest(
+        graph,
+        files,
+        meta,
+        db_bytes=db.stat().st_size if db.exists() else None,
+        clock_summary_payload=clock_payload,
+        uvm_summary_payload=uvm_payload,
+        with_metrics=with_metrics,
+    )
+    if as_json:
+        _emit_json(digest)
+        return
+    g = digest["graph"]
+    lq = digest["link_quality"]
+    a = digest["analyses"]
+    click.echo(f"hdl-kgraph review (schema {digest['schema']}, content-free)")
+    click.echo(
+        f"  nodes {g['node_count']}  edges {g['edge_count']}  "
+        f"unresolved {lq['unresolved_stub_count']} ({lq['unresolved_stub_ratio']:.2%})"
+    )
+    click.echo(
+        f"  clock domains {a['clock_domains']['count']}  cdc suspects {a['cdc']['suspect_count']}"
+    )
+    timings = digest["timings_s"]
+    if timings:
+        click.echo("  timings(s): " + "  ".join(f"{k[:-2]} {v:.2f}" for k, v in timings.items()))
+    click.echo("  (use --json for the full content-free digest)")
 
 
 @click.command()

@@ -764,6 +764,26 @@ def _execute(
             summaries=summaries,
         )
     report.persist_s = time.perf_counter() - _t_persist
+    # Persist content-free build telemetry so `hdl-kgraph review` can report it
+    # from a static DB (timings live only in the report otherwise). Best-effort:
+    # the build already succeeded and the DB is written, so a telemetry-write
+    # failure degrades to a warning rather than failing the build.
+    try:
+        store.set_meta(
+            "build_stats",
+            json.dumps(
+                {
+                    "discover_s": report.discover_s,
+                    "parse_s": report.parse_s,
+                    "link_s": report.link_s,
+                    "enrich_s": report.enrich_s,
+                    "persist_s": report.persist_s,
+                    "enriched": options.enrich,
+                }
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 — telemetry is non-critical
+        report.warnings.append(f"failed to persist build_stats telemetry: {exc}")
     return report
 
 
