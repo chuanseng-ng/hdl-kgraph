@@ -1,14 +1,16 @@
 """Bounded, SQL-native whole-design summaries (scalability).
 
-Clock-domain/CDC reports are genuinely global — they scan every
-CLOCKED_BY/DRIVES/READS edge — so they cannot be answered from a bounded
-subgraph the way the structural queries in :mod:`hdl_kgraph.storage.query` are.
-The build precomputes them once and persists the result (:mod:`hdl_kgraph.graph.summary`),
-which the reader serves in well under a millisecond. This module is the
-**fallback** for when that persisted summary is absent (a database migrated from
-a pre-v8 schema, or any build that could not materialise the whole graph): it
-computes the *same* report directly from SQLite, without ever loading the graph
+The whole-design reports (clock-domain/CDC and UVM topology) scan global relations,
+so the build precomputes them once and persists the result
+(:mod:`hdl_kgraph.graph.summary`), which the reader serves in well under a millisecond.
+This module is the **fallback** for when that persisted summary is absent (a database
+migrated from a pre-v8 schema, or any build that could not materialise the whole graph):
+it computes the *same* report directly from SQLite, without ever loading the whole graph
 into NetworkX.
+
+* :func:`clock_summary_sql` reduces the clock/CDC scan to SQL aggregation (see below).
+* :func:`uvm_summary_sql` hydrates only the bounded *class* subgraph (CLASS nodes +
+  EXTENDS/TEST_COVERS edges) and reuses the proven :mod:`hdl_kgraph.graph.uvm` functions.
 
 The result is byte-identical to :func:`hdl_kgraph.graph.summary.clock_summary`
 — ``tests/test_summaries_sql.py`` pins that parity against the NetworkX oracle.
@@ -32,8 +34,16 @@ from collections import defaultdict
 from collections.abc import Iterator
 from typing import Any
 
-from hdl_kgraph.graph import clocks
+import networkx as nx
+
+from hdl_kgraph.graph import clocks, summary, uvm
 from hdl_kgraph.schema import EdgeKind, NodeKind
+from hdl_kgraph.storage.sqlite_store import (
+    EDGE_COLUMNS,
+    NODE_COLUMNS,
+    add_edge_row,
+    add_node_row,
+)
 
 #: SQLite caps host parameters per statement; chunk ``IN (...)`` lists under it
 #: (mirrors :data:`hdl_kgraph.storage.query._IN_CHUNK`).
@@ -54,6 +64,43 @@ def clock_summary_sql(conn: sqlite3.Connection) -> dict[str, Any]:
         "domains": _clock_domains(conn, find),
         "cdc_suspect_count": len(suspects),
         "cdc_suspects": suspects[:50],
+    }
+
+
+def uvm_summary_sql(conn: sqlite3.Connection) -> dict[str, Any]:
+    """The ``uvm_topology`` tool payload (components + TEST_COVERS) from SQLite.
+
+    Byte-identical to :func:`hdl_kgraph.graph.summary.uvm_summary`, but bounded:
+    the report only touches CLASS nodes and their EXTENDS chains plus the
+    already-persisted TEST_COVERS edges, so it hydrates just that small subgraph
+    and runs the *same* :mod:`hdl_kgraph.graph.uvm` functions on it (the
+    select-a-bounded-subgraph-then-reuse-the-analysis idiom of
+    :mod:`hdl_kgraph.storage.query`), never the whole graph. ``derive_test_covers``
+    (the O(design) build-time derivation) is not re-run — its edges are read back.
+    """
+    graph = nx.MultiDiGraph()
+    # Every CLASS node, including the unresolved uvm_* stubs the chain walk reads.
+    for row in conn.execute(
+        f"SELECT {NODE_COLUMNS} FROM nodes WHERE kind = ?", (NodeKind.CLASS.value,)
+    ):
+        add_node_row(graph, row)
+    # The inheritance + coverage edges, then any endpoint (e.g. a TEST_COVERS tb/
+    # DUT module) not already present as a full row — mirrors _ensure_endpoints.
+    for row in conn.execute(
+        f"SELECT {EDGE_COLUMNS} FROM edges WHERE kind IN (?, ?)",
+        (EdgeKind.EXTENDS.value, EdgeKind.TEST_COVERS.value),
+    ):
+        add_edge_row(graph, row)
+    missing = {n for n in graph.nodes if "kind" not in graph.nodes[n]}
+    for chunk in _chunks(missing):
+        placeholders = ", ".join("?" for _ in chunk)
+        for row in conn.execute(
+            f"SELECT {NODE_COLUMNS} FROM nodes WHERE id IN ({placeholders})", chunk
+        ):
+            add_node_row(graph, row)
+    return {
+        "components": summary.jsonable(uvm.uvm_topology(graph)),
+        "test_covers": summary.jsonable(uvm.test_covers(graph)),
     }
 
 

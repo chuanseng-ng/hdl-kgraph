@@ -331,23 +331,23 @@ class GraphQuery:
             return summaries.clock_summary_sql(conn)
 
     def uvm_topology(self) -> dict[str, Any]:
-        from hdl_kgraph.graph.summary import uvm_summary
+        """The ``uvm_topology`` payload: the persisted summary when present, else a
+        **bounded subgraph scan** (only the class graph, never a full graph load).
 
-        return self._summary("uvm_topology", uvm_summary)
-
-    def _summary(self, name: str, builder: Any) -> dict[str, Any]:
-        """Read a precomputed whole-design summary; for a pre-v8 database with
-        no summaries table, fall back to computing it from the full graph.
-
-        Used by :meth:`uvm_topology` (a bounded SQL port is deferred);
-        :meth:`clock_domains` has its own out-of-core SQL fallback."""
+        Like clock/CDC, the UVM report is whole-design but bounded by the class
+        inheritance graph, so :func:`hdl_kgraph.storage.summaries.uvm_summary_sql`
+        serves the missing-summary fallback out-of-core (byte-identical to the
+        NetworkX path)."""
         import json
 
-        payload = self._store.load_summary(name)
+        from hdl_kgraph.storage import summaries
+
+        payload = self._store.load_summary("uvm_topology")
         if payload is not None:
             return dict(json.loads(payload))
-        graph, _, _ = self._store.load()
-        return dict(builder(graph))
+        with self._store._connect() as conn:
+            self._store._check_version(conn)
+            return summaries.uvm_summary_sql(conn)
 
     # -- subgraph builders -----------------------------------------------------
 
