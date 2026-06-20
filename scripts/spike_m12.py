@@ -50,8 +50,12 @@ from profile_v2 import _cpu_seconds, _lstsq, _peak_rss_bytes, _RSSSampler  # noq
 
 from hdl_kgraph.graph.analysis import edge_kind_histogram, node_kind_histogram  # noqa: E402
 from hdl_kgraph.pipeline import default_db_path, run_build  # noqa: E402
-from hdl_kgraph.schema import EdgeKind  # noqa: E402
-from hdl_kgraph.storage.sqlite_store import SqliteStore  # noqa: E402
+from hdl_kgraph.schema import EdgeKind, Language, NodeKind  # noqa: E402
+from hdl_kgraph.storage.sqlite_store import (  # noqa: E402
+    EDGE_COLUMNS,
+    NODE_COLUMNS,
+    SqliteStore,
+)
 
 _RESULT_MARKER = "__SPIKE_M12_RESULT__"
 _INSTANTIATES = EdgeKind.INSTANTIATES.value
@@ -144,10 +148,110 @@ def _stage_sql(db: Path) -> dict[str, Any]:
     }
 
 
-#: backend name -> (stage fn, availability probe). PR 2/3 append rustworkx / kuzu.
+def _rustworkx_available() -> bool:
+    try:
+        import rustworkx  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _build_rustworkx(db: Path, full_payload: bool) -> Any:
+    """Build a ``rustworkx.PyDiGraph`` from the DB. ``full_payload`` mirrors the
+    NetworkX per-node/edge data (the fair, apples-to-apples comparison); otherwise
+    each node/edge stores only its kind string — an illustrative *flattened-payload*
+    upper bound that also flattens what `load()` keeps as Python dicts."""
+    import rustworkx as rx
+
+    g = rx.PyDiGraph()
+    index: dict[str, int] = {}
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        for node_id, kind, name, qn, file, ls, le, lang, attrs in conn.execute(
+            f"SELECT {NODE_COLUMNS} FROM nodes"
+        ):
+            payload: Any = (
+                {
+                    "kind": NodeKind(kind),
+                    "name": name,
+                    "qualified_name": qn,
+                    "file": file,
+                    "line_span": (ls, le),
+                    "language": Language(lang),
+                    "attrs": json.loads(attrs),
+                }
+                if full_payload
+                else kind
+            )
+            index[node_id] = g.add_node(payload)
+        for src, dst, kind, conf, attrs in conn.execute(f"SELECT {EDGE_COLUMNS} FROM edges"):
+            epayload: Any = (
+                {"kind": EdgeKind(kind), "confidence": conf, "attrs": json.loads(attrs)}
+                if full_payload
+                else kind
+            )
+            g.add_edge(index[src], index[dst], epayload)
+    finally:
+        conn.close()
+    return g
+
+
+def _scan_rustworkx(g: Any, full_payload: bool) -> dict[str, Any]:
+    """The representative scan over a rustworkx graph (kind lives in the payload)."""
+    node_kinds = Counter(p["kind"].value for p in g.nodes()) if full_payload else Counter(g.nodes())
+    edge_kinds: Counter[str] = Counter()
+    fanin: Counter[int] = Counter()
+    for _u, v, w in g.weighted_edge_list():
+        kind = w["kind"].value if full_payload else w
+        edge_kinds[kind] += 1
+        if kind == _INSTANTIATES:
+            fanin[v] += 1
+    return {
+        "node_kinds": dict(node_kinds),
+        "edge_kinds": dict(edge_kinds),
+        "inst_fanin": {
+            "total_edges": sum(fanin.values()),
+            "distinct_targets": len(fanin),
+            "max_fanin": max(fanin.values(), default=0),
+        },
+    }
+
+
+def _stage_rustworkx_impl(db: Path, full_payload: bool) -> dict[str, Any]:
+    with _RSSSampler() as sampler:
+        cpu0 = _cpu_seconds()
+        started = time.perf_counter()
+        g = _build_rustworkx(db, full_payload)
+        result = _scan_rustworkx(g, full_payload)
+        wall_s = time.perf_counter() - started
+        cpu_s = _cpu_seconds() - cpu0
+    return {
+        "result": result,
+        "node_count": g.num_nodes(),
+        "edge_count": g.num_edges(),
+        "wall_s": wall_s,
+        "cpu_s": cpu_s,
+        "peak_rss": _peak_rss_bytes(),
+        "sampled_peak_rss": sampler.peak,
+    }
+
+
+def _stage_rustworkx(db: Path) -> dict[str, Any]:
+    """Track B: rustworkx with NetworkX-equivalent payloads (the fair comparison)."""
+    return _stage_rustworkx_impl(db, full_payload=True)
+
+
+def _stage_rustworkx_flat(db: Path) -> dict[str, Any]:
+    """Track B upper bound: rustworkx storing only kinds (flattened payload)."""
+    return _stage_rustworkx_impl(db, full_payload=False)
+
+
+#: backend name -> (stage fn, availability probe). PR 3 appends kuzu.
 _BACKENDS: dict[str, tuple[Callable[[Path], dict[str, Any]], Callable[[], bool]]] = {
     "networkx": (_stage_networkx, lambda: True),
     "sql": (_stage_sql, lambda: True),
+    "rustworkx": (_stage_rustworkx, _rustworkx_available),
+    "rustworkx_flat": (_stage_rustworkx_flat, _rustworkx_available),
 }
 
 
