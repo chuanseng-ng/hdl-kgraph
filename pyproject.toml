@@ -61,6 +61,11 @@ layout = ["numpy>=1.24", "scipy>=1.10"]
 # package, and only the VHDL backend needs it. Upper-bounded like the
 # tree-sitter stack: these are native/compiled wheels whose API can churn.
 enrich = ["pyslang>=8,<12", "pyVHDLModel>=0.28,<1"]
+# v2 graph-layer spike (M12, #128) — evaluation-only, used solely by
+# scripts/spike_m12.py to measure candidate graph backends, never by the package
+# or the test suite. rustworkx is a native/compiled wheel, so it is upper-bounded
+# like the other native deps. (kuzu is added here when the M12 kuzu track lands.)
+spike = ["rustworkx>=0.14,<1"]
 dev = [
   "pytest>=8",
   "pytest-cov",
