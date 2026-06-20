@@ -99,3 +99,5 @@ def test_review_cli_json_is_content_free(tmp_path: Path, fixtures_dir: Path) -> 
     assert digest["schema"] == REVIEW_SCHEMA
     for ident in _SECRETS:
         assert ident not in result.output
+    assert ".sv" not in result.output  # no filenames via the CLI path either
+    assert str(tmp_path) not in result.output  # no paths

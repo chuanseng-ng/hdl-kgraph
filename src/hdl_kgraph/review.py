@@ -32,6 +32,7 @@ REVIEW_SCHEMA = "hdl-kgraph.review/1"
 
 
 def _corpus(files: list[FileMeta]) -> dict[str, Any]:
+    """File-level counts and parse-health totals (no paths) from the ``files`` table."""
     parsed = [f for f in files if f.skipped_reason is None and f.language is not Language.UNKNOWN]
     filelists = [f for f in files if f.skipped_reason is None and f.language is Language.UNKNOWN]
     error_files = [f for f in parsed if f.parse_error_count]
@@ -68,6 +69,7 @@ def _clock_counts(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _uvm_counts(payload: dict[str, Any]) -> dict[str, Any]:
+    """Strip the UVM-topology summary to component/test-cover counts (drop names)."""
     return {
         "uvm": {
             "component_count": len(payload.get("components", [])),
@@ -77,8 +79,8 @@ def _uvm_counts(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _analyses(graph: nx.MultiDiGraph, clock_payload: str | None, uvm_payload: str | None) -> dict:
-    # Prefer the persisted summaries (bounded read); fall back to computing them
-    # from the loaded graph. Either way we keep only counts.
+    """Clock/CDC/UVM analysis counts. Prefers the persisted summaries (bounded read);
+    falls back to computing them from the loaded graph. Either way: counts only."""
     clock = json.loads(clock_payload) if clock_payload else summary.clock_summary(graph)
     uvm = json.loads(uvm_payload) if uvm_payload else summary.uvm_summary(graph)
     return {**_clock_counts(clock), **_uvm_counts(uvm)}

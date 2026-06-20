@@ -382,14 +382,19 @@ def review(db_path: Path | None, as_json: bool, with_metrics: bool) -> None:
     """
     db = _resolve_db(db_path)
     store = SqliteStore(db)
-    graph, files, meta = store.load()
+    try:
+        graph, files, meta = store.load()
+        clock_payload = store.load_summary("clock_domains")
+        uvm_payload = store.load_summary("uvm_topology")
+    except SchemaVersionError as exc:
+        raise CliError(str(exc)) from exc
     digest = build_review_digest(
         graph,
         files,
         meta,
         db_bytes=db.stat().st_size if db.exists() else None,
-        clock_summary_payload=store.load_summary("clock_domains"),
-        uvm_summary_payload=store.load_summary("uvm_topology"),
+        clock_summary_payload=clock_payload,
+        uvm_summary_payload=uvm_payload,
         with_metrics=with_metrics,
     )
     if as_json:
