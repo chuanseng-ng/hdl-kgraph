@@ -63,3 +63,22 @@ def test_cli_update_bounded_link(tmp_path: Path, fixtures_dir: Path) -> None:
     result = CliRunner().invoke(main, ["update", str(root), "--bounded-link"])
     assert result.exit_code == 0, result.output
     assert "updated in" in result.output
+
+
+def test_bounded_link_is_default(tmp_path: Path, fixtures_dir: Path) -> None:
+    # A plain `update` (no flag) now takes the bounded path by default (v1.13.0).
+    root = _project(tmp_path, fixtures_dir)
+    (root / "extra.sv").write_text((root / "extra.sv").read_text() + "// touch\n")
+    report = run_update(root)
+    assert report.build is not None
+    assert report.build.bounded_link is True
+
+
+def test_no_bounded_link_opts_out(tmp_path: Path, fixtures_dir: Path) -> None:
+    # --no-bounded-link falls back to the in-memory re-link (still byte-identical).
+    root = _project(tmp_path, fixtures_dir)
+    (root / "extra.sv").write_text((root / "extra.sv").read_text() + "// touch\n")
+    report = run_update(root, options=BuildOptions(bounded_link=False))
+    assert report.build is not None
+    assert report.build.bounded_link is False
+    assert report.build.incremental_link is True

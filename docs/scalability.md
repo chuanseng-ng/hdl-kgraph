@@ -90,7 +90,8 @@ tables as before — correct for any graph.
 Parts of the `update` *pipeline* were O(design) in memory:
 
 1. the incremental linker loaded the full prior graph (`SqliteStore.load()`) to
-   re-resolve the dirty closure — **addressed (opt-in) by `--bounded-link`, below**;
+   re-resolve the dirty closure — **addressed: bounded re-link is the default
+   since v1.13.0 (`--no-bounded-link` opts out), below**;
 2. `update` decodes *every* clean unit's stored IR (`pipeline._reuse_unit`), not
    just the dirty/affected ones;
 3. the precomputed summaries are recomputed over the whole graph each update —
@@ -100,7 +101,7 @@ The delta *diff* is bounded (above); item (1) — re-resolving the dirty closure
 without holding the entire prior graph — was the dominant remaining work for true
 100 GB incremental `update`.
 
-**Bounded incremental re-link — `hdl-kgraph update --bounded-link` (opt-in).**
+**Bounded incremental re-link — the default since v1.13.0.**
 `graph/bounded_link.py` re-resolves the dirty closure **without
 `SqliteStore.load()`**: the *unchanged* `_Linker._resolve` is fed lazy SQL-backed
 indexes (`idx_nodes_kind_name`/`idx_edges_*`), `_gc_orphan_stubs` runs over just
@@ -112,11 +113,13 @@ back from the DB (M12.5 SQL scans). It is **byte-identical** to a full `build` �
 single-file edit re-resolves ~1.9 k rows vs a 14 k-row full load; `hdl-kgraph
 bench-link` reports the per-design locality (a median edit re-resolves ~0.4 % of
 refs there). The dev spike (`scripts/spike_m13_link.py`,
-[v2/m13_link_spike.md](v2/m13_link_spike.md)) proved the kernels first. **Default
-`update` is unchanged**; flipping `--bounded-link` to the default — and bounding
-items (2) selective IR decode — is the remaining follow-up. Scope today is the SV
-incremental path (`incremental_link_safe`); VHDL / binds / enrich fall back to a
-full re-link, flag or not.
+[v2/m13_link_spike.md](v2/m13_link_spike.md)) proved the kernels first.
+`hdl-kgraph update` now takes this path by default; `--no-bounded-link` falls back
+to the in-memory re-link. So item (1) is bounded on the default path; the
+remaining follow-up is item (2) **selective IR decode** (`pipeline._reuse_unit`
+still decodes every clean unit's IR, not just the dirty/affected ones). Scope is
+the SV incremental path (`incremental_link_safe`); VHDL / binds / enrich fall back
+to a full re-link, flag or not.
 
 **Why it is all-or-nothing (not a cheap slice).** You cannot simply load a
 lighter prior graph (e.g. nodes + structural edges, dropping the dataflow-edge

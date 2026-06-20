@@ -251,10 +251,11 @@ def _echo_update_report(report: UpdateReport, verbose: bool = False) -> None:
 @_enrich_option
 @click.option("--full", is_flag=True, help="Force a full rebuild.")
 @click.option(
-    "--bounded-link",
-    is_flag=True,
-    help="Re-link incrementally without loading the whole prior graph (#119, "
-    "experimental; byte-identical to the default path).",
+    "--bounded-link/--no-bounded-link",
+    default=True,
+    show_default=True,
+    help="Re-link incrementally without loading the whole prior graph (#119). "
+    "Default; --no-bounded-link uses the legacy in-memory re-link.",
 )
 def update(
     source: Path,
