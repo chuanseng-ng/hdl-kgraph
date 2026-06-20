@@ -263,10 +263,19 @@ def _build_kuzu(db: Path) -> None:
     """Convert the SQLite graph into an embedded kuzu DB (one-time, like the build
     that produces graph.db) — streamed via CSV so the conversion stays bounded."""
     import csv
+    import shutil
 
     import kuzu
 
+    # Idempotent: a stale DB would fail CREATE TABLE. kuzu may store the database
+    # as a single file (recent versions) or a directory (older), plus a .wal
+    # sidecar — clear whatever is there.
     kuzu_dir = _kuzu_dir(db)
+    for stale in (kuzu_dir, kuzu_dir.with_name(kuzu_dir.name + ".wal")):
+        if stale.is_dir():
+            shutil.rmtree(stale)
+        elif stale.exists():
+            stale.unlink()
     nodes_csv = db.parent / "kuzu_nodes.csv"
     edges_csv = db.parent / "kuzu_edges.csv"
     conn_sq = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
