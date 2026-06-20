@@ -373,11 +373,15 @@ _STAGES = {"networkx": _scan_networkx, "sql": _scan_sql, "kuzu": _scan_kuzu}
 # Orchestration (subprocess-isolated peak RSS; parent stays lean)
 # --------------------------------------------------------------------------- #
 def _run_child(stage: str, db: Path) -> dict[str, Any]:
-    proc = subprocess.run(
-        [sys.executable, __file__, "--_child", stage, "--db", str(db)],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, __file__, "--_child", stage, "--db", str(db)],
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"stage {stage!r} timed out after 900s") from exc
     if proc.returncode != 0:
         raise RuntimeError(f"stage {stage!r} failed:\n{proc.stderr}")
     for line in proc.stdout.splitlines():
@@ -437,8 +441,14 @@ def main() -> int:
     for b in backends:
         res = measured[b]["result"]
         dom_ok = res["domains"] == oracle["domains"]
-        # kuzu computes domains only; sql also computes cdc
-        cdc_ok = res.get("cdc_suspects", oracle["cdc_suspects"]) == oracle["cdc_suspects"]
+        # kuzu computes domains only; sql also computes cdc (check both list + count)
+        if "cdc_suspects" in res:
+            cdc_ok = (
+                res["cdc_suspects"] == oracle["cdc_suspects"]
+                and res.get("cdc_suspect_count") == oracle["cdc_suspect_count"]
+            )
+        else:
+            cdc_ok = True
         scope = "domains+cdc" if "cdc_suspects" in res else "domains"
         verdict = "ok" if (dom_ok and cdc_ok) else "PARITY-FAIL"
         ok = ok and dom_ok and cdc_ok
