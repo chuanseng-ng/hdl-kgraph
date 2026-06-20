@@ -160,6 +160,9 @@ def _clock_domains(conn: sqlite3.Connection, find: Any) -> list[dict[str, Any]]:
 # cdc_suspects (the combinational-bridge logic, mirroring clocks.cdc_suspects)
 # --------------------------------------------------------------------------- #
 def _cdc_suspects(conn: sqlite3.Connection, find: Any) -> list[dict[str, Any]]:
+    """CDC suspects (a signal driven in one domain and read in another), mirroring
+    ``clocks.cdc_suspects``: per-process domains, the one-step combinational bridge,
+    then the crossing list sorted by ``(signal_name, reader_id, driver_domain)``."""
     # Process -> its unique domain (root, confidence); ambiguous ones skipped.
     proc_domain: dict[str, tuple[str, float]] = {}
     clock_nets: set[str] = set()
@@ -283,6 +286,7 @@ def _node_attrs(conn: sqlite3.Connection, ids: set[str]) -> dict[str, tuple[str,
 
 
 def _chunks(ids: set[str]) -> Iterator[list[str]]:
+    """Yield *ids* in lists no larger than the SQLite host-var cap (:data:`_IN_CHUNK`)."""
     seq = list(ids)
     for start in range(0, len(seq), _IN_CHUNK):
         yield seq[start : start + _IN_CHUNK]
