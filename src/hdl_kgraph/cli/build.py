@@ -250,6 +250,12 @@ def _echo_update_report(report: UpdateReport, verbose: bool = False) -> None:
 @_allow_outside_root_option
 @_enrich_option
 @click.option("--full", is_flag=True, help="Force a full rebuild.")
+@click.option(
+    "--bounded-link",
+    is_flag=True,
+    help="Re-link incrementally without loading the whole prior graph (#119, "
+    "experimental; byte-identical to the default path).",
+)
 def update(
     source: Path,
     db_path: Path | None,
@@ -266,6 +272,7 @@ def update(
     allow_outside_root: bool,
     enrich: bool,
     full: bool,
+    bounded_link: bool,
     no_auto_incdir: bool,
 ) -> None:
     """Incrementally update the graph: re-parse only changed files.
@@ -290,6 +297,7 @@ def update(
     options.jobs = jobs
     options.allow_outside_root = allow_outside_root
     options.enrich = options.enrich or enrich
+    options.bounded_link = bounded_link
     renderer = _ProgressRenderer()
     report = _run_pipeline(
         lambda: run_update(

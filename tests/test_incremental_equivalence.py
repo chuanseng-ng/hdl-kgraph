@@ -17,8 +17,27 @@ from pathlib import Path
 
 import pytest
 
+from hdl_kgraph.config import BuildOptions
 from hdl_kgraph.pipeline import default_db_path, run_build, run_update
 from hdl_kgraph.storage.sqlite_store import SqliteStore
+
+# Every equivalence/fuzz case runs under BOTH link paths — the default in-memory
+# `link_incremental` and the opt-in memory-bounded re-link (#119) — so the
+# byte-identical gate covers the bounded path too. Set by the autouse fixture.
+_BOUNDED_LINK = False
+
+
+@pytest.fixture(params=[False, True], ids=["inmem", "bounded"], autouse=True)
+def _link_mode(request: pytest.FixtureRequest):
+    """Run each test once per incremental-link path."""
+    global _BOUNDED_LINK
+    _BOUNDED_LINK = request.param
+    yield
+    _BOUNDED_LINK = False
+
+
+def _update(root: Path) -> None:
+    run_update(root, options=BuildOptions(bounded_link=_BOUNDED_LINK))
 
 
 def _signature(graph) -> tuple[list, list]:
@@ -50,7 +69,7 @@ def _graph(root: Path):
 
 def _assert_incremental_matches_full(root: Path, label: str = "") -> None:
     """``update`` then a fresh ``build`` of the same tree must be identical."""
-    run_update(root)
+    _update(root)
     inc_nodes, inc_edges = _signature(_graph(root))
     run_build(root)
     full_nodes, full_edges = _signature(_graph(root))
@@ -216,7 +235,7 @@ def test_incremental_equals_full_fuzz(tmp_path: Path, seed: int) -> None:
     for step in range(8):
         counter = _random_edit(rng, model, counter)
         _materialize(inc, model)
-        run_update(inc)
+        _update(inc)
         inc_sig = _signature(_graph(inc))
 
         ref = tmp_path / f"ref_{step}"
