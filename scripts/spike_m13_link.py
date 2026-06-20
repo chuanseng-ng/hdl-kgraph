@@ -49,6 +49,7 @@ import networkx as nx
 
 from hdl_kgraph.graph import builder
 from hdl_kgraph.graph.builder import (
+    _PASS1_EDGE_KINDS,
     _PASS2_EDGE_KINDS,
     Node,
     _Linker,
@@ -249,12 +250,12 @@ def bounded_resolve(
     file_irs: list[FileIR],
     dirty_files: set[str],
     affected_srcs: set[str],
-) -> tuple[set[tuple[Any, ...]], _Counter]:
+) -> tuple[set[tuple[Any, ...]], _Counter, nx.MultiDiGraph]:
     """Re-resolve the live refs (dirty + affected) without loading the prior graph.
 
-    Returns the set of emitted pass-2 edge tuples (excluding TEST_COVERS) keyed by
-    src, plus the rows-read counter — the same edges the oracle produces for those
-    srcs.
+    Returns three values: the emitted pass-2 edge tuples (excluding TEST_COVERS;
+    the same edges the oracle produces for those srcs), the rows-read counter, and
+    the delta graph (consumed by :func:`bounded_stub_gc`).
     """
     conn = sqlite3.connect(f"file:{db_prior}?mode=ro", uri=True)
     ctr = _Counter()
@@ -275,6 +276,10 @@ def bounded_resolve(
                 linker.node_file.setdefault(node.id, ir.path)
 
         # Splice the dirty units' fresh nodes + local edges (link_incremental step 2b).
+        # Pass-1 edges are deduped across dirty IRs, exactly as link_incremental does,
+        # so a shared include spliced into several dirty units cannot duplicate a
+        # DECLARES child (which would skew scope resolution vs the oracle).
+        seen_local: set[tuple[str, str, EdgeKind]] = set()
         for ir in file_irs:
             if ir.path not in dirty_files:
                 continue
@@ -286,6 +291,11 @@ def bounded_resolve(
                 linker.definitions[(node.kind, node.name)].append(node.id)
                 linker.definitions_ci[(node.kind, node.name.lower())].append(node.id)
             for edge in ir.local_edges:
+                key = (edge.src, edge.dst, edge.kind)
+                if edge.kind in _PASS1_EDGE_KINDS:
+                    if key in seen_local:
+                        continue
+                    seen_local.add(key)
                 linker._ensure_endpoint(edge.src, edge.kind, edge.dst, ir.path)
                 linker._ensure_endpoint(edge.dst, edge.kind, edge.src, ir.path)
                 builder._add_edge(linker.graph, edge)
@@ -388,7 +398,7 @@ def _ensure_node(conn: sqlite3.Connection, g: nx.MultiDiGraph, nid: str, ctr: _C
 def _pass2_edges(graph: nx.MultiDiGraph) -> set[tuple[Any, ...]]:
     """Emitted pass-2 edges (excluding TEST_COVERS) as comparable tuples."""
     return {
-        (u, v, d["kind"].value, round(d["confidence"], 6), json.dumps(d["attrs"], sort_keys=True))
+        (u, v, d["kind"].value, d["confidence"], json.dumps(d["attrs"], sort_keys=True))
         for u, v, d in graph.edges(data=True)
         if d["kind"] in _PASS2_EDGE_KINDS and d["kind"] is not EdgeKind.TEST_COVERS
     }

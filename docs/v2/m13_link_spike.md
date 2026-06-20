@@ -59,7 +59,7 @@ graph, no source tree, no second resolver. It reports, across single-file edits,
 of refs an incremental re-link re-resolves vs a full re-link (the exact `affected_clean_refs` +
 `dirty_closure` rule):
 
-```
+```text
 $ hdl-kgraph bench-link --json        # on the RV32I SoC
 { "totals": {"files": 54, "refs": 5462, "nodes": 3774, "edges": 10352},
   "reresolved_refs": {"p50": 23, "p90": 85, "max": 116, "mean": 33.8},
