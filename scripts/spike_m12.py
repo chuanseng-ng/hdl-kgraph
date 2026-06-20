@@ -246,12 +246,111 @@ def _stage_rustworkx_flat(db: Path) -> dict[str, Any]:
     return _stage_rustworkx_impl(db, full_payload=False)
 
 
-#: backend name -> (stage fn, availability probe). PR 3 appends kuzu.
+def _kuzu_available() -> bool:
+    try:
+        import kuzu  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _kuzu_dir(db: Path) -> Path:
+    """The embedded kuzu DB directory derived from the SQLite db path."""
+    return db.parent / "graph_kuzu"
+
+
+def _build_kuzu(db: Path) -> None:
+    """Convert the SQLite graph into an embedded kuzu DB (one-time, like the build
+    that produces graph.db) — streamed via CSV so the conversion stays bounded."""
+    import csv
+    import shutil
+
+    import kuzu
+
+    # Idempotent: a stale DB would fail CREATE TABLE. kuzu may store the database
+    # as a single file (recent versions) or a directory (older), plus a .wal
+    # sidecar — clear whatever is there.
+    kuzu_dir = _kuzu_dir(db)
+    for stale in (kuzu_dir, kuzu_dir.with_name(kuzu_dir.name + ".wal")):
+        if stale.is_dir():
+            shutil.rmtree(stale)
+        elif stale.exists():
+            stale.unlink()
+    nodes_csv = db.parent / "kuzu_nodes.csv"
+    edges_csv = db.parent / "kuzu_edges.csv"
+    conn_sq = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        with open(nodes_csv, "w", newline="") as fh:
+            csv.writer(fh).writerows(conn_sq.execute("SELECT id, kind FROM nodes"))
+        with open(edges_csv, "w", newline="") as fh:
+            csv.writer(fh).writerows(conn_sq.execute("SELECT src, dst, kind FROM edges"))
+    finally:
+        conn_sq.close()
+    conn = kuzu.Connection(kuzu.Database(str(kuzu_dir)))
+    conn.execute("CREATE NODE TABLE Node(id STRING, kind STRING, PRIMARY KEY(id))")
+    conn.execute("CREATE REL TABLE Edge(FROM Node TO Node, kind STRING)")
+    conn.execute(f"COPY Node FROM '{nodes_csv}'")
+    conn.execute(f"COPY Edge FROM '{edges_csv}'")
+
+
+def _kuzu_one(conn: Any, query: str, params: dict[str, Any] | None = None) -> list[Any]:
+    res = conn.execute(query, params) if params else conn.execute(query)
+    rows = []
+    while res.has_next():
+        rows.append(res.get_next())
+    return rows
+
+
+def _stage_kuzu(db: Path) -> dict[str, Any]:
+    """Track C: out-of-core query over the prebuilt embedded kuzu DB — RAM should
+    stay flat (kuzu answers from disk, never materialising the whole graph)."""
+    import kuzu
+
+    with _RSSSampler() as sampler:
+        cpu0 = _cpu_seconds()
+        started = time.perf_counter()
+        conn = kuzu.Connection(kuzu.Database(str(_kuzu_dir(db))))
+        node_kinds = {k: c for k, c in _kuzu_one(conn, "MATCH (n:Node) RETURN n.kind, COUNT(*)")}
+        edge_kinds = {
+            k: c for k, c in _kuzu_one(conn, "MATCH ()-[e:Edge]->() RETURN e.kind, COUNT(*)")
+        }
+        d, m, tot = _kuzu_one(
+            conn,
+            "MATCH ()-[e:Edge {kind:$k}]->(n:Node) WITH n, COUNT(*) AS c "
+            "RETURN COUNT(n), MAX(c), SUM(c)",
+            {"k": _INSTANTIATES},
+        )[0]
+        node_count = _kuzu_one(conn, "MATCH (n:Node) RETURN COUNT(*)")[0][0]
+        edge_count = _kuzu_one(conn, "MATCH ()-[e:Edge]->() RETURN COUNT(*)")[0][0]
+        wall_s = time.perf_counter() - started
+        cpu_s = _cpu_seconds() - cpu0
+    result = {
+        "node_kinds": node_kinds,
+        "edge_kinds": edge_kinds,
+        "inst_fanin": {
+            "total_edges": int(tot or 0),
+            "distinct_targets": int(d or 0),
+            "max_fanin": int(m or 0),
+        },
+    }
+    return {
+        "result": result,
+        "node_count": node_count,
+        "edge_count": edge_count,
+        "wall_s": wall_s,
+        "cpu_s": cpu_s,
+        "peak_rss": _peak_rss_bytes(),
+        "sampled_peak_rss": sampler.peak,
+    }
+
+
+#: backend name -> (stage fn, availability probe).
 _BACKENDS: dict[str, tuple[Callable[[Path], dict[str, Any]], Callable[[], bool]]] = {
     "networkx": (_stage_networkx, lambda: True),
     "sql": (_stage_sql, lambda: True),
     "rustworkx": (_stage_rustworkx, _rustworkx_available),
     "rustworkx_flat": (_stage_rustworkx_flat, _rustworkx_available),
+    "kuzu": (_stage_kuzu, _kuzu_available),
 }
 
 
@@ -296,6 +395,8 @@ def _profile_point(
     (generate_dense if dense else generate)(root, files)
     _run_child("build", root)  # build the DB in a child so the parent stays lean
     db = default_db_path(root)
+    if "kuzu" in backends:
+        _run_child("kuzu_build", db)  # one-time SQLite→kuzu conversion (not measured)
     measured = {b: _agg([_run_child(b, db) for _ in range(repeat)]) for b in backends}
 
     # Parity gate: every backend must compute the byte-identical scan.
@@ -358,6 +459,10 @@ def main() -> int:
             _RESULT_MARKER
             + json.dumps({"node_count": report.node_count, "edge_count": report.edge_count})
         )
+        return 0
+    if args.child_stage == "kuzu_build":
+        _build_kuzu(Path(args.child_target))
+        print(_RESULT_MARKER + json.dumps({"ok": True}))
         return 0
     if args.child_stage:
         stage_fn, _probe = _BACKENDS[args.child_stage]
