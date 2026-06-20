@@ -385,12 +385,21 @@ out-of-core / compact core behind the stable `storage`/`GraphQuery` seam.
       [docs/v2/m11_profiling.md](docs/v2/m11_profiling.md). Finding: `load()` is
       graph-CPU-bound (85–90 %), not SQLite-I/O-bound, and **peak RAM from
       materialising the whole graph is the binding constraint**.
-- [ ] **M12 — graph-layer spike:** evaluate an out-of-core layer (`kuzu` /
-      SQL-native whole-design scans — the primary path, the only one that reaches
-      100 GB) and a `rustworkx`/compact in-memory core (runner-up, for the ~10 GB
-      regime), both behind the `storage` seam.
-- [ ] **M13 — PyO3 Rust core (if M12 warrants):** compact streaming graph +
-      pass-2 link + whole-design scans; subsumes the memory-bounded linker (#119).
+- [x] **M12 — graph-layer spike:** evaluated an out-of-core layer and a compact
+      in-memory core via `scripts/spike_m12.py` —
+      [docs/v2/m12_graph_layer.md](docs/v2/m12_graph_layer.md). Finding: an
+      **off-the-shelf out-of-core layer hits the RAM target** — SQL-native scans
+      (zero dep) and `kuzu` (embedded graph DB) answer a whole-design scan in
+      **bounded RAM** (~50 MiB / ~110 MiB flat, vs NetworkX's 4610 B/node linear →
+      ~228 GB at 100 GB). `rustworkx` lowers the constant (~29 %) but stays linear
+      (runner-up, ~10 GB regime). **A bespoke Rust core is not required to clear
+      the RAM ceiling**, so M13 is deferred.
+- [ ] **M13 — PyO3 Rust core (deferred; only if M12's off-the-shelf path proves
+      insufficient):** compact streaming graph + pass-2 link + whole-design scans;
+      subsumes the memory-bounded linker (#119). Per M12, the off-the-shelf
+      out-of-core path clears the documented wall, so this is no longer on the
+      critical path — revisit only if a scan needs what neither SQL nor kuzu
+      expresses efficiently.
 - [ ] **M14 — native tree-sitter walk → `FileIR` (optional):** remove per-node FFI
       from the parse hot path.
 
