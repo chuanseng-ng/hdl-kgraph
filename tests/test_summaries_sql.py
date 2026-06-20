@@ -1,9 +1,10 @@
-"""Parity tests for the bounded SQL-native clock/CDC summary (#128 v2).
+"""Parity tests for the bounded SQL-native summaries (#128 v2).
 
-``storage/summaries.clock_summary_sql`` must be byte-identical to the NetworkX
-oracle ``graph/summary.clock_summary`` — that equivalence is the whole contract
-(it lets the out-of-core fallback replace a full graph load). These tests pin it
-on the clock/CDC fixtures and exercise the ``GraphQuery`` seam end-to-end.
+``storage/summaries.clock_summary_sql`` / ``uvm_summary_sql`` must be byte-identical
+to the NetworkX oracles ``graph/summary.clock_summary`` / ``uvm_summary`` — that
+equivalence is the whole contract (it lets the out-of-core fallback replace a full
+graph load). These tests pin it on the fixtures and exercise the ``GraphQuery`` seam
+end-to-end.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from hdl_kgraph.graph import summary
 from hdl_kgraph.pipeline import default_db_path, run_build
 from hdl_kgraph.storage.query import GraphQuery
 from hdl_kgraph.storage.sqlite_store import SqliteStore
-from hdl_kgraph.storage.summaries import clock_summary_sql
+from hdl_kgraph.storage.summaries import clock_summary_sql, uvm_summary_sql
 
 # Fixture sets that exercise clocks/CDC, incl. cross-language net aliasing.
 _FIXTURE_SETS = [
@@ -76,3 +77,44 @@ def test_graphquery_prefers_persisted_summary(tmp_path: Path, fixtures_dir: Path
     db = _build(tmp_path, fixtures_dir, ["two_clock_cdc.sv"])
     graph, _f, _m = SqliteStore(db).load()
     assert GraphQuery(db).clock_domains() == summary.clock_summary(graph)
+
+
+# --- UVM topology -----------------------------------------------------------
+
+# Fixture sets exercising the EXTENDS-chain role classification + TEST_COVERS.
+_UVM_FIXTURE_SETS = [
+    ["uvm_tb.sv", "verif_constructs.sv"],
+    ["ext_uvm.sv"],
+]
+
+
+@pytest.mark.parametrize("names", _UVM_FIXTURE_SETS, ids=lambda n: "+".join(n))
+def test_sql_uvm_summary_matches_oracle(
+    tmp_path: Path, fixtures_dir: Path, names: list[str]
+) -> None:
+    """The bounded subgraph scan equals the NetworkX UVM oracle, byte for byte."""
+    db = _build(tmp_path, fixtures_dir, names)
+    graph, _f, _m = SqliteStore(db).load()
+    oracle = summary.uvm_summary(graph)
+    with SqliteStore(db)._connect() as conn:
+        sql = uvm_summary_sql(conn)
+    assert sql == oracle  # byte-identical: components + test_covers
+
+
+def test_graphquery_falls_back_to_sql_uvm_without_summary(
+    tmp_path: Path, fixtures_dir: Path
+) -> None:
+    """With the persisted UVM summary deleted, GraphQuery serves it via the bounded
+    subgraph fallback (no full load) and still equals the oracle."""
+    # Drop the persisted summary so GraphQuery takes the out-of-core subgraph path.
+    db = _build(tmp_path, fixtures_dir, ["uvm_tb.sv", "verif_constructs.sv"])
+    graph, _f, _m = SqliteStore(db).load()
+    oracle = summary.uvm_summary(graph)
+
+    conn = sqlite3.connect(db)
+    conn.execute("DELETE FROM summaries WHERE name = 'uvm_topology'")
+    conn.commit()
+    conn.close()
+
+    assert SqliteStore(db).load_summary("uvm_topology") is None  # fallback armed
+    assert GraphQuery(db).uvm_topology() == oracle

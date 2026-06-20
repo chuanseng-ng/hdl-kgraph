@@ -9,6 +9,18 @@ the major version, and schema changes ship with a migration.
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-06-20
+
+### Changed
+
+- UVM-topology reports are now served **out-of-core** when the persisted whole-design
+  summary is absent — the companion change to 1.9.0's clock/CDC fallback. Previously a
+  database with no `uvm_topology` summary fell back to loading the **entire** graph into
+  memory to recompute it. `GraphQuery.uvm_topology()` now hydrates only the bounded class
+  subgraph (CLASS nodes + EXTENDS/TEST_COVERS edges) and runs the same analysis on it
+  (`storage/summaries.py`), with results byte-identical to the NetworkX path. Both
+  whole-design summaries (clock/CDC and UVM) are now bounded.
+
 ## [1.9.0] - 2026-06-20
 
 ### Changed
