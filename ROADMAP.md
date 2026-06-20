@@ -372,6 +372,32 @@ read/write volume). Detail in [docs/scalability.md](docs/scalability.md).
 
 ---
 
+## v2.0 — Rust-cored re-architecture for the 10–100 GB regime ([#128])
+
+The in-memory `MultiDiGraph` is an architectural ceiling, not a config knob: the
+profiling below shows it is **~2.3× the on-disk DB**, so a 100 GB design needs
+~225 GB RAM and "does not load." v2 is a deliberate major-version break — an
+out-of-core / compact core behind the stable `storage`/`GraphQuery` seam.
+
+- [x] **M11 — profile & decision gate:** memory + CPU profile of `build` /
+      summaries / `load()` across a scale sweep (`scripts/profile_v2.py`),
+      pinning the dominant cost and selecting the M12 path —
+      [docs/v2/m11_profiling.md](docs/v2/m11_profiling.md). Finding: `load()` is
+      graph-CPU-bound (85–90 %), not SQLite-I/O-bound, and **peak RAM from
+      materialising the whole graph is the binding constraint**.
+- [ ] **M12 — graph-layer spike:** evaluate an out-of-core layer (`kuzu` /
+      SQL-native whole-design scans — the primary path, the only one that reaches
+      100 GB) and a `rustworkx`/compact in-memory core (runner-up, for the ~10 GB
+      regime), both behind the `storage` seam.
+- [ ] **M13 — PyO3 Rust core (if M12 warrants):** compact streaming graph +
+      pass-2 link + whole-design scans; subsumes the memory-bounded linker (#119).
+- [ ] **M14 — native tree-sitter walk → `FileIR` (optional):** remove per-node FFI
+      from the parse hot path.
+
+[#128]: https://github.com/chuanseng-ng/hdl-kgraph/issues/128
+
+---
+
 ## M8–M10 are an exploratory track, not a delivery commitment
 
 M8–M10 span roughly a dozen languages and ecosystems (C/C++, Python/cocotb,
