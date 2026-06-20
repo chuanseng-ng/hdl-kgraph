@@ -9,7 +9,16 @@ the major version, and schema changes ship with a migration.
 
 ## [Unreleased]
 
-## [1.12.0] - 2026-06-20
+## [1.13.0] - 2026-06-20
+
+### Changed
+
+- The memory-bounded incremental re-link (#119) is now the **default** for `hdl-kgraph update`:
+  an incremental `update` re-resolves the dirty closure straight from SQLite instead of loading
+  the whole prior graph, removing the last O(design)-RAM step from the common `update` path. The
+  result is byte-identical to a full `build` (the equivalence + fuzz suite runs over both paths).
+  Pass `--no-bounded-link` to fall back to the previous in-memory re-link. VHDL / binds / enrich
+  still fall back to a full re-link regardless. (Introduced opt-in as `--bounded-link` in 1.12.0.)
 
 ### Added
 
