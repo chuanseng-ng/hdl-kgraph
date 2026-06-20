@@ -263,6 +263,10 @@ class BuildOptions:
     enrich: bool = False  # run M7 native-frontend elaboration (opt-in)
     # Restrict enrichment to these backend names; empty = all installed.
     enrich_backends: list[str] = field(default_factory=list)
+    # Opt-in memory-bounded incremental re-link (#119): re-resolve the dirty
+    # closure straight from SQLite instead of loading the whole prior graph.
+    # Default keeps the in-memory link; the byte-identical fuzz suite covers both.
+    bounded_link: bool = False
 
 
 def parse_lib(text: str) -> tuple[str, Path]:

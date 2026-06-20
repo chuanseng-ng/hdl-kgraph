@@ -87,29 +87,36 @@ tables as before — correct for any graph.
 
 ### Remaining ceiling (known)
 
-Three parts of the `update` *pipeline* are still O(design) in memory:
+Parts of the `update` *pipeline* were O(design) in memory:
 
-1. the incremental linker loads the full prior graph (`SqliteStore.load()`) to
-   re-resolve the dirty closure;
+1. the incremental linker loaded the full prior graph (`SqliteStore.load()`) to
+   re-resolve the dirty closure — **addressed (opt-in) by `--bounded-link`, below**;
 2. `update` decodes *every* clean unit's stored IR (`pipeline._reuse_unit`), not
    just the dirty/affected ones;
-3. the precomputed summaries are recomputed over the whole graph each update.
+3. the precomputed summaries are recomputed over the whole graph each update —
+   the bounded path refreshes them out-of-core via the M12.5 SQL scans instead.
 
-The delta *diff* is now bounded (above), so (1) — making `link_incremental`
-re-resolve the dirty closure without holding the entire prior graph in memory —
-is the dominant remaining work for true 100 GB incremental `update`.
+The delta *diff* is bounded (above); item (1) — re-resolving the dirty closure
+without holding the entire prior graph — was the dominant remaining work for true
+100 GB incremental `update`.
 
-**Feasibility proven (M13 spike).** A dev spike (`scripts/spike_m13_link.py`,
-[v2/m13_link_spike.md](v2/m13_link_spike.md)) shows the two entangled kernels —
-name resolution and stub-GC — run **bounded by the dirty closure** and
-**byte-identical** to today, without `SqliteStore.load()`: the unchanged
-`_Linker._resolve` is fed lazy SQL-backed indexes (`idx_nodes_kind_name`/
-`idx_edges_*`), and `_gc_orphan_stubs` runs over just the stub neighbourhood. On
-the real RV32I SoC it re-resolves an edit reading ~1.9 k rows vs a 14 k-row full
-load, byte-for-byte identical. `hdl-kgraph bench-link` ships the per-design
-locality metric (a median single-file edit re-resolves ~0.4 % of refs there).
-Productionising it as the default `update` path (behind `--bounded-link`, fuzz
-suite parametrized over both) is the next slice.
+**Bounded incremental re-link — `hdl-kgraph update --bounded-link` (opt-in).**
+`graph/bounded_link.py` re-resolves the dirty closure **without
+`SqliteStore.load()`**: the *unchanged* `_Linker._resolve` is fed lazy SQL-backed
+indexes (`idx_nodes_kind_name`/`idx_edges_*`), `_gc_orphan_stubs` runs over just
+the stub neighbourhood, the result is written as the existing scoped delta
+(`_apply_delta_scoped`), and the whole-design summaries + report counts are read
+back from the DB (M12.5 SQL scans). It is **byte-identical** to a full `build` —
+`tests/test_incremental_equivalence.py` is parametrized over both link paths
+(in-memory and bounded), including the randomized fuzz. On the real RV32I SoC a
+single-file edit re-resolves ~1.9 k rows vs a 14 k-row full load; `hdl-kgraph
+bench-link` reports the per-design locality (a median edit re-resolves ~0.4 % of
+refs there). The dev spike (`scripts/spike_m13_link.py`,
+[v2/m13_link_spike.md](v2/m13_link_spike.md)) proved the kernels first. **Default
+`update` is unchanged**; flipping `--bounded-link` to the default — and bounding
+items (2) selective IR decode — is the remaining follow-up. Scope today is the SV
+incremental path (`incremental_link_safe`); VHDL / binds / enrich fall back to a
+full re-link, flag or not.
 
 **Why it is all-or-nothing (not a cheap slice).** You cannot simply load a
 lighter prior graph (e.g. nodes + structural edges, dropping the dataflow-edge

@@ -9,6 +9,19 @@ the major version, and schema changes ship with a migration.
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-06-20
+
+### Added
+
+- `hdl-kgraph update --bounded-link` (opt-in, experimental) re-links incrementally **without
+  loading the whole prior graph** (#119). It re-resolves the dirty closure straight from SQLite —
+  the unchanged resolution engine fed by lazy `idx_nodes_kind_name`/`idx_edges_*` lookups, with a
+  bounded stub-GC over only the stub neighbourhood — and writes the same scoped delta. The default
+  `update` path is unchanged; the result is **byte-identical** to a full `build`, now pinned by
+  `tests/test_incremental_equivalence.py` parametrized over **both** link paths (including the
+  randomized fuzz). This removes the last O(design)-RAM step from `update` on the opt-in path; a
+  later release will flip it to the default. See [docs/scalability.md](docs/scalability.md).
+
 ## [1.11.0] - 2026-06-20
 
 ### Added

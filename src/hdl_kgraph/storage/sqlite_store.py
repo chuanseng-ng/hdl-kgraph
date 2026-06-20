@@ -715,6 +715,34 @@ class SqliteStore:
         finally:
             conn.close()
 
+    def save_summaries(self, summaries: dict[str, str]) -> None:
+        """Replace the whole-design ``summaries`` table in one small transaction.
+
+        Used by the bounded-link path (#119), which writes the node/edge/ref
+        delta first (leaving summaries untouched) and then recomputes the
+        summaries from the updated database via the SQL-native scans."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("DELETE FROM summaries")
+            conn.executemany(
+                "INSERT INTO summaries (name, payload) VALUES (?, ?)", list(summaries.items())
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def graph_counts(self) -> tuple[int, int, int]:
+        """``(nodes, edges, unresolved_nodes)`` from the live DB without loading
+        the graph — for build-report counts on the bounded-link path."""
+        with self._connect() as conn:
+            self._check_version(conn)
+            nodes = conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+            edges = conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+            unresolved = conn.execute(
+                "SELECT COUNT(*) FROM nodes WHERE json_extract(attrs, '$.unresolved') = 1"
+            ).fetchone()[0]
+            return int(nodes), int(edges), int(unresolved)
+
     def load(self) -> tuple[nx.MultiDiGraph, list[FileMeta], dict[str, str]]:
         """Load (graph, file metadata, meta key/values) from the database."""
         with self._connect() as conn:
@@ -766,7 +794,10 @@ def _apply_delta(
     units = units or {}
     discrepancies = discrepancies or []
     ref_records = ref_records or []
-    summaries = summaries or {}
+    # NOTE: summaries is left as-is here — ``None`` means "do not touch the
+    # summaries table" (the bounded-link path refreshes them via SQL after the
+    # delta write), while ``{}`` means "clear it". _refresh_small_tables honors
+    # the distinction.
 
     if touched_files is not None and affected_srcs is not None:
         return _apply_delta_scoped(
@@ -869,21 +900,25 @@ def _refresh_small_tables(
     root: Path,
     options_hash: str,
     discrepancies: list[Discrepancy],
-    summaries: dict[str, str],
+    summaries: dict[str, str] | None,
 ) -> None:
     """Wholesale-refresh the small tables both delta paths share.
 
     ``discrepancies`` and ``summaries`` are a handful of rows (enrich findings;
     the two whole-design JSON blobs), and ``meta`` is five keys — cheaper to
-    rewrite than to diff.
+    rewrite than to diff. ``summaries=None`` leaves the summaries table
+    untouched (the bounded-link path rewrites it via SQL after the delta write).
     """
     conn.execute("DELETE FROM discrepancies")
     conn.executemany(
         "INSERT INTO discrepancies VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         [_discrepancy_row(d) for d in discrepancies],
     )
-    conn.execute("DELETE FROM summaries")
-    conn.executemany("INSERT INTO summaries (name, payload) VALUES (?, ?)", list(summaries.items()))
+    if summaries is not None:
+        conn.execute("DELETE FROM summaries")
+        conn.executemany(
+            "INSERT INTO summaries (name, payload) VALUES (?, ?)", list(summaries.items())
+        )
     conn.executemany(
         "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", _meta_rows(root, options_hash)
     )
@@ -898,7 +933,7 @@ def _apply_delta_scoped(
     options_hash: str,
     discrepancies: list[Discrepancy],
     ref_records: list[RefRecord],
-    summaries: dict[str, str],
+    summaries: dict[str, str] | None,
     touched_files: set[str],
     affected_srcs: set[str],
 ) -> dict[str, int]:

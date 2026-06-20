@@ -62,6 +62,10 @@ from hdl_kgraph.enrich import (
     summarize_enrichment,
 )
 from hdl_kgraph.enrich.base import Discrepancy
+from hdl_kgraph.graph.bounded_link import (
+    changed_target_names_bounded,
+    link_incremental_bounded,
+)
 from hdl_kgraph.graph.builder import RefRecord, link_graph, link_incremental
 from hdl_kgraph.graph.summary import build_summaries
 from hdl_kgraph.ids import file_node_id, library_node_id
@@ -163,6 +167,11 @@ class BuildReport:
     enrich_diagnostics: list[str] = field(default_factory=list)
     # M4/#64: pass-2 link was incremental (re-resolved only the dirty closure).
     incremental_link: bool = False
+    # #119: the incremental link ran memory-bounded (no full prior-graph load).
+    # When set, the linked graph is a *partial* delta, so report counts and the
+    # whole-design summaries are taken from the DB after the scoped write, not
+    # from the in-memory graph.
+    bounded_link: bool = False
     # Clean-file ref source ids the incremental link re-resolved (#64). Together
     # with the dirty files this bounds the scoped delta write to the changed rows.
     affected_srcs: set[str] = field(default_factory=set)
@@ -395,6 +404,23 @@ def _link_pass2(
         prior_ref_index = store.load_ref_index()
         if any(r.edge_kind is EdgeKind.BINDS for r in prior_ref_index):
             reason = "bind/configuration directives not supported yet"
+        elif options.bounded_link:
+            # #119: re-resolve the dirty closure straight from SQLite, never
+            # loading the whole prior graph. changed_target_names is computed
+            # from the DB (not a materialised graph) to keep the path bounded.
+            changed = changed_target_names_bounded(db_path, irs, dirty_files)
+            affected = {src for _, src, _ in affected_clean_refs(prior_ref_index, changed)}
+            report.incremental_link = True
+            report.bounded_link = True
+            report.affected_srcs = affected
+            graph, ref_records = link_incremental_bounded(
+                db_path, irs, dirty_files, affected, warnings=report.warnings
+            )
+            report.refs_total = len(ref_records)
+            report.refs_reresolved = sum(
+                1 for r in ref_records if r.file in dirty_files or r.src_id in affected
+            )
+            return graph, ref_records
         else:
             prior_graph, _, _ = store.load()
             changed = changed_target_names(prior_graph, irs, dirty_files)
@@ -413,6 +439,22 @@ def _link_pass2(
             return graph, ref_records
     report.incremental_link_skipped = reason
     return link_graph(irs, warnings=report.warnings)
+
+
+def _refresh_summaries_and_counts_from_db(store: SqliteStore, report: BuildReport) -> None:
+    """After a bounded-link scoped write, recompute the whole-design summaries
+    out-of-core (M12.5 SQL scans) from the now-current DB and read back the graph
+    counts — the bounded path never had the whole graph in memory to do either."""
+    from hdl_kgraph.storage.summaries import clock_summary_sql, uvm_summary_sql
+
+    with store._connect() as conn:
+        store._check_version(conn)
+        summaries = {
+            "clock_domains": json.dumps(clock_summary_sql(conn)),
+            "uvm_topology": json.dumps(uvm_summary_sql(conn)),
+        }
+    store.save_summaries(summaries)
+    report.node_count, report.edge_count, report.unresolved_count = store.graph_counts()
 
 
 def _execute(
@@ -699,11 +741,15 @@ def _execute(
         irs, db_path, options, discovered, incremental, dirty_files, report
     )
     report.link_s = time.perf_counter() - _t_link
-    report.node_count = graph.number_of_nodes()
-    report.edge_count = graph.number_of_edges()
-    report.unresolved_count = sum(
-        1 for _, data in graph.nodes(data=True) if data["attrs"].get("unresolved")
-    )
+    if not report.bounded_link:
+        # The bounded link returns a *partial* graph (delta only), so its
+        # number_of_nodes/edges would be wrong — those counts are read from the
+        # DB after the scoped write below instead.
+        report.node_count = graph.number_of_nodes()
+        report.edge_count = graph.number_of_edges()
+        report.unresolved_count = sum(
+            1 for _, data in graph.nodes(data=True) if data["attrs"].get("unresolved")
+        )
 
     # -- pass 3 (M7): opt-in native-frontend enrichment ------------------------
     discrepancies: list[Discrepancy] = []
@@ -733,7 +779,14 @@ def _execute(
     # Whole-design summaries (clock domains, UVM topology) cannot be answered
     # from a bounded subgraph, so compute them once here — the graph is already
     # in memory — and persist them for the MCP server to read without a load.
-    summaries = {name: json.dumps(payload) for name, payload in build_summaries(graph).items()}
+    # The bounded-link path has only a partial graph in memory, so it defers the
+    # summaries: they are recomputed from the written DB via the SQL-native scans
+    # below (summaries=None tells save_incremental to leave the table untouched).
+    summaries: dict[str, str] | None
+    if report.bounded_link:
+        summaries = None
+    else:
+        summaries = {name: json.dumps(p) for name, p in build_summaries(graph).items()}
     opts_hash = options_hash(base, options, inputs)
     if incremental:
         # Scope the delta write to the dirty closure only when the link was
@@ -752,6 +805,10 @@ def _execute(
             touched_files=dirty_files if scoped else None,
             affected_srcs=report.affected_srcs if scoped else None,
         )
+        if report.bounded_link:
+            # Now the DB reflects the delta: recompute the whole-design summaries
+            # out-of-core (M12.5 SQL scans) and read the graph counts back.
+            _refresh_summaries_and_counts_from_db(store, report)
     else:
         store.save(
             graph,
