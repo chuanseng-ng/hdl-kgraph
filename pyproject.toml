@@ -63,9 +63,9 @@ layout = ["numpy>=1.24", "scipy>=1.10"]
 enrich = ["pyslang>=8,<12", "pyVHDLModel>=0.28,<1"]
 # v2 graph-layer spike (M12, #128) — evaluation-only, used solely by
 # scripts/spike_m12.py to measure candidate graph backends, never by the package
-# or the test suite. rustworkx is a native/compiled wheel, so it is upper-bounded
-# like the other native deps. (kuzu is added here when the M12 kuzu track lands.)
-spike = ["rustworkx>=0.14,<1"]
+# or the test suite. rustworkx and kuzu are native/compiled wheels, so they are
+# upper-bounded like the other native deps.
+spike = ["rustworkx>=0.14,<1", "kuzu>=0.6,<1"]
 dev = [
   "pytest>=8",
   "pytest-cov",
