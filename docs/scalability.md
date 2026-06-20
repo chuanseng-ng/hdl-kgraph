@@ -44,12 +44,22 @@ is intrinsic, not a regression.
 ## Whole-design summaries: precomputed, not re-scanned
 
 Clock-domain/CDC and UVM-topology reports scan every `CLOCKED_BY`/`DRIVES`/
-`READS`/`EXTENDS` edge, so they cannot be bounded. Instead the build computes
-them once — while the graph is already in memory — and persists the result to
-the `summaries` table (`graph/summary.py`); the MCP tools read a small JSON blob
-in well under a millisecond at any design size. The build computes them on a
-full `build` and refreshes them on `update` (a database older than schema v8 has
-no summaries table, so the reader falls back to a one-off full load).
+`READS`/`EXTENDS` edge, so they cannot be bounded to a subgraph. Instead the
+build computes them once — while the graph is already in memory — and persists
+the result to the `summaries` table (`graph/summary.py`); the MCP tools read a
+small JSON blob in well under a millisecond at any design size. The build
+computes them on a full `build` and refreshes them on `update`.
+
+When the persisted summary is **absent** — a database older than schema v8 (no
+summaries table), or any build that did not persist it — the reader falls back to
+recomputing the report. For **clock domains / CDC** that fallback is now itself
+out-of-core: `storage/summaries.py` (`clock_summary_sql`) computes the report
+straight from SQLite — the net-alias union-find reduces to connected components
+over the derived dataflow edges, reusing `clocks._UnionFind` over a SQL-derived
+pair list — without ever materializing the graph, byte-identically to the
+NetworkX path (`tests/test_summaries_sql.py` pins the parity; validated on a real
+design in [v2/m12_real_design.md](v2/m12_real_design.md)). UVM topology still
+falls back to a one-off full load (a bounded SQL port is deferred).
 
 ## Writes
 

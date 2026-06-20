@@ -1,0 +1,78 @@
+"""Parity tests for the bounded SQL-native clock/CDC summary (#128 v2).
+
+``storage/summaries.clock_summary_sql`` must be byte-identical to the NetworkX
+oracle ``graph/summary.clock_summary`` — that equivalence is the whole contract
+(it lets the out-of-core fallback replace a full graph load). These tests pin it
+on the clock/CDC fixtures and exercise the ``GraphQuery`` seam end-to-end.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+from hdl_kgraph.graph import summary
+from hdl_kgraph.pipeline import default_db_path, run_build
+from hdl_kgraph.storage.query import GraphQuery
+from hdl_kgraph.storage.sqlite_store import SqliteStore
+from hdl_kgraph.storage.summaries import clock_summary_sql
+
+# Fixture sets that exercise clocks/CDC, incl. cross-language net aliasing.
+_FIXTURE_SETS = [
+    ["two_clock_cdc.sv"],
+    ["dataflow.sv"],
+    ["two_clock_cdc.sv", "dataflow.sv", "dataflow.vhd"],
+]
+
+
+def _build(tmp_path: Path, fixtures_dir: Path, names: list[str]) -> Path:
+    for name in names:
+        (tmp_path / name).write_text((fixtures_dir / name).read_text())
+    run_build(tmp_path)
+    return default_db_path(tmp_path)
+
+
+@pytest.mark.parametrize("names", _FIXTURE_SETS, ids=lambda n: "+".join(n))
+def test_sql_clock_summary_matches_oracle(
+    tmp_path: Path, fixtures_dir: Path, names: list[str]
+) -> None:
+    db = _build(tmp_path, fixtures_dir, names)
+    graph, _f, _m = SqliteStore(db).load()
+    oracle = summary.clock_summary(graph)
+    with SqliteStore(db)._connect() as conn:
+        sql = clock_summary_sql(conn)
+    assert sql == oracle  # byte-identical: domains, cdc_suspect_count, cdc_suspects
+
+
+def test_two_clock_fixture_shape(tmp_path: Path, fixtures_dir: Path) -> None:
+    # Sanity: the canonical fixture is two domains + exactly one CDC suspect.
+    db = _build(tmp_path, fixtures_dir, ["two_clock_cdc.sv"])
+    with SqliteStore(db)._connect() as conn:
+        sql = clock_summary_sql(conn)
+    assert len(sql["domains"]) == 2
+    assert sql["cdc_suspect_count"] == 1
+
+
+def test_graphquery_falls_back_to_sql_without_summary(tmp_path: Path, fixtures_dir: Path) -> None:
+    # Drop the persisted summary so GraphQuery takes the out-of-core SQL path
+    # (simulates a pre-v8 / migrated database), and assert it equals the oracle.
+    db = _build(tmp_path, fixtures_dir, ["two_clock_cdc.sv", "dataflow.vhd"])
+    graph, _f, _m = SqliteStore(db).load()
+    oracle = summary.clock_summary(graph)
+
+    conn = sqlite3.connect(db)
+    conn.execute("DELETE FROM summaries WHERE name = 'clock_domains'")
+    conn.commit()
+    conn.close()
+
+    assert SqliteStore(db).load_summary("clock_domains") is None  # fallback armed
+    assert GraphQuery(db).clock_domains() == oracle
+
+
+def test_graphquery_prefers_persisted_summary(tmp_path: Path, fixtures_dir: Path) -> None:
+    # With the summary present, GraphQuery serves it directly and still matches.
+    db = _build(tmp_path, fixtures_dir, ["two_clock_cdc.sv"])
+    graph, _f, _m = SqliteStore(db).load()
+    assert GraphQuery(db).clock_domains() == summary.clock_summary(graph)

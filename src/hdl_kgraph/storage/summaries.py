@@ -1,0 +1,288 @@
+"""Bounded, SQL-native whole-design summaries (scalability).
+
+Clock-domain/CDC reports are genuinely global — they scan every
+CLOCKED_BY/DRIVES/READS edge — so they cannot be answered from a bounded
+subgraph the way the structural queries in :mod:`hdl_kgraph.storage.query` are.
+The build precomputes them once and persists the result (:mod:`hdl_kgraph.graph.summary`),
+which the reader serves in well under a millisecond. This module is the
+**fallback** for when that persisted summary is absent (a database migrated from
+a pre-v8 schema, or any build that could not materialise the whole graph): it
+computes the *same* report directly from SQLite, without ever loading the graph
+into NetworkX.
+
+The result is byte-identical to :func:`hdl_kgraph.graph.summary.clock_summary`
+— ``tests/test_summaries_sql.py`` pins that parity against the NetworkX oracle.
+The key reformulation that makes it possible (validated on a real design in
+``scripts/spike_m12_clocks.py``, see ``docs/v2/m12_real_design.md``) is that the
+union-find over net aliases assigns each node the lexicographically-smallest id
+in its connected component — so reusing :class:`hdl_kgraph.graph.clocks._UnionFind`
+over the SQL-derived alias pairs reproduces the oracle's roots exactly, with no
+recursive CTE and no write to the read-only connection.
+
+Bounded by design: the ``kind='process'`` filters are pushed into SQL via joins,
+and node ``name``/``file``/``line_start`` are fetched only for the small set of
+ids actually emitted (suspect signals + domain roots), chunked under the host-var
+cap — so RAM tracks the *answer*, not the design.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from collections import defaultdict
+from collections.abc import Iterator
+from typing import Any
+
+from hdl_kgraph.graph import clocks
+from hdl_kgraph.schema import EdgeKind, NodeKind
+
+#: SQLite caps host parameters per statement; chunk ``IN (...)`` lists under it
+#: (mirrors :data:`hdl_kgraph.storage.query._IN_CHUNK`).
+_IN_CHUNK = 800
+
+
+def clock_summary_sql(conn: sqlite3.Connection) -> dict[str, Any]:
+    """The ``clock_domains`` tool payload (domains + CDC suspects) from SQLite.
+
+    Byte-identical to :func:`hdl_kgraph.graph.summary.clock_summary`, but reads
+    directly from *conn* (a read-only connection) instead of a materialised
+    graph. See the module docstring for the bounded-RAM contract.
+    """
+    uf = _alias_uf(conn)
+    find = uf.find  # un-aliased ids resolve to themselves, as in the oracle
+    suspects = _cdc_suspects(conn, find)
+    return {
+        "domains": _clock_domains(conn, find),
+        "cdc_suspect_count": len(suspects),
+        "cdc_suspects": suspects[:50],
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Alias components (union-find ≡ transitive closure + MIN reachable id)
+# --------------------------------------------------------------------------- #
+def _alias_pairs(conn: sqlite3.Connection) -> list[tuple[str, str]]:
+    """(formal_port_id, actual_id) pairs, mirroring ``clocks.net_aliases`` exactly.
+
+    A formal port and its actual signal are the same net when a derived
+    READS/DRIVES connection's actual is a single identifier equal to the actual
+    node's name (VHDL casefold included). The join walks INSTANTIATES → DECLARES
+    to the formal PORT named by ``via_port``.
+    """
+    conn.create_function("strip", 1, lambda s: s.strip() if s else None)
+    return conn.execute(
+        """
+        WITH a AS (
+          SELECT e.src inst, e.dst actual,
+                 json_extract(e.attrs,'$.expr_text') expr,
+                 json_extract(e.attrs,'$.via_port')  via
+          FROM edges e
+          WHERE e.kind IN (?, ?) AND json_extract(e.attrs,'$.derived')='connects'
+        ),
+        matched AS (
+          SELECT a.inst, a.actual, a.via, na.name actual_name
+          FROM a JOIN nodes na ON na.id=a.actual
+          WHERE a.expr IS NOT NULL AND (strip(a.expr)=na.name OR lower(strip(a.expr))=na.name)
+        )
+        SELECT p.id formal, m.actual
+        FROM matched m
+        JOIN edges i ON i.src=m.inst AND i.kind=?
+        JOIN edges d ON d.src=i.dst AND d.kind=?
+        JOIN nodes p ON p.id=d.dst AND p.kind=? AND p.name=m.via
+        """,
+        (
+            EdgeKind.READS.value,
+            EdgeKind.DRIVES.value,
+            EdgeKind.INSTANTIATES.value,
+            EdgeKind.DECLARES.value,
+            NodeKind.PORT.value,
+        ),
+    ).fetchall()
+
+
+def _alias_uf(conn: sqlite3.Connection) -> clocks._UnionFind:
+    """Union-find over the alias pairs; reuses the oracle's lex-min root choice."""
+    uf = clocks._UnionFind()
+    for formal, actual in _alias_pairs(conn):
+        uf.union(formal, actual)
+    return uf
+
+
+# --------------------------------------------------------------------------- #
+# clock_domains
+# --------------------------------------------------------------------------- #
+def _clock_domains(conn: sqlite3.Connection, find: Any) -> list[dict[str, Any]]:
+    """Domains keyed by alias-root, mirroring ``clocks.clock_domains`` + the
+    ``summary.clock_summary`` shaping (names stripped to counts upstream)."""
+    names: dict[str, set[str]] = defaultdict(set)
+    process_ids: dict[str, list[str]] = defaultdict(list)
+    min_conf: dict[str, float] = defaultdict(lambda: 1.0)
+    for src, clock, conf, clock_name in conn.execute(
+        "SELECT e.src, e.dst, e.confidence, n.name FROM edges e "
+        "JOIN nodes n ON n.id = e.dst WHERE e.kind = ?",
+        (EdgeKind.CLOCKED_BY.value,),
+    ):
+        root = find(clock)
+        names[root].add(clock_name)
+        if src not in process_ids[root]:  # dedup, preserve order (oracle parity)
+            process_ids[root].append(src)
+        min_conf[root] = min(min_conf[root], conf)
+
+    # signal_count: driven nets of the PROCESS-kind procs only (the rest of the
+    # process_ids list counts toward process_count but drives nothing relevant).
+    all_procs = {p for procs in process_ids.values() for p in procs}
+    proc_kind = _kinds_of(conn, all_procs)
+    domains: list[dict[str, Any]] = []
+    for root, aliases_set in names.items():
+        driven: set[str] = set()
+        for proc in process_ids[root]:
+            if proc_kind.get(proc) != NodeKind.PROCESS.value:
+                continue
+            for (sig,) in conn.execute(
+                "SELECT dst FROM edges WHERE kind = ? AND src = ?",
+                (EdgeKind.DRIVES.value, proc),
+            ):
+                driven.add(find(sig))
+        aliases = sorted(aliases_set)
+        domains.append(
+            {
+                "clock": aliases[0],
+                "aliases": aliases,
+                "process_count": len(process_ids[root]),
+                "signal_count": len(driven),
+                "min_confidence": min_conf[root],
+            }
+        )
+    domains.sort(key=lambda d: d["aliases"][0])
+    return domains
+
+
+# --------------------------------------------------------------------------- #
+# cdc_suspects (the combinational-bridge logic, mirroring clocks.cdc_suspects)
+# --------------------------------------------------------------------------- #
+def _cdc_suspects(conn: sqlite3.Connection, find: Any) -> list[dict[str, Any]]:
+    # Process -> its unique domain (root, confidence); ambiguous ones skipped.
+    proc_domain: dict[str, tuple[str, float]] = {}
+    clock_nets: set[str] = set()
+    for proc, clock, conf in _process_edges(conn, EdgeKind.CLOCKED_BY):
+        root = find(clock)
+        clock_nets.add(root)
+        held = proc_domain.get(proc)
+        if held is None:
+            proc_domain[proc] = (root, conf)
+        elif held[0] != root:
+            proc_domain[proc] = ("", 0.0)  # multi-clock process: ambiguous
+    proc_domain = {p: d for p, d in proc_domain.items() if d[0]}
+
+    sig_domain: dict[str, dict[str, tuple[float, str]]] = defaultdict(dict)
+    reads: dict[str, list[tuple[str, float]]] = defaultdict(list)
+    drives: dict[str, list[tuple[str, float]]] = defaultdict(list)
+    for proc, sig, conf in _process_edges(conn, EdgeKind.READS):
+        reads[proc].append((find(sig), conf))
+    for proc, sig, conf in _process_edges(conn, EdgeKind.DRIVES):
+        drives[proc].append((find(sig), conf))
+        domain = proc_domain.get(proc)
+        if domain is not None:
+            root, dconf = domain
+            sig_domains = sig_domain[find(sig)]
+            conf_m = min(dconf, conf)
+            if root not in sig_domains or sig_domains[root][0] < conf_m:
+                sig_domains[root] = (conf_m, proc)
+
+    # One-step combinational bridge: an undomained process hands the domains of
+    # what it reads to what it drives (a single sweep, no fixpoint).
+    for proc, driven_list in drives.items():
+        if proc in proc_domain:
+            continue
+        inherited: dict[str, tuple[float, str]] = {}
+        for read_sig, rconf in reads.get(proc, []):
+            for root, (conf, driver) in sig_domain.get(read_sig, {}).items():
+                merged = min(conf, rconf)
+                if root not in inherited or inherited[root][0] < merged:
+                    inherited[root] = (merged, driver)
+        for sig, dconf in driven_list:
+            sig_domains = sig_domain[sig]
+            for root, (conf, driver) in inherited.items():
+                merged = min(conf, dconf)
+                if root not in sig_domains or sig_domains[root][0] < merged:
+                    sig_domains[root] = (merged, driver)
+
+    # Build suspects as id-tuples, then fetch name/file/line for just the ids we
+    # emit (bounded) before shaping + sorting.
+    raw: list[tuple[str, str, str, str, float]] = []  # sig, driver, driver_root, reader, conf
+    for proc, (reader_root, reader_conf) in sorted(proc_domain.items()):
+        for sig, rconf in reads.get(proc, []):
+            if sig in clock_nets:
+                continue  # reading a clock net is not a data crossing
+            for root, (conf, driver) in sorted(sig_domain.get(sig, {}).items()):
+                if root == reader_root:
+                    continue
+                raw.append((sig, driver, root, proc, min(conf, rconf, reader_conf)))
+
+    # Attrs are needed only for the suspect signal (name/file/line), the driver
+    # domain root and the reader domain root (names) — a bounded set.
+    need = (
+        {sig for sig, *_ in raw}
+        | {root for _s, _d, root, *_ in raw}
+        | {proc_domain[proc][0] for *_, proc, _c in raw}
+    )
+    attrs = _node_attrs(conn, need)
+    suspects = [
+        {
+            "signal_id": sig,
+            "signal_name": attrs[sig][0],
+            "file": attrs[sig][1],
+            "line": attrs[sig][2],
+            "driver_id": driver,
+            "driver_domain": attrs[root][0],
+            "reader_id": proc,
+            "reader_domain": attrs[proc_domain[proc][0]][0],
+            "confidence": conf,
+        }
+        for sig, driver, root, proc, conf in raw
+    ]
+    suspects.sort(key=lambda s: (s["signal_name"], s["reader_id"], s["driver_domain"]))
+    return suspects
+
+
+# --------------------------------------------------------------------------- #
+# bounded node-attribute fetches
+# --------------------------------------------------------------------------- #
+def _process_edges(conn: sqlite3.Connection, kind: EdgeKind) -> Iterator[tuple[str, str, float]]:
+    """``(src, dst, confidence)`` for edges of *kind* whose src is a PROCESS node.
+
+    Pushes the ``kind='process'`` filter into SQL (a join), so the oracle's
+    ``if g.nodes[proc]["kind"] is not PROCESS: continue`` never needs every
+    node's kind loaded into memory.
+    """
+    yield from conn.execute(
+        "SELECT e.src, e.dst, e.confidence FROM edges e JOIN nodes n ON n.id = e.src "
+        "WHERE e.kind = ? AND n.kind = ?",
+        (kind.value, NodeKind.PROCESS.value),
+    )
+
+
+def _kinds_of(conn: sqlite3.Connection, ids: set[str]) -> dict[str, str]:
+    """``id -> kind`` for *ids* (chunked under the host-var cap)."""
+    out: dict[str, str] = {}
+    for chunk in _chunks(ids):
+        placeholders = ", ".join("?" for _ in chunk)
+        out.update(conn.execute(f"SELECT id, kind FROM nodes WHERE id IN ({placeholders})", chunk))
+    return out
+
+
+def _node_attrs(conn: sqlite3.Connection, ids: set[str]) -> dict[str, tuple[str, str, int]]:
+    """``id -> (name, file, line_start)`` for *ids* (chunked)."""
+    out: dict[str, tuple[str, str, int]] = {}
+    for chunk in _chunks(ids):
+        placeholders = ", ".join("?" for _ in chunk)
+        for nid, name, file, line in conn.execute(
+            f"SELECT id, name, file, line_start FROM nodes WHERE id IN ({placeholders})", chunk
+        ):
+            out[nid] = (name, file, line)
+    return out
+
+
+def _chunks(ids: set[str]) -> Iterator[list[str]]:
+    seq = list(ids)
+    for start in range(0, len(seq), _IN_CHUNK):
+        yield seq[start : start + _IN_CHUNK]

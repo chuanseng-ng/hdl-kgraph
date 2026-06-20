@@ -308,12 +308,27 @@ class GraphQuery:
             # (identical result) and runs the real impact_radius on it.
             return _impact_impl(graph, files, target, max_depth, limit, offset)
 
-    # -- genuinely-global tools (precomputed summary, else full load) ----------
+    # -- genuinely-global tools (precomputed summary, else recompute) ----------
 
     def clock_domains(self) -> dict[str, Any]:
-        from hdl_kgraph.graph.summary import clock_summary
+        """The ``clock_domains`` payload: the persisted summary when present,
+        else a **bounded SQL-native scan** (never a full graph load).
 
-        return self._summary("clock_domains", clock_summary)
+        The clock/CDC report cannot be answered from a bounded subgraph, but it
+        *can* be computed straight from SQLite without materialising the whole
+        graph (:func:`hdl_kgraph.storage.summaries.clock_summary_sql`, byte-
+        identical to the NetworkX path), so the missing-summary fallback stays
+        out-of-core."""
+        import json
+
+        from hdl_kgraph.storage import summaries
+
+        payload = self._store.load_summary("clock_domains")
+        if payload is not None:
+            return dict(json.loads(payload))
+        with self._store._connect() as conn:
+            self._store._check_version(conn)
+            return summaries.clock_summary_sql(conn)
 
     def uvm_topology(self) -> dict[str, Any]:
         from hdl_kgraph.graph.summary import uvm_summary
@@ -322,7 +337,10 @@ class GraphQuery:
 
     def _summary(self, name: str, builder: Any) -> dict[str, Any]:
         """Read a precomputed whole-design summary; for a pre-v8 database with
-        no summaries table, fall back to computing it from the full graph."""
+        no summaries table, fall back to computing it from the full graph.
+
+        Used by :meth:`uvm_topology` (a bounded SQL port is deferred);
+        :meth:`clock_domains` has its own out-of-core SQL fallback."""
         import json
 
         payload = self._store.load_summary(name)

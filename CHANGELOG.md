@@ -9,6 +9,17 @@ the major version, and schema changes ship with a migration.
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-06-20
+
+### Changed
+
+- Clock-domain / CDC reports are now served **out-of-core** when the persisted whole-design
+  summary is absent. Previously a database with no `clock_domains` summary (one migrated from
+  a pre-v8 schema, or any build that did not persist it) fell back to loading the **entire**
+  graph into memory to recompute the report — the O(design)-RAM wall. The `GraphQuery` reader
+  now computes it directly from SQLite instead (`storage/summaries.py`), with results
+  byte-identical to the NetworkX path. UVM topology keeps the full-load fallback for now.
+
 ## [1.8.0] - 2026-06-20
 
 ### Added
