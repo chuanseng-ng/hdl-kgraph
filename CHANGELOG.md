@@ -9,6 +9,19 @@ the major version, and schema changes ship with a migration.
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-06-20
+
+### Added
+
+- `hdl-kgraph bench-link [--json] [--sample N]` reports **incremental-link locality** — how many
+  pass-2 references a single-file edit re-resolves vs a full re-link, as a content-free
+  distribution (`reresolved_refs` and `locality_ratio` p50/p90/max). Computed from a built
+  `graph.db` alone (the persisted `ref_index` + include/macro dependency graph), so it runs
+  post-install with no source tree; a low ratio quantifies how much a memory-bounded incremental
+  linker (#119) would save on a given design. The byte-identical correctness of an actual bounded
+  re-link is validated separately by the M13 spike (`scripts/spike_m13_link.py`,
+  [docs/v2/m13_link_spike.md](docs/v2/m13_link_spike.md)).
+
 ## [1.10.0] - 2026-06-20
 
 ### Changed
