@@ -99,6 +99,18 @@ The delta *diff* is now bounded (above), so (1) — making `link_incremental`
 re-resolve the dirty closure without holding the entire prior graph in memory —
 is the dominant remaining work for true 100 GB incremental `update`.
 
+**Feasibility proven (M13 spike).** A dev spike (`scripts/spike_m13_link.py`,
+[v2/m13_link_spike.md](v2/m13_link_spike.md)) shows the two entangled kernels —
+name resolution and stub-GC — run **bounded by the dirty closure** and
+**byte-identical** to today, without `SqliteStore.load()`: the unchanged
+`_Linker._resolve` is fed lazy SQL-backed indexes (`idx_nodes_kind_name`/
+`idx_edges_*`), and `_gc_orphan_stubs` runs over just the stub neighbourhood. On
+the real RV32I SoC it re-resolves an edit reading ~1.9 k rows vs a 14 k-row full
+load, byte-for-byte identical. `hdl-kgraph bench-link` ships the per-design
+locality metric (a median single-file edit re-resolves ~0.4 % of refs there).
+Productionising it as the default `update` path (behind `--bounded-link`, fuzz
+suite parametrized over both) is the next slice.
+
 **Why it is all-or-nothing (not a cheap slice).** You cannot simply load a
 lighter prior graph (e.g. nodes + structural edges, dropping the dataflow-edge
 bulk). Several steps read the *whole* graph and are entangled:
