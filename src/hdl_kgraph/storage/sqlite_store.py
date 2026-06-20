@@ -704,6 +704,17 @@ class SqliteStore:
             row = conn.execute("SELECT payload FROM summaries WHERE name = ?", (name,)).fetchone()
             return row[0] if row else None
 
+    def set_meta(self, key: str, value: str) -> None:
+        """Upsert a single ``meta`` key/value — e.g. post-build telemetry written
+        after persist (``build_stats``). A small in-place write to the live (WAL)
+        database; readers tolerate the key's absence on older DBs."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
+            conn.commit()
+        finally:
+            conn.close()
+
     def load(self) -> tuple[nx.MultiDiGraph, list[FileMeta], dict[str, str]]:
         """Load (graph, file metadata, meta key/values) from the database."""
         with self._connect() as conn:
