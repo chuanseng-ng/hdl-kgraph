@@ -619,6 +619,23 @@ class SqliteStore:
                 )
             }
 
+    def load_file_errors(self) -> dict[str, tuple[int, list[str]]]:
+        """path -> (parse_error_count, parse_error details), for files that have any.
+
+        ``update`` carries these forward for clean units it does not re-decode on
+        the selective bounded path (the parse-error telemetry otherwise lives only
+        in the stored IR).
+        """
+        with self._connect() as conn:
+            self._check_version(conn)
+            return {
+                path: (count, json.loads(errors))
+                for path, count, errors in conn.execute(
+                    "SELECT path, parse_error_count, parse_errors FROM files "
+                    "WHERE parse_error_count != 0"
+                )
+            }
+
     def load_dependency_graph(self) -> nx.MultiDiGraph:
         """The preprocessor-dependency subgraph (M4 dirty closure).
 
@@ -654,6 +671,39 @@ class SqliteStore:
                 path: StoredUnit(ir=ir, macro_events=events, included=included)
                 for path, ir, events, included in conn.execute("SELECT * FROM file_irs")
             }
+
+    def load_macro_events(self) -> dict[str, tuple[str, str]]:
+        """``path -> (macro_events, included)`` for every stored unit, **without**
+        the large ``ir`` blob (#119 selective decode).
+
+        The bounded `update` path must still replay each clean unit's macro events
+        in compile order (the shared preprocessor table feeds dirty re-parses), but
+        only needs the small columns to do so — the full IR is decoded later, and
+        only for the dirty/affected units (:meth:`load_units_for`)."""
+        with self._connect() as conn:
+            self._check_version(conn)
+            return {
+                path: (events, included)
+                for path, events, included in conn.execute(
+                    "SELECT path, macro_events, included FROM file_irs"
+                )
+            }
+
+    def load_units_for(self, paths: set[str]) -> dict[str, StoredUnit]:
+        """Full stored units (incl. the ``ir`` blob) for just *paths* — the
+        dirty/affected units the bounded re-link actually decodes (#119)."""
+        out: dict[str, StoredUnit] = {}
+        with self._connect() as conn:
+            self._check_version(conn)
+            for chunk in _chunked(set(paths)):
+                placeholders = ", ".join("?" for _ in chunk)
+                for path, ir, events, included in conn.execute(
+                    f"SELECT path, ir, macro_events, included FROM file_irs "
+                    f"WHERE path IN ({placeholders})",
+                    tuple(chunk),
+                ):
+                    out[path] = StoredUnit(ir=ir, macro_events=events, included=included)
+        return out
 
     def load_discrepancies(self) -> list[Discrepancy]:
         """The M7 enrichment findings (empty for a non-enriched build)."""

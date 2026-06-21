@@ -9,6 +9,22 @@ the major version, and schema changes ship with a migration.
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-06-21
+
+### Changed
+
+- **Selective IR decode** on the bounded (default) `update` path (#119) clears the last
+  O(design)-RAM step. `update` no longer decodes *every* clean unit's stored IR: clean units are
+  replayed from the small `macro_events` column only (the compile-order prerequisite for dirty
+  re-parses), and just the dirty units plus the *affected* clean units the bounded linker
+  re-resolves have their full IR blob decoded. The resident IR set is now O(dirty closure), not
+  O(design), so the whole `update` pipeline — reads, summaries, linker re-resolution, and IR
+  decode — is bounded without a Rust core. The result stays **byte-identical** to a full `build`
+  (the equivalence + fuzz suite runs over both link paths). Bind/configuration directives still
+  need every unit's IR, so that case transparently retries with the full-decode path;
+  `--no-bounded-link`, VHDL, and enrich keep the previous full-decode flow. See
+  [docs/scalability.md](docs/scalability.md).
+
 ## [1.13.0] - 2026-06-20
 
 ### Changed

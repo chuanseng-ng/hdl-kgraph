@@ -92,14 +92,17 @@ Parts of the `update` *pipeline* were O(design) in memory:
 1. the incremental linker loaded the full prior graph (`SqliteStore.load()`) to
    re-resolve the dirty closure — **addressed: bounded re-link is the default
    since v1.13.0 (`--no-bounded-link` opts out), below**;
-2. `update` decodes *every* clean unit's stored IR (`pipeline._reuse_unit`), not
-   just the dirty/affected ones;
+2. `update` decoded *every* clean unit's stored IR (`pipeline._reuse_unit`), not
+   just the dirty/affected ones — **addressed: selective IR decode is the default
+   since v1.14.0, below**;
 3. the precomputed summaries are recomputed over the whole graph each update —
    the bounded path refreshes them out-of-core via the M12.5 SQL scans instead.
 
 The delta *diff* is bounded (above); item (1) — re-resolving the dirty closure
 without holding the entire prior graph — was the dominant remaining work for true
-100 GB incremental `update`.
+100 GB incremental `update`. With items (1) and (2) both addressed on the default
+path, the whole `update` pipeline — reads, summaries, linker re-resolution, and IR
+decode — is now bounded.
 
 **Bounded incremental re-link — the default since v1.13.0.**
 `graph/bounded_link.py` re-resolves the dirty closure **without
@@ -115,14 +118,32 @@ bench-link` reports the per-design locality (a median edit re-resolves ~0.4 % of
 refs there). The dev spike (`scripts/spike_m13_link.py`,
 [v2/m13_link_spike.md](v2/m13_link_spike.md)) proved the kernels first.
 `hdl-kgraph update` now takes this path by default; `--no-bounded-link` falls back
-to the in-memory re-link. So item (1) is bounded on the default path; the
-remaining follow-up is item (2) **selective IR decode** (`pipeline._reuse_unit`
-still decodes every clean unit's IR, not just the dirty/affected ones). Scope is
+to the in-memory re-link. So item (1) is bounded on the default path. Scope is
 the SV incremental path (`incremental_link_safe`); VHDL / binds / enrich fall back
 to a full re-link, flag or not.
 
-**Why it is all-or-nothing (not a cheap slice).** You cannot simply load a
-lighter prior graph (e.g. nodes + structural edges, dropping the dataflow-edge
+**Selective IR decode — the default since v1.14.0 (item (2)).** The bounded path
+no longer decodes every clean unit's stored IR. `run_update` loads only the small
+`macro_events`/`included` columns for clean units (`SqliteStore.load_macro_events`,
+**not** the big `ir` blob); the compile-order loop *replays each clean unit's macros*
+into the shared `MacroTable` — the prerequisite for dirty re-parses to see earlier
+`` `define``s — but skips `ir_from_json`. Only the dirty units (parsed fresh) and
+the *affected* clean units the bounded linker re-resolves have their full IR decoded
+(`SqliteStore.load_units_for`, fetched on demand in compile order). The affected set
+is bounded by the dirty closure, so the resident IR set is O(closure), not O(design),
+and `link_incremental_bounded` reads `node_file`/`ref_records` only for the live refs'
+srcs — byte-identical to the full-decode path for every key actually read. Clean units'
+preprocessor warnings and parse-error telemetry are carried forward from the preserved
+`files` rows (`load_file_warnings`/`load_file_errors`) rather than re-derived. Bind/
+configuration directives need every unit's IR for a full re-link, so that case raises
+`_SelectiveLinkUnavailable` and transparently retries with the legacy full-decode path;
+`--no-bounded-link`, VHDL, and enrich keep the full-decode flow. The decode-count is
+pinned by `tests/test_bounded_link.py` and the byte-identical gate by
+`tests/test_incremental_equivalence.py` (both link paths, incl. fuzz). With items (1)
+and (2) both bounded on the default path, the v2 RAM goal is met without a Rust core.
+
+**Why it had to land as one architecture (not a cheap slice).** You cannot simply
+load a lighter prior graph (e.g. nodes + structural edges, dropping the dataflow-edge
 bulk). Several steps read the *whole* graph and are entangled:
 
 - `_gc_orphan_stubs` (`graph/builder.py`) keeps an unresolved stub alive iff it
@@ -135,10 +156,10 @@ bulk). Several steps read the *whole* graph and are entangled:
 - the definitions/`children` seeding and `report.edge_count` read all
   nodes/edges.
 
-So a memory-bounded linker must land as one architecture — SQL-backed name
-resolution (`idx_nodes_kind_name`), SQL-aware stub-GC, an incremental
-`derive_test_covers`, selective IR decode, and a delta-only output (which the
-existing `_apply_delta_scoped` already consumes) — all gated by the
-byte-identical fuzz suite. It is a large, high-risk change to the core
-resolution engine for a payoff that only bites at the extreme, so it is
-deliberately deferred: reads and the write *diff* are already bounded.
+So the memory-bounded linker landed as one architecture — SQL-backed name
+resolution (`idx_nodes_kind_name`), SQL-aware stub-GC (over only the stub
+neighbourhood), out-of-core summaries + counts, selective IR decode, and a
+delta-only output (which the existing `_apply_delta_scoped` consumes) — all gated
+by the byte-identical fuzz suite. It shipped incrementally (opt-in `--bounded-link`
+in v1.12.0, default in v1.13.0, selective IR decode in v1.14.0); reads and the
+write *diff* were already bounded before it.
