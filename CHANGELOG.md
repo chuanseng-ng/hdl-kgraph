@@ -9,6 +9,22 @@ the major version, and schema changes ship with a migration.
 
 ## [Unreleased]
 
+## [1.15.0] - 2026-06-21
+
+### Fixed
+
+- **TEST_COVERS edges on incremental `update`** (#119). TEST_COVERS is a cross-file relation — a
+  `tb_*` top / `uvm_test` class covers DUT modules anywhere in the design — so the src-scoped delta
+  write could not keep it consistent: the bounded (default) re-link never re-derived it (dropping a
+  tb-top's coverage edges on edit), and the in-memory path derived it in-graph but the scoped write
+  silently dropped the edges whose src lay outside the dirty closure. Both paths now re-derive the
+  whole TEST_COVERS set **out-of-core** after the scoped write (`storage.summaries.test_covers_sql`
+  hydrates only the structural subgraph — MODULE/ENTITY/INSTANCE/CLASS nodes + DECLARES/
+  INSTANTIATES/EXTENDS edges, never the dataflow bulk — and runs the *same* `derive_test_covers`),
+  then reconcile it (`SqliteStore.replace_test_covers`). UVM/testbench designs stay bounded and the
+  result is **byte-identical** to a full `build`. Pure-SV designs (no `tb_*`/`uvm_test`) are
+  unaffected. The equivalence + fuzz suite now includes UVM edit shapes under both link paths.
+
 ## [1.14.0] - 2026-06-21
 
 ### Changed

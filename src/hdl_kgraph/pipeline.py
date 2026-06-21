@@ -541,6 +541,18 @@ def _selective_link(
     return graph, ref_records
 
 
+def _refresh_test_covers_from_db(store: SqliteStore) -> None:
+    """After a bounded-link scoped write, re-derive the whole TEST_COVERS edge set
+    out-of-core (the partial graph can't run the whole-graph derivation) and
+    reconcile it into the DB — byte-identically to a full ``build``."""
+    from hdl_kgraph.storage.summaries import test_covers_sql
+
+    with store._connect() as conn:
+        store._check_version(conn)
+        edges = test_covers_sql(conn)
+    store.replace_test_covers(edges)
+
+
 def _refresh_summaries_and_counts_from_db(store: SqliteStore, report: BuildReport) -> None:
     """After a bounded-link scoped write, recompute the whole-design summaries
     out-of-core (M12.5 SQL scans) from the now-current DB and read back the graph
@@ -943,6 +955,15 @@ def _execute(
             touched_files=dirty_files if scoped else None,
             affected_srcs=report.affected_srcs if scoped else None,
         )
+        if scoped:
+            # TEST_COVERS edges are cross-file — a clean tb-top / uvm_test src
+            # covers DUTs anywhere in the design — so the src-scoped delta write
+            # cannot keep them consistent (the bounded path never derives them; the
+            # in-memory path derives them in-graph but the scoped write drops the
+            # ones whose src is outside the dirty closure). Re-derive the whole set
+            # out-of-core and reconcile, for BOTH incremental paths. Runs before the
+            # summary/count refresh below so they read the corrected edges.
+            _refresh_test_covers_from_db(store)
         if report.bounded_link:
             # Now the DB reflects the delta: recompute the whole-design summaries
             # out-of-core (M12.5 SQL scans) and read the graph counts back.
