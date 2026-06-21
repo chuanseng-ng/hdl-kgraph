@@ -199,18 +199,21 @@ def uvm_project(tmp_path: Path) -> Path:
 
 def _tb_add_dut_instance(p: Path) -> None:
     f = p / "tb.sv"
-    f.write_text(
-        f.read_text().replace(
-            "  verif_dut u_dut(.clk(clk), .gnt(gnt));\n",
-            "  verif_dut u_dut(.clk(clk), .gnt(gnt));\n"
-            "  verif_dut2 u_dut2(.clk(clk), .gnt(gnt));\n",
-        )
+    old = f.read_text()
+    new = old.replace(
+        "  verif_dut u_dut(.clk(clk), .gnt(gnt));\n",
+        "  verif_dut u_dut(.clk(clk), .gnt(gnt));\n  verif_dut2 u_dut2(.clk(clk), .gnt(gnt));\n",
     )
+    assert new != old, "expected to add verif_dut2 instance in tb.sv"
+    f.write_text(new)
 
 
 def _tb_remove_dut_instance(p: Path) -> None:
     f = p / "tb.sv"
-    f.write_text(f.read_text().replace("  verif_dut u_dut(.clk(clk), .gnt(gnt));\n", ""))
+    old = f.read_text()
+    new = old.replace("  verif_dut u_dut(.clk(clk), .gnt(gnt));\n", "")
+    assert new != old, "expected to remove verif_dut instance from tb.sv"
+    f.write_text(new)
 
 
 def _add_uvm_test_class(p: Path) -> None:
