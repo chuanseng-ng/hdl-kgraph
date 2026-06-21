@@ -441,6 +441,106 @@ def _link_pass2(
     return link_graph(irs, warnings=report.warnings)
 
 
+class _SelectiveLinkUnavailable(Exception):
+    """The bounded selective-decode path cannot link this update (bind/config
+    directives force a full re-link, which needs every unit's IR). ``run_update``
+    catches it and retries with the legacy full-decode path."""
+
+
+def _replay_macros_only(
+    relpath: str,
+    lite: tuple[str, str],
+    preprocessor: Preprocessor,
+    processed: set[str],
+    consumed: set[str],
+) -> None:
+    """Replay a clean SV unit's macro events into the shared table — the only
+    thing a clean, non-affected unit contributes to a bounded re-link (#119), so
+    its large IR blob is never decoded. Mirrors the macro half of ``_reuse_unit``.
+
+    A corrupt stored row raises :class:`_SelectiveLinkUnavailable` so ``run_update``
+    retries on the full-decode path, where ``_reuse_unit`` re-parses it fresh (the
+    selective path cannot re-parse a clean unit, having decoded only its macros)."""
+    try:
+        events = ir_codec.macro_events_from_json(lite[0])
+        included = set(json.loads(lite[1]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise _SelectiveLinkUnavailable from exc
+    for event in events:
+        preprocessor.macros.apply(event)
+    processed.add(relpath)
+    consumed |= included - processed
+
+
+def _selective_link(
+    db_path: Path,
+    irs: list[FileIR],
+    dirty_files: set[str],
+    discovered: list[DiscoveredFile],
+    clean_set: set[str],
+    report: BuildReport,
+) -> tuple[nx.MultiDiGraph, list[RefRecord]]:
+    """Bounded re-link for the selective-decode path: decode only the *affected*
+    clean units' IRs (the rest were macro-replayed only), then re-resolve the
+    dirty closure straight from SQLite. Raises :class:`_SelectiveLinkUnavailable`
+    when bind/configuration directives force a full re-link (which would need
+    every unit's IR)."""
+    store = SqliteStore(db_path)
+    prior_ref_index = store.load_ref_index()
+    if any(r.edge_kind is EdgeKind.BINDS for r in prior_ref_index) or any(
+        ref.edge_kind is EdgeKind.BINDS for ir in irs for ref in ir.unresolved_refs
+    ):
+        raise _SelectiveLinkUnavailable
+
+    changed = changed_target_names_bounded(db_path, irs, dirty_files)
+    affected_keys = affected_clean_refs(prior_ref_index, changed)
+    affected = {src for _, src, _ in affected_keys}
+    affected_files = {file for file, _, _ in affected_keys} & clean_set
+
+    # Decode just the affected clean units (the rest stay undecoded), then merge
+    # them back with the dirty IRs in *discovery order*. The bounded linker uses
+    # first occurrence across `file_irs` for node ownership / definition dedup, so
+    # a clean affected unit that precedes a dirty one must keep that relative order
+    # to stay byte-identical to the full-decode path; filelist/synthetic IRs (added
+    # to `irs` before this call) stay at the tail as they do there.
+    if affected_files:
+        units = store.load_units_for(affected_files)
+        order = {d.relpath: i for i, d in enumerate(discovered)}
+        affected_irs: list[FileIR] = []
+        for relpath in affected_files:
+            stored = units.get(relpath)
+            if stored is None:
+                # An affected clean row vanished/missed the chunked fetch: bail to
+                # the full-decode path, which re-parses it rather than dropping a
+                # unit that still needs re-resolution.
+                raise _SelectiveLinkUnavailable
+            try:
+                affected_irs.append(ir_codec.ir_from_json(stored.ir))
+            except (KeyError, TypeError, ValueError) as exc:
+                raise _SelectiveLinkUnavailable from exc
+        unit_irs = [ir for ir in irs if ir.path in dirty_files] + affected_irs
+        tail_irs = [ir for ir in irs if ir.path not in dirty_files]
+        unit_irs.sort(key=lambda ir: order.get(ir.path, len(discovered)))
+        irs = unit_irs + tail_irs
+
+    report.incremental_link = True
+    report.bounded_link = True
+    report.affected_srcs = affected
+    graph, ref_records = link_incremental_bounded(
+        db_path, irs, dirty_files, affected, warnings=report.warnings
+    )
+    # Telemetry (the #64 scoping invariant). `ref_records` only covers the decoded
+    # subset (dirty + affected), so the whole-design total comes from the prior
+    # ref index (clean refs survive the scoped write) plus the fresh dirty refs.
+    clean_total = sum(1 for r in prior_ref_index if r.file not in dirty_files)
+    dirty_total = sum(len(ir.unresolved_refs) for ir in irs if ir.path in dirty_files)
+    report.refs_total = clean_total + dirty_total
+    report.refs_reresolved = sum(
+        1 for r in ref_records if r.file in dirty_files or r.src_id in affected
+    )
+    return graph, ref_records
+
+
 def _refresh_summaries_and_counts_from_db(store: SqliteStore, report: BuildReport) -> None:
     """After a bounded-link scoped write, recompute the whole-design summaries
     out-of-core (M12.5 SQL scans) from the now-current DB and read back the graph
@@ -469,6 +569,8 @@ def _execute(
     tick: TickFn | None = None,
     incremental: bool = False,
     dirty_files: set[str] | None = None,
+    macro_lite: dict[str, tuple[str, str]] | None = None,
+    prior_errors: dict[str, tuple[int, list[str]]] | None = None,
 ) -> BuildReport:
     """One pipeline run; units named in *reuse* re-link from their stored IR.
 
@@ -493,6 +595,11 @@ def _execute(
         else DEFAULT_MAX_FILE_SIZE_KB
     )
     reuse = reuse or {}
+    # Selective decode (#119): clean units are macro-replayed only (no IR decode);
+    # the bounded re-link decodes just the affected ones. `clean_set` is the set of
+    # unchanged units either way.
+    selective = macro_lite is not None
+    clean_set = set(macro_lite) if macro_lite is not None else set(reuse)
 
     # -- inputs: filelists, defines, include dirs -----------------------------
     if inputs is None:
@@ -612,7 +719,7 @@ def _execute(
             )
         )
 
-    fresh = [f for f in discovered if f.skipped_reason is None and f.relpath not in reuse]
+    fresh = [f for f in discovered if f.skipped_reason is None and f.relpath not in clean_set]
     jobs = _effective_jobs(options, len(fresh), sum(f.size_bytes for f in fresh))
     progress(
         f"pass 0+1: preprocessing and parsing {len(discovered)} file(s)"
@@ -644,7 +751,32 @@ def _execute(
                     )
                 )
                 continue
-            ir = _reuse_unit(found, reuse, preprocessor, processed, consumed)
+            if macro_lite is not None and found.relpath in macro_lite:
+                # Clean unit on the bounded path: replay its macros into the shared
+                # table (compile-order prerequisite for dirty re-parses) but do NOT
+                # decode its IR. It is counted as reused; its files/file_irs rows are
+                # preserved by the scoped write. The affected ones are decoded later.
+                _replay_macros_only(
+                    found.relpath, macro_lite[found.relpath], preprocessor, processed, consumed
+                )
+                report.reused_files += 1
+                report.parsed_files += 1
+                # The preprocessor does not re-run for clean units; carry their
+                # previous build's warnings forward (their files rows are preserved
+                # by the scoped write, so this keeps the report consistent with it).
+                clean_warnings = list((prior_warnings or {}).get(found.relpath, []))
+                report.preproc_warnings.extend(clean_warnings)
+                report.preproc_warning_count += len(clean_warnings)
+                # Likewise carry forward the stored parse-error telemetry (it lives
+                # in the un-decoded IR / preserved files row, not re-derived here).
+                err_count, err_details = (prior_errors or {}).get(found.relpath, (0, []))
+                if err_count:
+                    report.error_files += 1
+                    report.parse_error_count += err_count
+                    report.file_errors[found.relpath] = err_count
+                    report.file_error_details[found.relpath] = list(err_details)
+                continue
+            ir = None if selective else _reuse_unit(found, reuse, preprocessor, processed, consumed)
             if ir is not None:
                 if found.language is Language.VHDL:
                     vhdl_file_libs[found.relpath] = _library_for(found.path, options.vhdl_libraries)
@@ -737,9 +869,15 @@ def _execute(
 
     progress(f"pass 2: linking {len(irs)} unit(s) into the graph")
     _t_link = time.perf_counter()
-    graph, ref_records = _link_pass2(
-        irs, db_path, options, discovered, incremental, dirty_files, report
-    )
+    if selective:
+        assert db_path is not None and dirty_files is not None  # update path only
+        graph, ref_records = _selective_link(
+            db_path, irs, dirty_files, discovered, clean_set, report
+        )
+    else:
+        graph, ref_records = _link_pass2(
+            irs, db_path, options, discovered, incremental, dirty_files, report
+        )
     report.link_s = time.perf_counter() - _t_link
     if not report.bounded_link:
         # The bounded link returns a *partial* graph (delta only), so its
@@ -991,10 +1129,6 @@ def run_update(
         report.up_to_date = True
         report.elapsed_s = time.perf_counter() - started
         return report
-    stored_units = store.load_units()
-    if not stored_units:
-        return full_rebuild("no stored parse results")
-
     dependencies = store.load_dependency_graph()
     seeds = {path: "changed" for path in changes.changed}
     seeds.update({path: "removed" for path in changes.removed})
@@ -1004,11 +1138,52 @@ def run_update(
     discovered_relpaths = {found.relpath for found in discovered}
     report.reparsed = {path: why for path, why in dirty.items() if path in discovered_relpaths}
     report.removed = changes.removed
-
-    reuse = {path: unit for path, unit in stored_units.items() if path not in dirty}
     # Files reparsed this run (dirty closure ∩ discovered) plus removed ones —
     # the set whose pass-2 refs the incremental linker re-resolves.
     dirty_files = set(report.reparsed) | set(report.removed)
+
+    prior_file_warnings = store.load_file_warnings()
+    prior_file_errors = store.load_file_errors()
+    # The database exists and its schema/root/options matched above, so the delta
+    # write applies; save_incremental still self-checks and falls back to a full
+    # rewrite if the database changed underneath us.
+
+    # Selective IR decode (#119): on the bounded path (the default, SV-only, no
+    # enrich) clean units are macro-replayed from the small `macro_events` column
+    # and only the dirty/affected units' full IRs are decoded — the prior build's
+    # entire IR set never needs to be resident. Bind/config directives still need a
+    # full re-link, so the path raises and we retry with the legacy full decode.
+    has_vhdl = any(f.language is Language.VHDL for f in discovered)
+    if options.bounded_link and not options.enrich and not has_vhdl:
+        macro_all = store.load_macro_events()
+        if not macro_all:
+            return full_rebuild("no stored parse results")
+        macro_lite = {p: ev for p, ev in macro_all.items() if p not in dirty}
+        try:
+            report.build = _execute(
+                root,
+                db_path,
+                options,
+                inputs=inputs,
+                reuse={},
+                discovered=discovered,
+                prior_warnings=prior_file_warnings,
+                progress=progress,
+                tick=tick,
+                incremental=True,
+                dirty_files=dirty_files,
+                macro_lite=macro_lite,
+                prior_errors=prior_file_errors,
+            )
+            report.elapsed_s = time.perf_counter() - started
+            return report
+        except _SelectiveLinkUnavailable:
+            pass  # fall through to the full-decode path below
+
+    stored_units = store.load_units()
+    if not stored_units:
+        return full_rebuild("no stored parse results")
+    reuse = {path: unit for path, unit in stored_units.items() if path not in dirty}
     report.build = _execute(
         root,
         db_path,
@@ -1016,12 +1191,9 @@ def run_update(
         inputs=inputs,
         reuse=reuse,
         discovered=discovered,
-        prior_warnings=store.load_file_warnings(),
+        prior_warnings=prior_file_warnings,
         progress=progress,
         tick=tick,
-        # The database exists and its schema/root/options matched above, so the
-        # delta write applies; save_incremental still self-checks and falls back
-        # to a full rewrite if the database changed underneath us.
         incremental=True,
         dirty_files=dirty_files,
     )

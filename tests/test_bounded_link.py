@@ -74,6 +74,31 @@ def test_bounded_link_is_default(tmp_path: Path, fixtures_dir: Path) -> None:
     assert report.build.bounded_link is True
 
 
+def test_selective_decode_skips_unaffected_clean_irs(
+    tmp_path: Path, fixtures_dir: Path, monkeypatch
+) -> None:
+    # Editing a leaf module nothing depends on: the bounded (default) path decodes
+    # NO clean IRs (dirty units are parsed fresh; clean units are macro-replayed
+    # only), so ir_from_json is never called. The legacy path decodes every clean IR.
+    import hdl_kgraph.storage.ir_codec as ir_codec
+    from hdl_kgraph import pipeline
+
+    root = _project(tmp_path, fixtures_dir)
+    real = ir_codec.ir_from_json
+    calls: list[int] = []
+
+    def _counting(text: str):
+        calls.append(1)
+        return real(text)
+
+    # editing extra.sv (a module nothing instantiates) affects no other unit
+    (root / "extra.sv").write_text((root / "extra.sv").read_text() + "// touch\n")
+    monkeypatch.setattr(pipeline.ir_codec, "ir_from_json", _counting)
+    report = run_update(root)  # bounded default
+    assert report.build is not None and report.build.bounded_link is True
+    assert calls == [], "bounded selective decode must not decode any clean IR here"
+
+
 def test_no_bounded_link_opts_out(tmp_path: Path, fixtures_dir: Path) -> None:
     # --no-bounded-link falls back to the in-memory re-link (still byte-identical).
     root = _project(tmp_path, fixtures_dir)
