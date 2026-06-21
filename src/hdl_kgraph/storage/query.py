@@ -349,6 +349,18 @@ class GraphQuery:
             self._store._check_version(conn)
             return summaries.uvm_summary_sql(conn)
 
+    def qualified_names(self, ids: list[str]) -> dict[str, str]:
+        """``node id -> qualified_name`` for *ids*, bounded (indexed PK lookup).
+
+        For label-resolving a handful of nodes (e.g. the CDC reader processes in
+        the ``cdc`` report) without materialising the whole graph."""
+        with self._store._connect() as conn:
+            self._store._check_version(conn)
+            return {
+                str(row[0]): str(row[1])
+                for row in _select_in(conn, "SELECT id, qualified_name FROM nodes WHERE id", ids)
+            }
+
     # -- subgraph builders -----------------------------------------------------
 
     def _glob_ids(self, conn: Any, kinds: tuple[str, ...], name: str) -> list[str]:

@@ -379,6 +379,13 @@ profiling below shows it is **~2.3× the on-disk DB**, so a 100 GB design needs
 ~225 GB RAM and "does not load." v2 is a deliberate major-version break — an
 out-of-core / compact core behind the stable `storage`/`GraphQuery` seam.
 
+**Delivered in 2.0.0 (out-of-core, without a Rust core).** The RAM goal landed
+incrementally behind the existing Python `storage` seam (releases 1.8 → 1.15,
+formalised as 2.0.0): reads (`GraphQuery`), whole-design summaries, the
+incremental linker, IR decode, and TEST_COVERS are all bounded; a 100 GB design
+loads via the out-of-core path. The bespoke Rust core (M13) is **deferred** — off
+the critical path for the RAM goal.
+
 - [x] **M11 — profile & decision gate:** memory + CPU profile of `build` /
       summaries / `load()` across a scale sweep (`scripts/profile_v2.py`),
       pinning the dominant cost and selecting the M12 path —
@@ -394,6 +401,17 @@ out-of-core / compact core behind the stable `storage`/`GraphQuery` seam.
       ~228 GB at 100 GB). `rustworkx` lowers the constant (~29 %) but stays linear
       (runner-up, ~10 GB regime). **A bespoke Rust core is not required to clear
       the RAM ceiling**, so M13 is deferred.
+- [x] **M12.5 — productionise the out-of-core whole-design summaries** behind
+      `GraphQuery`: clock-domains/CDC (1.9.0) and UVM topology (1.10.0) compute
+      from SQLite when the persisted summary is absent, never `SqliteStore.load()`
+      (byte-identical to the NetworkX oracle). The CLI `query clock-domains`/`cdc`/
+      `uvm` reports route through the same bounded path in 2.0.0.
+- [x] **M13a — memory-bounded incremental linker (#119):** the `update` re-link
+      re-resolves only the dirty closure straight from SQLite (lazy
+      `idx_nodes_kind_name`/`idx_edges_*`, bounded stub-GC), byte-identical to a
+      full build. Shipped opt-in (1.12.0) → default (1.13.0), with selective IR
+      decode (1.14.0) and out-of-core TEST_COVERS re-derivation (1.15.0). The
+      whole `update` pipeline is now bounded by the dirty closure.
 - [ ] **M13 — PyO3 Rust core (deferred; only if M12's off-the-shelf path proves
       insufficient):** compact streaming graph + pass-2 link + whole-design scans;
       subsumes the memory-bounded linker (#119). Per M12, the off-the-shelf
