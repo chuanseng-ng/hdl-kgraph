@@ -80,8 +80,12 @@ byte-identical fuzz suite):
    (selective `_reuse_unit`).
 2. **Bounded `_gc_orphan_stubs`** over the stub neighbourhood (proven here) — note its candidate
    universe is the stub set; only closure-incident stubs can flip, the rest survive unchanged.
-3. **Incremental `derive_test_covers`** — still a whole-graph scan; bounded by MODULE/CLASS count,
-   but a tb-top/uvm-test index would make it closure-scoped.
+3. **Incremental `derive_test_covers`** — **done (v1.15.0).** TEST_COVERS is cross-file, so the
+   src-scoped delta write can't keep it consistent; both incremental paths now re-derive the whole
+   set out-of-core after the scoped write (`summaries.test_covers_sql` hydrates only the structural
+   subgraph — MODULE/ENTITY/INSTANCE/CLASS + DECLARES/INSTANTIATES/EXTENDS — and runs the same
+   `derive_test_covers`), then reconcile via `SqliteStore.replace_test_covers`. Bounded by the
+   structural subgraph; byte-identical. A tb-top/uvm-test index could later make it closure-scoped.
 4. **Incremental summary refresh** — now free via M12.5's `clock_summary_sql` / `uvm_summary_sql`,
    computed from the written DB instead of the in-memory graph.
 5. **Report counts** without `number_of_nodes/edges()` on a full graph — from `_apply_delta_scoped`

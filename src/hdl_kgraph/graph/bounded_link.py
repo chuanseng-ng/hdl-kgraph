@@ -197,7 +197,9 @@ def _merge_stub_neighbourhood(
     """Add every prior unresolved stub and its **surviving** incident edges.
 
     Surviving = not a TEST_COVERS edge, not an affected src's pass-2 edge, and not
-    incident to a dirty/removed node (all of which the re-link drops/re-derives).
+    incident to a dirty/removed node. TEST_COVERS is dropped here and re-derived
+    whole-design after the scoped write (``pipeline._refresh_test_covers_from_db``
+    via ``summaries.test_covers_sql``); affected pass-2 edges are re-resolved.
     Gives ``_gc_orphan_stubs`` the full anchoring picture and ensures the partial
     graph holds the complete surviving fileless-stub set (so the scoped write
     keeps them) bounded by the stub count, not the design."""

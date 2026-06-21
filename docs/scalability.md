@@ -151,15 +151,23 @@ bulk). Several steps read the *whole* graph and are entangled:
   `CLOCKED_BY`/… So dropping the dataflow edges would make a stub anchored only
   by a clean dataflow edge look orphaned and get deleted — a non-byte-identical,
   corrupt result.
-- `derive_test_covers` (`graph/uvm.py`) scans the whole graph each link to find
-  `tb_*` tops and their instantiation subtrees.
+- `derive_test_covers` (`graph/uvm.py`) is a whole-design, cross-file relation
+  (a `tb_*` top / `uvm_test` class covers DUTs anywhere), so the src-scoped delta
+  write cannot keep it consistent. Since v1.15.0 the incremental paths re-derive
+  the **whole** TEST_COVERS set out-of-core after the scoped write
+  (`storage/summaries.py:test_covers_sql` hydrates only the structural subgraph —
+  MODULE/ENTITY/INSTANCE/CLASS + DECLARES/INSTANTIATES/EXTENDS, never the dataflow
+  bulk — and runs the same `derive_test_covers`), then reconcile it
+  (`SqliteStore.replace_test_covers`). Byte-identical, bounded by the structural
+  subgraph.
 - the definitions/`children` seeding and `report.edge_count` read all
   nodes/edges.
 
 So the memory-bounded linker landed as one architecture — SQL-backed name
 resolution (`idx_nodes_kind_name`), SQL-aware stub-GC (over only the stub
-neighbourhood), out-of-core summaries + counts, selective IR decode, and a
-delta-only output (which the existing `_apply_delta_scoped` consumes) — all gated
-by the byte-identical fuzz suite. It shipped incrementally (opt-in `--bounded-link`
-in v1.12.0, default in v1.13.0, selective IR decode in v1.14.0); reads and the
+neighbourhood), out-of-core summaries + counts, selective IR decode, an
+out-of-core TEST_COVERS re-derivation, and a delta-only output (which the existing
+`_apply_delta_scoped` consumes) — all gated by the byte-identical fuzz suite. It
+shipped incrementally (opt-in `--bounded-link` in v1.12.0, default in v1.13.0,
+selective IR decode in v1.14.0, bounded TEST_COVERS in v1.15.0); reads and the
 write *diff* were already bounded before it.

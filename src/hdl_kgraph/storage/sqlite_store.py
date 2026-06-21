@@ -57,7 +57,7 @@ import networkx as nx
 from hdl_kgraph import __version__
 from hdl_kgraph.enrich.base import Discrepancy
 from hdl_kgraph.graph.builder import RefRecord
-from hdl_kgraph.schema import EdgeKind, Language, NodeKind
+from hdl_kgraph.schema import Edge, EdgeKind, Language, NodeKind
 from hdl_kgraph.storage.ir_codec import IR_CODEC_VERSION
 
 SCHEMA_VERSION = "8"  # v8: summaries table (precomputed whole-design reports)
@@ -776,6 +776,30 @@ class SqliteStore:
             conn.execute("DELETE FROM summaries")
             conn.executemany(
                 "INSERT INTO summaries (name, payload) VALUES (?, ?)", list(summaries.items())
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def replace_test_covers(self, edges: list[Edge]) -> None:
+        """Replace every TEST_COVERS edge with *edges* in one transaction.
+
+        The bounded re-link's partial graph can't run ``derive_test_covers``
+        (which is whole-graph), so the bounded ``update`` path re-derives the full
+        set out-of-core (``summaries.test_covers_sql``) and reconciles it here.
+        A full replace is byte-identical — the equivalence gate compares the
+        *set* of loaded edges — and bounded by the small TEST_COVERS count."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("DELETE FROM edges WHERE kind = ?", (EdgeKind.TEST_COVERS.value,))
+            conn.executemany(
+                "INSERT INTO edges VALUES (?, ?, ?, ?, ?)",
+                [
+                    _edge_row(
+                        e.src, e.dst, {"kind": e.kind, "confidence": e.confidence, "attrs": e.attrs}
+                    )
+                    for e in edges
+                ],
             )
             conn.commit()
         finally:

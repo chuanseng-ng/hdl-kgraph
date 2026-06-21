@@ -37,7 +37,7 @@ from typing import Any
 import networkx as nx
 
 from hdl_kgraph.graph import clocks, summary, uvm
-from hdl_kgraph.schema import EdgeKind, NodeKind
+from hdl_kgraph.schema import Edge, EdgeKind, NodeKind
 from hdl_kgraph.storage.sqlite_store import (
     EDGE_COLUMNS,
     NODE_COLUMNS,
@@ -102,6 +102,46 @@ def uvm_summary_sql(conn: sqlite3.Connection) -> dict[str, Any]:
         "components": summary.jsonable(uvm.uvm_topology(graph)),
         "test_covers": summary.jsonable(uvm.test_covers(graph)),
     }
+
+
+def test_covers_sql(conn: sqlite3.Connection) -> list[Edge]:
+    """Re-derive the whole TEST_COVERS edge set out-of-core, byte-identically.
+
+    The bounded incremental re-link produces only a src-scoped partial graph, so
+    it cannot run :func:`hdl_kgraph.graph.uvm.derive_test_covers` (which reads
+    every ``tb_*`` top and ``uvm_test`` class). This recomputes the full set after
+    the scoped write by hydrating *only* the structural subgraph that
+    ``derive_test_covers``/``uvm_topology`` read — MODULE/ENTITY/INSTANCE/CLASS
+    nodes plus DECLARES/INSTANTIATES/EXTENDS edges, never the dataflow bulk — and
+    running the *same* function on it. Because that function never touches
+    dataflow, its output is identical to running it on the full graph. Bounded by
+    the structural subgraph (the same notion of "bounded" as the SQL summaries).
+    """
+    graph = nx.MultiDiGraph()
+    for row in conn.execute(
+        f"SELECT {NODE_COLUMNS} FROM nodes WHERE kind IN (?, ?, ?, ?)",
+        (
+            NodeKind.MODULE.value,
+            NodeKind.ENTITY.value,
+            NodeKind.INSTANCE.value,
+            NodeKind.CLASS.value,
+        ),
+    ):
+        add_node_row(graph, row)
+    for row in conn.execute(
+        f"SELECT {EDGE_COLUMNS} FROM edges WHERE kind IN (?, ?, ?)",
+        (EdgeKind.DECLARES.value, EdgeKind.INSTANTIATES.value, EdgeKind.EXTENDS.value),
+    ):
+        add_edge_row(graph, row)
+    # Any edge endpoint not already a full row (defensive — mirrors uvm_summary_sql).
+    missing = {n for n in graph.nodes if "kind" not in graph.nodes[n]}
+    for chunk in _chunks(missing):
+        placeholders = ", ".join("?" for _ in chunk)
+        for row in conn.execute(
+            f"SELECT {NODE_COLUMNS} FROM nodes WHERE id IN ({placeholders})", chunk
+        ):
+            add_node_row(graph, row)
+    return uvm.derive_test_covers(graph)
 
 
 # --------------------------------------------------------------------------- #
