@@ -138,10 +138,39 @@ def test_query_unresolved(project: Path) -> None:
 
 
 def test_query_clock_domains(project: Path) -> None:
+    import re
+
     result = CliRunner().invoke(main, ["query", "clock-domains", *db_args(project)])
     assert result.exit_code == 0, result.output
-    assert "two_clock_top.clk_a" in result.output
+    # The bounded report labels the clock net by *name*, on its own line — not the
+    # qualified_name the pre-v2 full-load report showed.
+    assert re.search(r"(?m)^clk_a\b", result.output), result.output
+    assert ".clk_a" not in result.output  # no qualified label leaked through
     assert "processes:" in result.output
+
+
+def test_query_clock_domains_json_is_bounded_payload(project: Path) -> None:
+    import json as json_mod
+
+    from hdl_kgraph.pipeline import default_db_path
+    from hdl_kgraph.storage.query import GraphQuery
+
+    result = CliRunner().invoke(main, ["query", "clock-domains", "--json", *db_args(project)])
+    assert result.exit_code == 0, result.output
+    payload = json_mod.loads(result.output)
+    # The CLI now emits the bounded summary payload (counts, not O(design) id-lists),
+    # byte-identical to the GraphQuery path the MCP server uses.
+    assert set(payload) == {"domains", "cdc_suspect_count", "cdc_suspects"}
+    assert payload["domains"]
+    for domain in payload["domains"]:
+        assert set(domain) == {
+            "clock",
+            "aliases",
+            "process_count",
+            "signal_count",
+            "min_confidence",
+        }
+    assert payload == GraphQuery(default_db_path(project)).clock_domains()
 
 
 def test_query_cdc_finds_the_planted_crossing(project: Path) -> None:
@@ -308,6 +337,20 @@ def test_query_uvm(project: Path) -> None:
     assert "test:" in result.output
     assert "verif_smoke_test" in result.output
     assert "covers verif_dut" in result.output
+
+
+def test_query_uvm_json_is_bounded_payload(project: Path) -> None:
+    import json as json_mod
+
+    from hdl_kgraph.pipeline import default_db_path
+    from hdl_kgraph.storage.query import GraphQuery
+
+    result = CliRunner().invoke(main, ["query", "uvm", "--json", *db_args(project)])
+    assert result.exit_code == 0, result.output
+    payload = json_mod.loads(result.output)
+    assert set(payload) == {"components", "test_covers"}
+    # CLI ≡ the bounded GraphQuery payload the MCP server serves.
+    assert payload == GraphQuery(default_db_path(project)).uvm_topology()
 
 
 def test_visualize_writes_html(project: Path, tmp_path: Path) -> None:

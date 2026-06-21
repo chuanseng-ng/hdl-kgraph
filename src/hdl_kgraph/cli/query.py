@@ -8,7 +8,9 @@ from pathlib import Path
 import click
 
 from hdl_kgraph.cli._common import (
+    CliError,
     _load,
+    _resolve_db,
 )
 from hdl_kgraph.cli._options import (
     _db_option,
@@ -17,6 +19,14 @@ from hdl_kgraph.cli._options import (
 from hdl_kgraph.cli.render import emit_json as _emit_json
 from hdl_kgraph.graph import analysis, clocks, uvm
 from hdl_kgraph.schema import NodeKind
+from hdl_kgraph.storage.query import GraphQuery
+from hdl_kgraph.storage.sqlite_store import SchemaVersionError
+
+
+def _query(db_path: Path | None) -> GraphQuery:
+    """A bounded reader over the resolved database (whole-design reports read it
+    instead of full-loading the graph). Schema mismatch → a clean CLI error."""
+    return GraphQuery(_resolve_db(db_path))
 
 
 @click.group()
@@ -92,24 +102,31 @@ def clock_domains_cmd(db_path: Path | None, as_json: bool) -> None:
     Domains come from CLOCKED_BY edges (sensitivity-list evidence = 1.0,
     name heuristics = 0.4) with clock nets alias-merged across the
     hierarchy through single-identifier port connections.
+
+    Answered from the bounded out-of-core summary (never a full graph load), so
+    each domain reports its clock net name, aliases, and process/signal counts.
     """
-    graph, _, _ = _load(db_path)
-    domains = clocks.clock_domains(graph)
+    try:
+        payload = _query(db_path).clock_domains()
+    except SchemaVersionError as exc:
+        raise CliError(str(exc)) from exc
     if as_json:
-        _emit_json(domains)
+        _emit_json(payload)
         return
+    domains = payload["domains"]
     if not domains:
         click.echo("no clocked processes found")
         return
     for domain in domains:
-        label = graph.nodes[domain.clock_id]["qualified_name"]
-        aliases = [n for n in domain.clock_names if n != graph.nodes[domain.clock_id]["name"]]
+        label = domain["clock"]
+        aliases = [n for n in domain["aliases"] if n != domain["clock"]]
         if aliases:
             label += " (= " + ", ".join(aliases) + ")"
-        marker = "" if domain.min_confidence >= 0.8 else f"  [~{domain.min_confidence:.1f}]"
+        confidence = domain["min_confidence"]
+        marker = "" if confidence >= 0.8 else f"  [~{confidence:.1f}]"
         click.echo(f"{label}{marker}")
-        click.echo(f"    processes: {len(domain.process_ids)}")
-        click.echo(f"    signals driven: {len(domain.signal_ids)}")
+        click.echo(f"    processes: {domain['process_count']}")
+        click.echo(f"    signals driven: {domain['signal_count']}")
 
 
 @query.command("reset-tree")
@@ -146,21 +163,28 @@ def cdc_cmd(db_path: Path | None, as_json: bool) -> None:
     A suspect is a signal driven in one domain and read by a process in
     another. Synchronizers are not recognized — review each finding (this
     is a report, not a gate; the exit code is always 0).
+
+    Answered from the bounded out-of-core summary (the top 50 suspects), never a
+    full graph load.
     """
-    graph, _, _ = _load(db_path)
-    suspects = clocks.cdc_suspects(graph)
+    query = _query(db_path)
+    try:
+        suspects = query.clock_domains()["cdc_suspects"]
+    except SchemaVersionError as exc:
+        raise CliError(str(exc)) from exc
     if as_json:
         _emit_json(suspects)
         return
     if not suspects:
         click.echo("no CDC suspects found")
         return
+    readers = query.qualified_names([s["reader_id"] for s in suspects])
     for s in suspects:
-        location = f"{s.file}:{s.line}" if s.file else "?"
+        location = f"{s['file']}:{s['line']}" if s["file"] else "?"
         click.echo(
-            f"{s.signal_name:24} {s.driver_domain} -> {s.reader_domain}"
-            f"  read by {graph.nodes[s.reader_id]['qualified_name']}"
-            f"  {location}  confidence={s.confidence:.1f}"
+            f"{s['signal_name']:24} {s['driver_domain']} -> {s['reader_domain']}"
+            f"  read by {readers.get(s['reader_id'], s['reader_id'])}"
+            f"  {location}  confidence={s['confidence']:.1f}"
         )
 
 
@@ -205,24 +229,29 @@ def uvm_cmd(db_path: Path | None, as_json: bool) -> None:
 
     Classes are classified by walking their EXTENDS chain to the first
     uvm_* base (usually an unresolved stub — UVM itself is rarely parsed).
+
+    Answered from the bounded class subgraph (never a full graph load).
     """
-    graph, _, _ = _load(db_path)
-    components = uvm.uvm_topology(graph)
-    covers = uvm.test_covers(graph)
+    try:
+        payload = _query(db_path).uvm_topology()
+    except SchemaVersionError as exc:
+        raise CliError(str(exc)) from exc
+    components = payload["components"]
+    covers = payload["test_covers"]
     if as_json:
-        _emit_json({"components": components, "test_covers": covers})
+        _emit_json(payload)
         return
     if not components and not covers:
         click.echo("no UVM components or testbench tops found")
         return
     for role in uvm.ROLE_ORDER:
-        members = [c for c in components if c.role == role]
+        members = [c for c in components if c["role"] == role]
         if not members:
             continue
         click.echo(f"{role}:")
         for c in members:
-            chain = " -> ".join(c.base_chain)
-            click.echo(f"    {c.name:28} {c.file}:{c.line}  ({chain})")
+            chain = " -> ".join(c["base_chain"])
+            click.echo(f"    {c['name']:28} {c['file']}:{c['line']}  ({chain})")
     if covers:
         click.echo("test coverage (name-pattern heuristic, 0.4):")
         for cover in covers:

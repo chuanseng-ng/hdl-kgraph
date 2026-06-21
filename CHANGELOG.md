@@ -9,6 +9,38 @@ the major version, and schema changes ship with a migration.
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-06-21
+
+**v2.0 — the out-of-core, bounded-RAM architecture, delivered without a Rust core.**
+
+The v2.0 goal (issue #128) was to break the in-memory-graph RAM ceiling so 10–100 GB designs stay
+usable — originally envisioned as a bespoke PyO3 Rust core. Profiling and spikes (M11/M12) showed an
+off-the-shelf out-of-core layer clears the wall, so v2 instead landed **incrementally, behind the
+existing Python `storage` seam**, as backward-compatible releases 1.8 → 1.15: bounded index-backed
+reads (`GraphQuery`), out-of-core whole-design summaries (M12.5: 1.9/1.10), and the memory-bounded
+incremental linker — bounded re-link as the default (1.12/1.13), selective IR decode (1.14), and
+out-of-core TEST_COVERS re-derivation (1.15). Reads, summaries, linker re-resolution, IR decode, and
+TEST_COVERS are now all bounded by the dirty closure / structural subgraph; a 100 GB design loads via
+the out-of-core path. **The Rust core (M13) is deferred — off the critical path for the RAM goal.**
+This release marks v2 delivered; the one breaking change below is what tips the version to 2.0.0.
+
+### Changed (breaking)
+
+- The CLI whole-design report commands now answer from the **bounded out-of-core path**
+  (`GraphQuery`), never `SqliteStore.load()` — completing the M12.5 routing (the MCP tools already
+  did). As a result their output aligns with the bounded summary payload the MCP server serves:
+  - **`query clock-domains --json`** now emits the summary payload
+    `{"domains": [...], "cdc_suspect_count": N, "cdc_suspects": [...]}` (each domain carries
+    `clock`/`aliases`/`process_count`/`signal_count`/`min_confidence`) **instead of** the previous
+    list of full `ClockDomain` objects with their O(design) `process_ids`/`signal_ids` arrays. The
+    text report labels each domain by its **clock net name** (+ aliases), not the node's
+    `qualified_name`.
+  - **`query cdc`** is now bounded to the **top-50** suspects (matching the persisted summary); its
+    text output preserves `read by <qualified_name>` via a bounded id→name lookup.
+  - **`query uvm`** is unchanged (byte-identical text and `--json`).
+  `reset-tree` and the single-target queries (`instances-of`/`modules`/`drivers`/`unresolved`) are
+  unchanged.
+
 ## [1.15.0] - 2026-06-21
 
 ### Fixed

@@ -46,9 +46,12 @@ is intrinsic, not a regression.
 Clock-domain/CDC and UVM-topology reports scan global relations
 (`CLOCKED_BY`/`DRIVES`/`READS`/`EXTENDS`), not a single query's local neighbourhood.
 The build computes them once — while the graph is already in memory — and persists
-the result to the `summaries` table (`graph/summary.py`); the MCP tools read a
-small JSON blob in well under a millisecond at any design size. The build
-computes them on a full `build` and refreshes them on `update`.
+the result to the `summaries` table (`graph/summary.py`); the MCP tools **and the
+CLI `query clock-domains`/`cdc`/`uvm` commands** read that small JSON blob through
+`GraphQuery` in well under a millisecond at any design size (since v2.0.0 the CLI
+no longer full-loads the graph for these reports). The build computes them on a
+full `build` and refreshes them on `update`. When the persisted blob is absent the
+reader recomputes out-of-core (below), never via `SqliteStore.load()`.
 
 When the persisted summary is **absent** — a database older than schema v8 (no
 summaries table), or any build that did not persist it — the reader falls back to
