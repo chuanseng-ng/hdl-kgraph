@@ -138,10 +138,14 @@ def test_query_unresolved(project: Path) -> None:
 
 
 def test_query_clock_domains(project: Path) -> None:
+    import re
+
     result = CliRunner().invoke(main, ["query", "clock-domains", *db_args(project)])
     assert result.exit_code == 0, result.output
-    # The bounded report labels the clock net by name (not qualified_name).
-    assert "clk_a" in result.output
+    # The bounded report labels the clock net by *name*, on its own line — not the
+    # qualified_name the pre-v2 full-load report showed.
+    assert re.search(r"(?m)^clk_a\b", result.output), result.output
+    assert ".clk_a" not in result.output  # no qualified label leaked through
     assert "processes:" in result.output
 
 
@@ -158,8 +162,14 @@ def test_query_clock_domains_json_is_bounded_payload(project: Path) -> None:
     # byte-identical to the GraphQuery path the MCP server uses.
     assert set(payload) == {"domains", "cdc_suspect_count", "cdc_suspects"}
     assert payload["domains"]
-    domain = payload["domains"][0]
-    assert set(domain) == {"clock", "aliases", "process_count", "signal_count", "min_confidence"}
+    for domain in payload["domains"]:
+        assert set(domain) == {
+            "clock",
+            "aliases",
+            "process_count",
+            "signal_count",
+            "min_confidence",
+        }
     assert payload == GraphQuery(default_db_path(project)).clock_domains()
 
 
