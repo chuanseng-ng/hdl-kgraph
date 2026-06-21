@@ -456,9 +456,16 @@ def _replay_macros_only(
 ) -> None:
     """Replay a clean SV unit's macro events into the shared table — the only
     thing a clean, non-affected unit contributes to a bounded re-link (#119), so
-    its large IR blob is never decoded. Mirrors the macro half of ``_reuse_unit``."""
-    events = ir_codec.macro_events_from_json(lite[0])
-    included = set(json.loads(lite[1]))
+    its large IR blob is never decoded. Mirrors the macro half of ``_reuse_unit``.
+
+    A corrupt stored row raises :class:`_SelectiveLinkUnavailable` so ``run_update``
+    retries on the full-decode path, where ``_reuse_unit`` re-parses it fresh (the
+    selective path cannot re-parse a clean unit, having decoded only its macros)."""
+    try:
+        events = ir_codec.macro_events_from_json(lite[0])
+        included = set(json.loads(lite[1]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise _SelectiveLinkUnavailable from exc
     for event in events:
         preprocessor.macros.apply(event)
     processed.add(relpath)
@@ -490,15 +497,31 @@ def _selective_link(
     affected = {src for _, src, _ in affected_keys}
     affected_files = {file for file, _, _ in affected_keys} & clean_set
 
-    # Decode just the affected clean units (compile order) into the IR set the
-    # bounded linker re-resolves; non-affected clean units stay undecoded.
+    # Decode just the affected clean units (the rest stay undecoded), then merge
+    # them back with the dirty IRs in *discovery order*. The bounded linker uses
+    # first occurrence across `file_irs` for node ownership / definition dedup, so
+    # a clean affected unit that precedes a dirty one must keep that relative order
+    # to stay byte-identical to the full-decode path; filelist/synthetic IRs (added
+    # to `irs` before this call) stay at the tail as they do there.
     if affected_files:
         units = store.load_units_for(affected_files)
         order = {d.relpath: i for i, d in enumerate(discovered)}
-        for relpath in sorted(affected_files, key=lambda p: order.get(p, len(discovered))):
+        affected_irs: list[FileIR] = []
+        for relpath in affected_files:
             stored = units.get(relpath)
-            if stored is not None:
-                irs.append(ir_codec.ir_from_json(stored.ir))
+            if stored is None:
+                # An affected clean row vanished/missed the chunked fetch: bail to
+                # the full-decode path, which re-parses it rather than dropping a
+                # unit that still needs re-resolution.
+                raise _SelectiveLinkUnavailable
+            try:
+                affected_irs.append(ir_codec.ir_from_json(stored.ir))
+            except (KeyError, TypeError, ValueError) as exc:
+                raise _SelectiveLinkUnavailable from exc
+        unit_irs = [ir for ir in irs if ir.path in dirty_files] + affected_irs
+        tail_irs = [ir for ir in irs if ir.path not in dirty_files]
+        unit_irs.sort(key=lambda ir: order.get(ir.path, len(discovered)))
+        irs = unit_irs + tail_irs
 
     report.incremental_link = True
     report.bounded_link = True
