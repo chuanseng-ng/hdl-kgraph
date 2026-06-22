@@ -9,6 +9,32 @@ the major version, and schema changes ship with a migration.
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-06-22
+
+### Fixed
+
+- **`query modules` and `reset-tree` no longer full-load the graph** — the last two `query`
+  subcommands still calling `SqliteStore.load()`. They now answer through the bounded `GraphQuery`
+  path, so (like the rest of the `query` surface since 2.0/2.1) their cost tracks the answer, not the
+  design size — no more O(design) RAM on large netlists. With this, **no `query` command full-loads
+  the graph**.
+
+### Added
+
+- `GraphQuery.modules()` (every MODULE/ENTITY + instantiation count, bounded) and
+  `GraphQuery.reset_tree()`, backed by a new out-of-core `storage/summaries.py:reset_summary_sql`
+  that mirrors `clock_summary_sql` (the same net-alias union-find over SQLite), byte-identical to the
+  `graph/clocks.py:reset_tree` oracle.
+
+### Changed
+
+- `query reset-tree` labels each reset net by **name** (+ aliases) rather than the root's
+  `qualified_name`, matching the bounded `clock-domains` report (2.0.0); the reset processes' qualified
+  names are still shown (resolved with a bounded lookup). `--json` is unchanged.
+- `query modules` orders same-named units deterministically by `(name, file, line)` (previously
+  name-only, tie-broken by load order) — only affects the rare case of a shared unit name (e.g. a VHDL
+  entity and an SV module both named `leaf`).
+
 ## [2.1.0] - 2026-06-21
 
 ### Fixed

@@ -244,6 +244,45 @@ def _clock_domains(conn: sqlite3.Connection, find: Any) -> list[dict[str, Any]]:
 
 
 # --------------------------------------------------------------------------- #
+# reset_tree
+# --------------------------------------------------------------------------- #
+def reset_summary_sql(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """``clocks.reset_tree`` from SQLite — RESETS edges grouped by canonical reset
+    net, byte-identical to the NetworkX oracle (reuses the same net-alias
+    union-find). Bounded: scans only RESETS edges + the alias pairs, never the
+    whole graph. Keys match ``ResetGroup`` field order so the CLI ``--json`` is
+    identical to the dataclass path."""
+    find = _alias_uf(conn).find
+    names: dict[str, set[str]] = defaultdict(set)
+    process_ids: dict[str, list[str]] = defaultdict(list)
+    is_async: dict[str, bool] = defaultdict(bool)
+    min_conf: dict[str, float] = defaultdict(lambda: 1.0)
+    for src, reset, conf, async_flag, reset_name in conn.execute(
+        "SELECT e.src, e.dst, e.confidence, json_extract(e.attrs, '$.is_async'), n.name "
+        "FROM edges e JOIN nodes n ON n.id = e.dst WHERE e.kind = ?",
+        (EdgeKind.RESETS.value,),
+    ):
+        root = find(reset)
+        names[root].add(reset_name)
+        if src not in process_ids[root]:  # dedup, preserve order (oracle parity)
+            process_ids[root].append(src)
+        is_async[root] = is_async[root] or bool(async_flag)
+        min_conf[root] = min(min_conf[root], conf)
+    groups: list[dict[str, Any]] = [
+        {
+            "reset_id": root,
+            "reset_names": sorted(nameset),
+            "is_async": is_async[root],
+            "process_ids": sorted(process_ids[root]),
+            "min_confidence": min_conf[root],
+        }
+        for root, nameset in names.items()
+    ]
+    groups.sort(key=lambda g: g["reset_names"][0])
+    return groups
+
+
+# --------------------------------------------------------------------------- #
 # cdc_suspects (the combinational-bridge logic, mirroring clocks.cdc_suspects)
 # --------------------------------------------------------------------------- #
 def _cdc_suspects(conn: sqlite3.Connection, find: Any) -> list[dict[str, Any]]:

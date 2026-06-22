@@ -296,6 +296,54 @@ class GraphQuery:
             self._ensure_endpoints(graph, conn)
             return analysis.unresolved_stubs(graph)
 
+    def modules(self) -> list[dict[str, Any]]:
+        """Bounded `modules`: every MODULE/ENTITY with its instantiation count
+        (full list) — hydrates only those units and their incoming INSTANTIATES
+        edges, never the whole graph. Sorted by ``(name, file, line)`` so the order
+        is deterministic even for same-named units (e.g. a VHDL entity and an SV
+        module sharing a name), independent of row/load order."""
+        with self._store._connect() as conn:
+            self._store._check_version(conn)
+            graph = nx.MultiDiGraph()
+            ids = [
+                add_node_row(graph, row)
+                for row in conn.execute(
+                    f"SELECT {NODE_COLUMNS} FROM nodes WHERE kind IN (?, ?)",
+                    (NodeKind.MODULE.value, NodeKind.ENTITY.value),
+                )
+            ]
+            self._hydrate_in_edges(graph, conn, ids, (EdgeKind.INSTANTIATES,))
+            return [
+                {
+                    "name": graph.nodes[nid]["name"],
+                    "kind": graph.nodes[nid]["kind"],
+                    "file": graph.nodes[nid]["file"],
+                    "line": graph.nodes[nid]["line_span"][0],
+                    "instances": analysis.instantiation_count(graph, nid),
+                }
+                for nid in sorted(
+                    ids,
+                    key=lambda i: (
+                        graph.nodes[i]["name"],
+                        graph.nodes[i]["file"],
+                        graph.nodes[i]["line_span"][0],
+                    ),
+                )
+                if not graph.nodes[nid]["attrs"].get("unresolved")
+            ]
+
+    def reset_tree(self) -> list[dict[str, Any]]:
+        """Bounded `reset-tree`: RESETS edges grouped by reset net, out-of-core.
+
+        There is no persisted reset summary, so this always recomputes from SQLite
+        via the same net-alias union-find the clock report uses — bounded by the
+        RESETS edges + alias pairs, never a full graph load."""
+        from hdl_kgraph.storage import summaries
+
+        with self._store._connect() as conn:
+            self._store._check_version(conn)
+            return summaries.reset_summary_sql(conn)
+
     def top_modules(self) -> list[dict[str, Any]]:
         """MODULE/ENTITY nodes with no incoming INSTANTIATES (indexed)."""
         with self._store._connect() as conn:
