@@ -404,8 +404,11 @@ the critical path for the RAM goal.
 - [x] **M12.5 — productionise the out-of-core whole-design summaries** behind
       `GraphQuery`: clock-domains/CDC (1.9.0) and UVM topology (1.10.0) compute
       from SQLite when the persisted summary is absent, never `SqliteStore.load()`
-      (byte-identical to the NetworkX oracle). The CLI `query clock-domains`/`cdc`/
-      `uvm` reports route through the same bounded path in 2.0.0.
+      (byte-identical to the NetworkX oracle). The CLI report commands then routed
+      through the same bounded path: `clock-domains`/`cdc`/`uvm` (2.0.0), then the
+      remaining single-target commands `instances-of`/`drivers`/`unresolved` (2.1.0)
+      and `modules`/`reset-tree` (2.2.0, adding an out-of-core `reset_summary_sql`).
+      **As of 2.2.0 no `query` command full-loads the graph.**
 - [x] **M13a — memory-bounded incremental linker (#119):** the `update` re-link
       re-resolves only the dirty closure straight from SQLite (lazy
       `idx_nodes_kind_name`/`idx_edges_*`, bounded stub-GC), byte-identical to a
