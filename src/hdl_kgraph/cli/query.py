@@ -42,9 +42,14 @@ def instances_of(name: str, db_path: Path | None, as_json: bool) -> None:
     """List all instantiation sites of design units named NAME.
 
     Exits 1 if NAME matches nothing (a negative result, not an error).
+
+    Answered from the bounded path (only NAME's nodes + incoming INSTANTIATES),
+    never a full graph load.
     """
-    graph, _, _ = _load(db_path)
-    records = analysis.instances_of(graph, name)
+    try:
+        records = _query(db_path).instances_of(name)
+    except SchemaVersionError as exc:
+        raise CliError(str(exc)) from exc
     if as_json:
         _emit_json(records)
         if not records:
@@ -200,9 +205,14 @@ def drivers_cmd(
     """List what drives (or reads) signals named SIGNAL.
 
     Exits 1 if SIGNAL matches nothing (a negative result, not an error).
+
+    Answered from the bounded path (only SIGNAL's nodes + their DRIVES/READS
+    fanout), never a full graph load.
     """
-    graph, _, _ = _load(db_path)
-    records = analysis.signal_drivers(graph, signal, module=module, readers=readers)
+    try:
+        records = _query(db_path).signal_drivers(signal, module, readers)
+    except SchemaVersionError as exc:
+        raise CliError(str(exc)) from exc
     if as_json:
         _emit_json(records)
         if not records:
@@ -262,9 +272,15 @@ def uvm_cmd(db_path: Path | None, as_json: bool) -> None:
 @_db_option
 @_json_option
 def unresolved(db_path: Path | None, as_json: bool) -> None:
-    """List unresolved stub nodes and who references them."""
-    graph, _, _ = _load(db_path)
-    stubs = analysis.unresolved_stubs(graph)
+    """List unresolved stub nodes and who references them.
+
+    Answered from the bounded path (scans for unresolved nodes + hydrates only
+    their referrer edges), never a full graph load.
+    """
+    try:
+        stubs = _query(db_path).unresolved_stubs()
+    except SchemaVersionError as exc:
+        raise CliError(str(exc)) from exc
     if as_json:
         _emit_json(stubs)
         return

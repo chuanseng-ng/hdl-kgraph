@@ -192,9 +192,10 @@ class GraphQuery:
             results = analysis.search_nodes(graph, name=name, kinds=kinds, file=file)
             return _page(results, limit, offset)
 
-    def who_instantiates(self, name: str, limit: int, offset: int) -> dict[str, Any]:
-        from hdl_kgraph.mcp.server import _page
-
+    def instances_of(self, name: str) -> list[dict[str, Any]]:
+        """Bounded `instances-of`: every instantiation site of *name* (full list,
+        no pagination) — hydrates only *name*'s nodes and their incoming
+        INSTANTIATES edges, never the whole graph."""
         with self._store._connect() as conn:
             self._store._check_version(conn)
             graph = nx.MultiDiGraph()
@@ -202,7 +203,12 @@ class GraphQuery:
             self._hydrate_nodes(graph, conn, target_ids)
             self._hydrate_in_edges(graph, conn, target_ids, (EdgeKind.INSTANTIATES,))
             self._ensure_endpoints(graph, conn)
-            return _page(analysis.instances_of(graph, name), limit, offset)
+            return analysis.instances_of(graph, name)
+
+    def who_instantiates(self, name: str, limit: int, offset: int) -> dict[str, Any]:
+        from hdl_kgraph.mcp.server import _page
+
+        return _page(self.instances_of(name), limit, offset)
 
     def port_map(self, module: str, instance: str | None) -> dict[str, Any]:
         from hdl_kgraph.mcp.server import _port_map_impl
@@ -229,11 +235,12 @@ class GraphQuery:
             self._ensure_endpoints(graph, conn)
             return _port_map_impl(graph, module, instance)
 
-    def find_signal_drivers(
-        self, signal: str, module: str | None, readers: bool, limit: int, offset: int
-    ) -> dict[str, Any]:
-        from hdl_kgraph.mcp.server import _page
-
+    def signal_drivers(
+        self, signal: str, module: str | None, readers: bool
+    ) -> list[dict[str, Any]]:
+        """Bounded `drivers`: what drives (or reads) *signal* (full list, no
+        pagination) — hydrates only the named signals and their DRIVES/READS
+        fanout, never the whole graph."""
         with self._store._connect() as conn:
             self._store._check_version(conn)
             graph = nx.MultiDiGraph()
@@ -255,10 +262,39 @@ class GraphQuery:
                     if (module.lower() if graph.nodes[sid]["language"] is Language.VHDL else module)
                     in analysis._signal_unit_names(graph, sid)[1]
                 ]
-            self._hydrate_in_edges(graph, conn, drivers_of, (EdgeKind.DRIVES, EdgeKind.READS))
+            # analysis.signal_drivers reads only one edge kind (READS iff readers,
+            # else DRIVES), so hydrate just that one — halves the fanout scan on
+            # the hot path, byte-identical.
+            edge_kinds = (EdgeKind.READS,) if readers else (EdgeKind.DRIVES,)
+            self._hydrate_in_edges(graph, conn, drivers_of, edge_kinds)
             self._ensure_endpoints(graph, conn)
-            results = analysis.signal_drivers(graph, signal, module=module, readers=readers)
-            return _page(results, limit, offset)
+            return analysis.signal_drivers(graph, signal, module=module, readers=readers)
+
+    def find_signal_drivers(
+        self, signal: str, module: str | None, readers: bool, limit: int, offset: int
+    ) -> dict[str, Any]:
+        from hdl_kgraph.mcp.server import _page
+
+        return _page(self.signal_drivers(signal, module, readers), limit, offset)
+
+    def unresolved_stubs(self) -> list[dict[str, Any]]:
+        """Bounded `unresolved`: every unresolved stub and its referrer ids.
+
+        Scans the nodes table for unresolved stubs and hydrates only their
+        incoming edges — `analysis.unresolved_stubs` reads each stub's own attrs
+        and its referrers' *ids* (not their attributes), so the whole graph is
+        never materialised. `_ensure_endpoints` fills the bare referrer nodes so
+        the reused analysis can iterate every node's attrs safely."""
+        with self._store._connect() as conn:
+            self._store._check_version(conn)
+            graph = nx.MultiDiGraph()
+            for row in conn.execute(
+                f"SELECT {NODE_COLUMNS} FROM nodes WHERE json_extract(attrs, '$.unresolved') = 1"
+            ):
+                add_node_row(graph, row)
+            self._hydrate_in_edges(graph, conn, list(graph.nodes))
+            self._ensure_endpoints(graph, conn)
+            return analysis.unresolved_stubs(graph)
 
     def top_modules(self) -> list[dict[str, Any]]:
         """MODULE/ENTITY nodes with no incoming INSTANTIATES (indexed)."""
