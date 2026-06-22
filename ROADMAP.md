@@ -9,7 +9,12 @@ modeled on [code-review-graph](https://github.com/tirth8205/code-review-graph):
 Python 3.10+, tree-sitter parsing, NetworkX graph algorithms, SQLite persistence,
 a CLI, and (later) an MCP server for AI assistants. Distribution is via pip/PyPI.
 
-**MVP line:** Milestones M1–M4. M5–M6 are value-add. M7–M10 are stretch goals.
+**Status (v2.2.0):** Milestones M1–M7 are shipped, and the v2.0 scalability epic
+(M11–M13a — bounded reads, out-of-core whole-design summaries, and a
+memory-bounded incremental linker) is delivered. M8–M10 (EDA flow languages,
+DPI-C, emerging HDLs) remain an exploratory/community-contribution track, and the
+Rust core (M13) is deferred — profiling (M12) showed it isn't needed for the RAM
+goal.
 
 ---
 
@@ -360,10 +365,13 @@ waits on (or runs out of memory loading) the whole graph.
 - [x] **Dirty-closure-scoped incremental write (v0.10):** `save_incremental`
       reads and rewrites only the changed rows (a one-file edit touches ~0.04 %
       of the corpus), not the whole `nodes`/`edges` tables.
-- [ ] **Memory-bounded incremental linker:** the last O(design) cost is the
-      incremental linker still loading the full prior graph; an all-or-nothing
-      rewrite (SQL-backed resolution + stub-GC + incremental TEST_COVERS), so far
-      deferred — see [docs/scalability.md](docs/scalability.md).
+- [x] **Memory-bounded incremental linker (v2.0, was the last O(design) cost):**
+      the incremental linker no longer loads the full prior graph — it re-resolves
+      the dirty closure straight from SQLite (SQL-backed resolution + bounded
+      stub-GC + out-of-core TEST_COVERS + selective IR decode), byte-identical to
+      the in-memory path. Landed opt-in as `--bounded-link` (v1.12), became the
+      default (v1.13+), formalized in v2.0 — see
+      [docs/scalability.md](docs/scalability.md).
 
 **Acceptance:** `tests/test_query.py` (read parity + no-full-load proof),
 `tests/test_incremental_equivalence.py` (byte-identical scoped writes),
