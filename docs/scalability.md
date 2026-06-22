@@ -30,10 +30,19 @@ that small graph — so results are byte-identical to the full-graph path
 | `get_hierarchy(top)` | BFS over `DECLARES`/`INSTANTIATES`/`IMPLEMENTS`, capped by depth/nodes |
 | `get_hierarchy()` (tops) | pure SQL set-difference: no incoming `INSTANTIATES` |
 | `impact_of_change` | hydrate only the reverse-dependency closure `impact_radius` walks |
-| `find_signal_drivers` | signals by name, then their `DRIVES`/`READS` edges |
+| `find_signal_drivers` | signals by name, then only their `DRIVES` *or* `READS` edges |
+| `unresolved_stubs` | unresolved-`nodes` scan + only those stubs' referrer edges |
+| `modules` | indexed `MODULE`/`ENTITY` scan + each unit's incoming `INSTANTIATES` count |
 
 Each call opens a fresh read connection, so a concurrent `update`/`watch` swap
 is always observed — no cache, no staleness window.
+
+As of v2.2.0 **every** CLI `query` subcommand is answered through this bounded
+path — `instances-of`, `modules`, `drivers`, `unresolved`, and the whole-design
+reports (`clock-domains`/`cdc`/`uvm`/`reset-tree`, below) — so no `query` command
+ever calls `SqliteStore.load()`. (The routing landed incrementally: the reports in
+v2.0.0, `instances-of`/`drivers`/`unresolved` in v2.1.0, `modules`/`reset-tree` in
+v2.2.0.)
 
 A localized query is 1000–16000× faster than the old per-call load and its
 latency tracks the *answer* size, not the design size (see
@@ -43,15 +52,17 @@ is intrinsic, not a regression.
 
 ## Whole-design summaries: precomputed, not re-scanned
 
-Clock-domain/CDC and UVM-topology reports scan global relations
-(`CLOCKED_BY`/`DRIVES`/`READS`/`EXTENDS`), not a single query's local neighbourhood.
-The build computes them once — while the graph is already in memory — and persists
-the result to the `summaries` table (`graph/summary.py`); the MCP tools **and the
-CLI `query clock-domains`/`cdc`/`uvm` commands** read that small JSON blob through
-`GraphQuery` in well under a millisecond at any design size (since v2.0.0 the CLI
-no longer full-loads the graph for these reports). The build computes them on a
-full `build` and refreshes them on `update`. When the persisted blob is absent the
-reader recomputes out-of-core (below), never via `SqliteStore.load()`.
+Clock-domain/CDC, reset-tree, and UVM-topology reports scan global relations
+(`CLOCKED_BY`/`RESETS`/`DRIVES`/`READS`/`EXTENDS`), not a single query's local
+neighbourhood. The build computes the clock/CDC and UVM summaries once — while the
+graph is already in memory — and persists them to the `summaries` table
+(`graph/summary.py`); the MCP tools **and the CLI `query clock-domains`/`cdc`/`uvm`
+commands** read that small JSON blob through `GraphQuery` in well under a
+millisecond at any design size (since v2.0.0 the CLI no longer full-loads the graph
+for these reports). The build computes them on a full `build` and refreshes them on
+`update`. When the persisted blob is absent — and always for `reset-tree`, which is
+not persisted — the reader recomputes out-of-core (below), never via
+`SqliteStore.load()`.
 
 When the persisted summary is **absent** — a database older than schema v8 (no
 summaries table), or any build that did not persist it — the reader falls back to
@@ -63,6 +74,10 @@ recomputing the report, and both summary families now do so **out-of-core**
   net-alias union-find reduces to connected components over the derived dataflow edges,
   reusing `clocks._UnionFind` over a SQL-derived pair list — without ever materializing
   the graph (validated on a real design in [v2/m12_real_design.md](v2/m12_real_design.md)).
+- **Reset tree** (`reset_summary_sql`): `RESETS` edges grouped by canonical reset net via
+  the *same* net-alias union-find as the clock report — bounded by the `RESETS` edges plus
+  the alias pairs. Computed this way on every call (there is no persisted reset summary);
+  the CLI resolves the reset processes' qualified names with a bounded id lookup.
 - **UVM topology** (`uvm_summary_sql`): hydrates only the bounded *class* subgraph (CLASS
   nodes plus `EXTENDS`/`TEST_COVERS` edges) and runs the same `graph/uvm.py` functions on
   it — the report only ever touches the class inheritance graph, not the whole design.

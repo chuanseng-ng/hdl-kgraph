@@ -198,6 +198,38 @@ def test_signal_drivers_list_parity(query: GraphQuery, loaded) -> None:
             ), (signal, module)
 
 
+def test_modules_parity(query: GraphQuery, loaded) -> None:
+    # The CLI `modules` routes through this bounded list method; it must equal the
+    # full-graph computation (every MODULE/ENTITY, sorted by name, with counts).
+    graph, _ = loaded
+    expected = [
+        {
+            "name": data["name"],
+            "kind": data["kind"],
+            "file": data["file"],
+            "line": data["line_span"][0],
+            "instances": analysis.instantiation_count(graph, node_id),
+        }
+        for node_id, data in sorted(
+            graph.nodes(data=True),
+            key=lambda kv: (kv[1]["name"], kv[1]["file"], kv[1]["line_span"][0]),
+        )
+        if data["kind"] in (NodeKind.MODULE, NodeKind.ENTITY)
+        and not data["attrs"].get("unresolved")
+    ]
+    assert expected
+    assert query.modules() == expected
+
+
+def test_reset_tree_parity(query: GraphQuery, loaded) -> None:
+    # The CLI `reset-tree` routes through this bounded SQL scan; it must equal the
+    # NetworkX oracle (alias-merged reset groups), dataclass→dict.
+    from hdl_kgraph.graph import clocks
+
+    graph, _ = loaded
+    assert query.reset_tree() == srv._jsonable(clocks.reset_tree(graph))
+
+
 def test_unresolved_stubs_parity(query: GraphQuery, loaded) -> None:
     # The CLI `unresolved` routes through this bounded scan; it must equal the
     # full-graph oracle (the corpus has unresolved stubs, e.g. uvm_* bases).

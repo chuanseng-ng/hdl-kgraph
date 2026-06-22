@@ -73,7 +73,9 @@ python scripts/bench_query.py --files 20000
 through `GraphQuery` (`hdl_kgraph/storage/query.py`), which answers from a
 *bounded subgraph* hydrated through the SQLite indices rather than loading the
 whole graph. It contrasts that with one `SqliteStore.load()` — the cost the old
-read path paid on *every* call.
+read path paid on *every* call. As of v2.2.0 the CLI `query` subcommands answer
+through this same bounded reader, so these numbers apply to the CLI too — no
+`query` command full-loads the graph.
 
 ### Recorded results
 

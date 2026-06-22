@@ -14,11 +14,11 @@ from pathlib import Path
 
 import pytest
 
-from hdl_kgraph.graph import summary
+from hdl_kgraph.graph import clocks, summary
 from hdl_kgraph.pipeline import default_db_path, run_build
 from hdl_kgraph.storage.query import GraphQuery
 from hdl_kgraph.storage.sqlite_store import SqliteStore
-from hdl_kgraph.storage.summaries import clock_summary_sql, uvm_summary_sql
+from hdl_kgraph.storage.summaries import clock_summary_sql, reset_summary_sql, uvm_summary_sql
 
 # Fixture sets that exercise clocks/CDC, incl. cross-language net aliasing.
 _FIXTURE_SETS = [
@@ -45,6 +45,18 @@ def test_sql_clock_summary_matches_oracle(
     with SqliteStore(db)._connect() as conn:
         sql = clock_summary_sql(conn)
     assert sql == oracle  # byte-identical: domains, cdc_suspect_count, cdc_suspects
+
+
+@pytest.mark.parametrize("names", _FIXTURE_SETS, ids=lambda n: "+".join(n))
+def test_sql_reset_summary_matches_oracle(
+    tmp_path: Path, fixtures_dir: Path, names: list[str]
+) -> None:
+    db = _build(tmp_path, fixtures_dir, names)
+    graph, _f, _m = SqliteStore(db).load()
+    oracle = summary.jsonable(clocks.reset_tree(graph))
+    with SqliteStore(db)._connect() as conn:
+        sql = reset_summary_sql(conn)
+    assert sql == oracle  # byte-identical reset groups (alias-merged), via SQL
 
 
 def test_two_clock_fixture_shape(tmp_path: Path, fixtures_dir: Path) -> None:

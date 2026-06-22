@@ -9,7 +9,6 @@ import click
 
 from hdl_kgraph.cli._common import (
     CliError,
-    _load,
     _resolve_db,
 )
 from hdl_kgraph.cli._options import (
@@ -17,7 +16,7 @@ from hdl_kgraph.cli._options import (
     _json_option,
 )
 from hdl_kgraph.cli.render import emit_json as _emit_json
-from hdl_kgraph.graph import analysis, clocks, uvm
+from hdl_kgraph.graph import uvm
 from hdl_kgraph.schema import NodeKind
 from hdl_kgraph.storage.query import GraphQuery
 from hdl_kgraph.storage.sqlite_store import SchemaVersionError
@@ -70,24 +69,15 @@ def instances_of(name: str, db_path: Path | None, as_json: bool) -> None:
 @_db_option
 @_json_option
 def modules(db_path: Path | None, as_json: bool) -> None:
-    """List all modules and entities with their instantiation counts."""
-    graph, _, _ = _load(db_path)
-    rows = []
-    for node_id, data in sorted(graph.nodes(data=True), key=lambda kv: kv[1]["name"]):
-        if data["kind"] not in (NodeKind.MODULE, NodeKind.ENTITY) or data["attrs"].get(
-            "unresolved"
-        ):
-            continue
-        count = analysis.instantiation_count(graph, node_id)
-        rows.append(
-            {
-                "name": data["name"],
-                "kind": data["kind"],
-                "file": data["file"],
-                "line": data["line_span"][0],
-                "instances": count,
-            }
-        )
+    """List all modules and entities with their instantiation counts.
+
+    Answered from the bounded path (units + their incoming INSTANTIATES counts),
+    never a full graph load.
+    """
+    try:
+        rows = _query(db_path).modules()
+    except SchemaVersionError as exc:
+        raise CliError(str(exc)) from exc
     if as_json:
         _emit_json(rows)
         return
@@ -138,25 +128,36 @@ def clock_domains_cmd(db_path: Path | None, as_json: bool) -> None:
 @_db_option
 @_json_option
 def reset_tree_cmd(db_path: Path | None, as_json: bool) -> None:
-    """Report reset nets and the processes they reset."""
-    graph, _, _ = _load(db_path)
-    groups = clocks.reset_tree(graph)
+    """Report reset nets and the processes they reset.
+
+    Answered from the bounded out-of-core scan (RESETS edges + net aliases), never
+    a full graph load; each net is labelled by name (the reset processes' qualified
+    names are resolved with a bounded lookup).
+    """
+    q = _query(db_path)
+    try:
+        groups = q.reset_tree()
+    except SchemaVersionError as exc:
+        raise CliError(str(exc)) from exc
     if as_json:
         _emit_json(groups)
         return
     if not groups:
         click.echo("no resets found")
         return
+    proc_names = q.qualified_names([proc for g in groups for proc in g["process_ids"]])
     for group in groups:
-        label = graph.nodes[group.reset_id]["qualified_name"]
-        aliases = [n for n in group.reset_names if n != graph.nodes[group.reset_id]["name"]]
+        names = group["reset_names"]
+        label = names[0]
+        aliases = [n for n in names if n != names[0]]
         if aliases:
             label += " (= " + ", ".join(aliases) + ")"
-        flavor = "async" if group.is_async else "sync (name heuristic)"
-        marker = "" if group.min_confidence >= 0.8 else f"  [~{group.min_confidence:.1f}]"
+        flavor = "async" if group["is_async"] else "sync (name heuristic)"
+        conf = group["min_confidence"]
+        marker = "" if conf >= 0.8 else f"  [~{conf:.1f}]"
         click.echo(f"{label}  {flavor}{marker}")
-        for proc in group.process_ids:
-            click.echo(f"    resets {graph.nodes[proc]['qualified_name']}")
+        for proc in group["process_ids"]:
+            click.echo(f"    resets {proc_names.get(proc, proc)}")
 
 
 @query.command("cdc")
