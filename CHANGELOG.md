@@ -9,6 +9,26 @@ the major version, and schema changes ship with a migration.
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-06-21
+
+### Fixed
+
+- **`query instances-of` / `drivers` / `unresolved` no longer full-load the graph.** These CLI
+  commands still called `SqliteStore.load()`, so on a large design they materialised the whole
+  `MultiDiGraph` — e.g. on a 22 GB / 2.6 M-node netlist, `query drivers` and `query unresolved` hit
+  ~15 GB RSS, ~16 M block reads, and 4–7 minutes (often OOM). They now answer through the bounded
+  `GraphQuery` path (the same one the MCP tools and the v2.0 report commands use), hydrating only the
+  queried nodes and their relevant edges — output is **byte-identical** (parity-tested), with latency
+  tracking the answer size, not the design size. This completes the M12.5 routing for the
+  single-target `query` commands; `modules` and `reset-tree` are the remaining full-load commands
+  (separate follow-up).
+
+### Added
+
+- `GraphQuery.instances_of()`, `signal_drivers()`, and `unresolved_stubs()` — bounded, full-list
+  (unpaginated) variants of the existing report methods, consumed by the CLI; the paginated MCP
+  methods (`who_instantiates` / `find_signal_drivers`) now delegate to them.
+
 ## [2.0.0] - 2026-06-21
 
 **v2.0 — the out-of-core, bounded-RAM architecture, delivered without a Rust core.**

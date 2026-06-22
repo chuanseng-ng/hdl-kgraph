@@ -170,6 +170,35 @@ def test_find_signal_drivers_parity(query: GraphQuery, loaded) -> None:
             )
 
 
+def test_instances_of_list_parity(query: GraphQuery, loaded) -> None:
+    # The CLI `instances-of` routes through this unpaged list method (the bounded
+    # path the MCP `who_instantiates` also wraps); it must equal the full-graph oracle.
+    graph, _ = loaded
+    for name in [*_names_of_kinds(graph, analysis.INSTANTIABLE_KINDS), "missing_child"]:
+        assert query.instances_of(name) == analysis.instances_of(graph, name), name
+
+
+def test_signal_drivers_list_parity(query: GraphQuery, loaded) -> None:
+    # The CLI `drivers` routes through this unpaged list method.
+    graph, _ = loaded
+    signals = _names_of_kinds(graph, frozenset({NodeKind.SIGNAL, NodeKind.PORT}))
+    assert signals
+    for signal in signals:
+        for readers in (False, True):
+            assert query.signal_drivers(signal, None, readers) == analysis.signal_drivers(
+                graph, signal, module=None, readers=readers
+            ), signal
+
+
+def test_unresolved_stubs_parity(query: GraphQuery, loaded) -> None:
+    # The CLI `unresolved` routes through this bounded scan; it must equal the
+    # full-graph oracle (the corpus has unresolved stubs, e.g. uvm_* bases).
+    graph, _ = loaded
+    expected = analysis.unresolved_stubs(graph)
+    assert expected  # corpus has unresolved references
+    assert query.unresolved_stubs() == expected
+
+
 def test_find_signal_drivers_scopes_edge_hydration_to_module(
     query: GraphQuery, loaded, monkeypatch: pytest.MonkeyPatch
 ) -> None:
