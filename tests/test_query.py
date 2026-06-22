@@ -188,6 +188,14 @@ def test_signal_drivers_list_parity(query: GraphQuery, loaded) -> None:
             assert query.signal_drivers(signal, None, readers) == analysis.signal_drivers(
                 graph, signal, module=None, readers=readers
             ), signal
+    # the module-scoped branch (CLI `drivers --module`) has its own filtering +
+    # one-edge-kind hydration; pin it too, incl. a missing-module negative case.
+    modules = [*_names_of_kinds(graph, analysis.INSTANTIABLE_KINDS), "no_such_module"]
+    for signal in signals[:8]:
+        for module in modules:
+            assert query.signal_drivers(signal, module, False) == analysis.signal_drivers(
+                graph, signal, module=module, readers=False
+            ), (signal, module)
 
 
 def test_unresolved_stubs_parity(query: GraphQuery, loaded) -> None:

@@ -262,7 +262,11 @@ class GraphQuery:
                     if (module.lower() if graph.nodes[sid]["language"] is Language.VHDL else module)
                     in analysis._signal_unit_names(graph, sid)[1]
                 ]
-            self._hydrate_in_edges(graph, conn, drivers_of, (EdgeKind.DRIVES, EdgeKind.READS))
+            # analysis.signal_drivers reads only one edge kind (READS iff readers,
+            # else DRIVES), so hydrate just that one — halves the fanout scan on
+            # the hot path, byte-identical.
+            edge_kinds = (EdgeKind.READS,) if readers else (EdgeKind.DRIVES,)
+            self._hydrate_in_edges(graph, conn, drivers_of, edge_kinds)
             self._ensure_endpoints(graph, conn)
             return analysis.signal_drivers(graph, signal, module=module, readers=readers)
 
