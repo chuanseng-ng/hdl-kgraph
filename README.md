@@ -8,7 +8,7 @@ instances, ports, parameters, signals, classes, packages, and the
 relationships between them — design hierarchy, port connectivity, package
 imports, class inheritance, clock domains, and more.
 
-> **Status: v1.0 — stable.** Milestones M1–M7 are in: SystemVerilog/Verilog
+> **Status: v2.2.0 — stable.** Milestones M1–M7 are in: SystemVerilog/Verilog
 > and VHDL extraction with mixed-language linking, the SV preprocessor and
 > real-world build inputs (`.f` filelists, defines, `hdl-kgraph.toml`),
 > incremental rebuilds and watch mode, the clock/reset/CDC/lint/metrics
@@ -18,12 +18,15 @@ imports, class inheritance, clock domains, and more.
 > elaborates the design — unrolling parameterized generates so instance counts
 > match reality — and records a
 > [discrepancy report](docs/enrichment.md). `hdl-kgraph enriched` summarizes
-> exactly what enrichment changed vs the default build. **v0.9–v0.10 make it
-> scale to large (10–100+ GB) designs:** MCP/CLI queries answer from a bounded,
-> index-backed subgraph instead of loading the whole graph (a localized query is
-> sub-millisecond and tracks the *answer* size, not the design size), the
-> whole-design clock/UVM reports are precomputed at build, and an incremental
-> `update` reads and writes only the changed rows. See
+> exactly what enrichment changed vs the default build. **v2.0 makes it scale to
+> large (10–100+ GB) designs:** the out-of-core, bounded-RAM architecture is
+> fully delivered — every MCP/CLI query answers from a bounded, index-backed
+> subgraph instead of loading the whole graph (a localized query is
+> sub-millisecond and tracks the *answer* size, not the design size, and **no
+> `query` command full-loads the graph**), the whole-design clock/reset/CDC/UVM
+> reports are precomputed at build with an SQL-native out-of-core fallback, and
+> an incremental `update` re-links and re-writes only the changed rows through
+> the memory-bounded linker (now the default). See
 > [docs/scalability.md](docs/scalability.md) and the
 > [roadmap](#roadmap-at-a-glance).
 
@@ -92,12 +95,14 @@ warnings and why files were skipped.
 
 **Incremental updates.** `update` re-parses only changed files plus their
 include/macro dependents — one edit in a 2000-file design lands in about 1.5 s
-(budget < 1.8 s) — and `watch` does it on every save burst. As of v0.8 the
-pass-2 link is incremental too: for SystemVerilog/Verilog it re-resolves only
-the references whose target changed and mutates the prior resolved graph in
-place (byte-identical to a full re-link; VHDL, binds, and `--enrich` fall back).
-v0.10 scopes the database write to the dirty closure — a one-file edit reads and
-writes ~0.04 % of the rows, not the whole graph. `detect-changes`
+(budget < 1.8 s) — and `watch` does it on every save burst. The pass-2 link is
+incremental too, and as of v2.0 the **memory-bounded linker is the default**:
+for SystemVerilog/Verilog it re-resolves only the references whose target
+changed, reading just the dirty closure from SQLite (selective IR decode,
+out-of-core `TEST_COVERS`) instead of loading the prior graph — byte-identical
+to a full re-link; VHDL, binds, and `--enrich` fall back. The database write is
+scoped to the dirty closure too, so a one-file edit reads and writes ~0.04 % of
+the rows, not the whole graph. `detect-changes`
 (exit codes: 0 clean, 1 dirty, 2 error; diffs against git, svn, or Perforce)
 and `impact` answer "what changed, and what does it affect?" in CI.
 → [docs/incremental.md](docs/incremental.md)
@@ -133,6 +138,13 @@ Can't run MCP? The same nine tools are available as plain JSON-printing
 commands under `hdl-kgraph tools …` (no `[mcp]` extra needed).
 → [docs/mcp.md](docs/mcp.md)
 
+**Review digest & link metrics.** `review` emits a content-free digest — parse
+health, graph shape, link quality, and analysis counts only, never identifiers
+— so it's safe to export from an air-gapped environment and diffs cleanly across
+builds. `bench-link` quantifies incremental-link locality (what fraction of
+references a typical edit re-resolves), the metric behind the bounded linker.
+→ [docs/review.md](docs/review.md)
+
 ## What gets extracted
 
 - **Design units:** modules, interfaces, packages, programs; VHDL entities,
@@ -163,9 +175,11 @@ full list, the confidence convention, and the schema pointers live in
 | M9 (v1.x) | Chisel/FIRRTL, Amaranth, SpinalHDL |
 | M10 (v1.x) | Tcl/SDC/UPF constraints, Perl scripting, SLN portable stimulus |
 
-*Cross-cutting (v0.9–v0.10): bounded index-backed reads, precomputed
-whole-design summaries, and a dirty-closure-scoped incremental write, so the
-tool scales to 10–100+ GB graphs — [docs/scalability.md](docs/scalability.md).*
+*Cross-cutting (v0.9–v2.2, the v2.0 epic): bounded index-backed reads,
+precomputed whole-design summaries with an SQL-native out-of-core fallback, and
+a dirty-closure-scoped incremental link and write — delivered, so no query
+full-loads the graph and the tool scales to 10–100+ GB designs —
+[docs/scalability.md](docs/scalability.md).*
 
 Details and acceptance criteria: [ROADMAP.md](ROADMAP.md).
 
