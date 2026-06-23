@@ -7,6 +7,7 @@ import pytest
 
 from hdl_kgraph.parser.c import CParser, CppParser
 from hdl_kgraph.parser.perl import PerlParser
+from hdl_kgraph.parser.python import PythonParser
 from hdl_kgraph.parser.sln import SlnParser
 from hdl_kgraph.parser.systemverilog import SystemVerilogParser
 from hdl_kgraph.parser.tcl import SdcParser, TclScriptParser, UpfParser
@@ -17,6 +18,7 @@ ALL_BACKENDS = [
     VhdlParser,
     CParser,
     CppParser,
+    PythonParser,
     SdcParser,
     UpfParser,
     TclScriptParser,
@@ -74,6 +76,7 @@ def test_c_family_suffixes_route_through_discovery() -> None:
 
     assert CParser.suffixes <= discovery.SUFFIXES
     assert CppParser.suffixes <= discovery.SUFFIXES
+    assert PythonParser.suffixes <= discovery.SUFFIXES
 
 
 def test_filelist_routes_unsupported_suffix_to_skip(tmp_path: Path) -> None:

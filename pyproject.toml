@@ -45,6 +45,7 @@ dependencies = [
   "tree-sitter-vhdl>=1.5,<2",
   "tree-sitter-c>=0.23,<0.25",
   "tree-sitter-cpp>=0.23,<0.24",
+  "tree-sitter-python>=0.23,<0.26",
   'tomli>=2.0; python_version < "3.11"',
 ]
 
@@ -93,6 +94,9 @@ packages = ["src/hdl_kgraph"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+# Test fixtures are deliberately minimal/odd input (e.g. cocotb testbenches with
+# intentionally "unused" reads); they are data, not linted code.
+extend-exclude = ["tests/fixtures"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
@@ -110,6 +114,7 @@ module = [
   "tree_sitter_vhdl.*",
   "tree_sitter_c.*",
   "tree_sitter_cpp.*",
+  "tree_sitter_python.*",
   "networkx.*",
   "numpy.*",
   "scipy.*",
@@ -134,6 +139,9 @@ follow_imports_for_stubs = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# Fixture files (e.g. cocotb testbenches named ``test_*.py``) are inputs to the
+# parser, not pytest tests — don't collect them.
+norecursedirs = ["tests/fixtures"]
 
 [tool.coverage.run]
 # Branch coverage (not just line) so the resilience/degradation paths — a

@@ -9,13 +9,14 @@ modeled on [code-review-graph](https://github.com/tirth8205/code-review-graph):
 Python 3.10+, tree-sitter parsing, NetworkX graph algorithms, SQLite persistence,
 a CLI, and (later) an MCP server for AI assistants. Distribution is via pip/PyPI.
 
-**Status (v2.3.0):** Milestones M1–M7 are shipped, and the v2.0 scalability epic
+**Status (v2.4.0):** Milestones M1–M7 are shipped, and the v2.0 scalability epic
 (M11–M13a — bounded reads, out-of-core whole-design summaries, and a
 memory-bounded incremental linker) is delivered. M8–M10 (EDA flow languages,
-DPI-C, emerging HDLs) remain an exploratory/community-contribution track — its
-first slice landed in v2.3: M8's DPI-C linking (SV `import`/`export "DPI-C"` ↔
-C/C++ function definitions). The Rust core (M13) is deferred — profiling (M12)
-showed it isn't needed for the RAM goal.
+DPI-C, emerging HDLs) remain an exploratory/community-contribution track — M8's
+C/C++/Python boundary is now in: DPI-C linking (SV `import`/`export "DPI-C"` ↔
+C/C++ functions, v2.3) and cocotb testbench scanning (Python `dut.<signal>` →
+`READS`/`DRIVES`, test discovery → `TEST_COVERS`, v2.4). The Rust core (M13) is
+deferred — profiling (M12) showed it isn't needed for the RAM goal.
 
 ---
 
@@ -474,9 +475,16 @@ target on the exploratory track above.
       stub). C/C++ bypass the SV preprocessor; bare-name matching is the tier
       (no C++ mangling, no C preprocessor). Schema unchanged — `FOREIGN_BINDS`
       and the `C`/`CPP` languages already existed. See docs/extraction.md**
-- [ ] Python testbench scanning: cocotb `dut.signal` attribute access →
+- [x] Python testbench scanning: cocotb `dut.signal` attribute access →
       `READS`/`DRIVES` (confidence 0.6); pytest/cocotb test discovery →
-      `TEST_COVERS`
+      `TEST_COVERS` — **`parser/python.py` (tree-sitter-python) extracts
+      `@cocotb.test` functions as PYTHON `FUNCTION` nodes; `dut.sig.value =`/
+      `setimmediatevalue` → DRIVES, other `dut.sig` reads → READS, resolved
+      against the DUT module's ports/signals; `TEST_COVERS` to the DUT (0.4).
+      The DUT is heuristic — configured `[build].top` else a filename guess
+      (`test_fifo.py` → `fifo`) — so a `.py` is only a source when it mentions
+      `cocotb` (content-sniffed), and `update` re-links cocotb designs fully.
+      See docs/extraction.md**
 - [x] Stable public CLI + graph schema, semver commitment, documented
       migration policy — **shipped in v1.0** once its prerequisites landed: the
       SQLite schema migration ladder (#74) so a version bump no longer forces a

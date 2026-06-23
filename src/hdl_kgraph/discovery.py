@@ -24,12 +24,15 @@ from pathlib import Path
 
 from hdl_kgraph.parser.base import within_root
 from hdl_kgraph.parser.c import C_SUFFIXES, CPP_SUFFIXES
+from hdl_kgraph.parser.python import COCOTB_MARKER
+from hdl_kgraph.parser.python import SUFFIXES as PYTHON_SUFFIXES
 from hdl_kgraph.parser.systemverilog import SUFFIXES as SV_SUFFIXES
 from hdl_kgraph.parser.systemverilog import SYSTEMVERILOG_SUFFIXES
 from hdl_kgraph.parser.vhdl import SUFFIXES as VHDL_SUFFIXES
 from hdl_kgraph.schema import Language
 
-SUFFIXES = SV_SUFFIXES | VHDL_SUFFIXES | C_SUFFIXES | CPP_SUFFIXES
+SUFFIXES = SV_SUFFIXES | VHDL_SUFFIXES | C_SUFFIXES | CPP_SUFFIXES | PYTHON_SUFFIXES
+_COCOTB_MARKER_BYTES = COCOTB_MARKER.encode()
 
 DEFAULT_MAX_FILE_SIZE_KB = 1024
 _PRAGMA_PROTECT_PROBE_BYTES = 4096
@@ -44,7 +47,7 @@ class DiscoveredFile:
     language: Language
     size_bytes: int
     content_hash: str = ""
-    # None | 'exclude' | 'size' | 'pragma_protect' | 'missing' | 'unsupported'
+    # None | 'exclude' | 'size' | 'pragma_protect' | 'missing' | 'unsupported' | 'not_cocotb'
     skipped_reason: str | None = None
 
 
@@ -55,6 +58,8 @@ def _language_for(path: Path) -> Language:
         return Language.C
     if path.suffix in CPP_SUFFIXES:
         return Language.CPP
+    if path.suffix in PYTHON_SUFFIXES:
+        return Language.PYTHON
     if path.suffix not in SV_SUFFIXES:
         return Language.UNKNOWN
     return Language.SYSTEMVERILOG if path.suffix in SYSTEMVERILOG_SUFFIXES else Language.VERILOG
@@ -85,6 +90,10 @@ def check_file(
         data = path.read_bytes()
         if b"`pragma protect" in data[:_PRAGMA_PROTECT_PROBE_BYTES]:
             found.skipped_reason = "pragma_protect"
+        elif found.language is Language.PYTHON and _COCOTB_MARKER_BYTES not in data:
+            # A `.py` is only a source when it mentions cocotb — keeps ordinary
+            # Python scripts (and hdl-kgraph's own sources) out of the graph.
+            found.skipped_reason = "not_cocotb"
         else:
             found.content_hash = hashlib.sha256(data).hexdigest()
     return found
