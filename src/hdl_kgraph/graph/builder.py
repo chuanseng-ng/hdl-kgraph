@@ -71,6 +71,7 @@ M5 — dataflow, clocks, and verification refs:
 
 from __future__ import annotations
 
+import fnmatch
 import re
 from collections import defaultdict
 from collections.abc import Mapping
@@ -79,6 +80,7 @@ from typing import Any
 
 import networkx as nx
 
+from hdl_kgraph.graph.clocks import apply_sdc_clock_evidence
 from hdl_kgraph.graph.uvm import derive_test_covers
 from hdl_kgraph.ids import file_node_id, parse_node_id, stub_node_id
 from hdl_kgraph.parser.base import FileIR, UnresolvedRef
@@ -170,6 +172,7 @@ _PASS2_EDGE_KINDS = frozenset(
         EdgeKind.COVERS,
         EdgeKind.TEST_COVERS,
         EdgeKind.FOREIGN_BINDS,
+        EdgeKind.CONSTRAINS,
     }
 )
 #: Edge kinds that come directly from a unit's IR, not from resolution.
@@ -207,6 +210,30 @@ DEFINITION_KINDS: frozenset[NodeKind] = frozenset(
 
 _SIGNAL_KINDS = (NodeKind.PORT, NodeKind.SIGNAL)
 _ASSERTABLE_KINDS = (NodeKind.PROPERTY, NodeKind.SEQUENCE)
+
+#: SDC ``get_*`` query kind → the design NodeKinds a CONSTRAINS ref may resolve
+#: to (M10). ``pins`` is best-effort: a hierarchical pin path degrades to its
+#: leaf signal/port name.
+_CONSTRAINS_QUERY_KINDS: dict[str, tuple[NodeKind, ...]] = {
+    "ports": (NodeKind.PORT,),
+    "clocks": (NodeKind.CLOCK,),
+    "cells": (NodeKind.INSTANCE,),
+    "pins": (NodeKind.PORT, NodeKind.SIGNAL),
+}
+_CONSTRAINS_DEFAULT_KINDS = (NodeKind.PORT, NodeKind.SIGNAL, NodeKind.CLOCK, NodeKind.INSTANCE)
+
+
+def _pin_leaf(pattern: str) -> str:
+    """Leaf signal/port name of a hierarchical pin path (``u_counter/count[0]``
+    → ``count``); a non-hierarchical name is returned unchanged."""
+    leaf = pattern.rsplit("/", 1)[-1]
+    return leaf.split("[", 1)[0]
+
+
+def _is_glob(pattern: str) -> bool:
+    """True if *pattern* carries an SDC/shell glob metacharacter."""
+    return any(ch in pattern for ch in "*?[")
+
 
 #: Port directions → derived instance dataflow ("buffer" is a VHDL output).
 _PORT_DIRECTION_FLOW: dict[str, tuple[EdgeKind, ...]] = {
@@ -798,6 +825,45 @@ class _Linker:
             for sig in selected:
                 self._emit(ref, sig.id, ref.confidence)
 
+    # -- SDC/XDC constraints (M10): resolve get_ports/pins/cells/clocks ----------
+
+    def _glob_targets(self, kinds: tuple[NodeKind, ...], pattern: str) -> list[str]:
+        """Definition ids of *kinds* whose name matches the SDC glob *pattern*."""
+        wanted = set(kinds)
+        out: list[str] = []
+        for (kind, name), ids in self.definitions.items():
+            if kind in wanted and fnmatch.fnmatchcase(name, pattern):
+                out.extend(ids)
+        return out
+
+    def _resolve_constrains(self, ref: UnresolvedRef) -> None:
+        """Resolve a CONSTRAINS ref (an SDC object query) to design nodes.
+
+        Exact unique match resolves at 1.0; a glob's unique match at 0.8 and a
+        glob/exact tie at 0.6 (ROADMAP M10). An object the design never declares
+        is skipped, not stubbed — a constraint may legitimately name a pin that
+        this RTL slice does not contain, and inventing a node would mislead.
+        """
+        query = str(ref.attrs.get("query", ""))
+        kinds = _CONSTRAINS_QUERY_KINDS.get(query, _CONSTRAINS_DEFAULT_KINDS)
+        name = _pin_leaf(ref.target_name) if query == "pins" else ref.target_name
+        if _is_glob(name):
+            matches = self._glob_targets(kinds, name)
+            if not matches:
+                return
+            confidence = CONFIDENCE_UNIQUE_MATCH if len(matches) == 1 else CONFIDENCE_AMBIGUOUS
+            for target in matches:
+                self._emit(ref, target, confidence)
+            return
+        candidates: list[str] = []
+        for kind in kinds:
+            candidates.extend(self.definitions.get((kind, name), ()))
+        if not candidates:
+            return  # constraint names an object absent from this design: skip
+        confidence = CONFIDENCE_RESOLVED if len(candidates) == 1 else CONFIDENCE_AMBIGUOUS
+        for target in candidates:
+            self._emit(ref, target, confidence)
+
     def _derive_port_dataflow(
         self, ref: UnresolvedRef, port: Node, confidence: float, actual_text: str
     ) -> None:
@@ -849,6 +915,9 @@ class _Linker:
     def _resolve(self, ref: UnresolvedRef) -> None:
         if ref.attrs.get("cocotb"):
             self._resolve_cocotb(ref)
+            return
+        if ref.edge_kind is EdgeKind.CONSTRAINS:
+            self._resolve_constrains(ref)
             return
         if ref.edge_kind in _SCOPED_REF_KINDS:
             self._resolve_scoped(ref)
@@ -978,6 +1047,10 @@ def link_graph(
         # The guarded path, so a derived edge can never reintroduce the
         # attribute-less nodes networkx auto-creates for unknown endpoints.
         linker._emit_edge(edge.src, edge.dst, edge.kind, edge.confidence, edge.attrs)
+    # SDC create_clock is authoritative clock evidence: promote the CLOCKED_BY
+    # edges it backs to 1.0 once every CONSTRAINS edge is resolved (M10). A no-op
+    # when no SDC clocks are present.
+    apply_sdc_clock_evidence(linker.graph)
     if warnings is not None:
         warnings.extend(linker.warnings)
     return linker.graph, linker.ref_records

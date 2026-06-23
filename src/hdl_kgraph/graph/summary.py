@@ -48,10 +48,16 @@ def clock_summary(graph: nx.MultiDiGraph) -> dict[str, Any]:
         for d in clocks.clock_domains(graph)
     ]
     suspects = clocks.cdc_suspects(graph)
+    active = [s for s in suspects if not s.declared_safe]
+    suppressed = [s for s in suspects if s.declared_safe]
     return {
         "domains": domains,
-        "cdc_suspect_count": len(suspects),
-        "cdc_suspects": jsonable(suspects[:50]),
+        "cdc_suspect_count": len(active),
+        "cdc_suspects": jsonable(active[:50]),
+        # Crossings an SDC constraint declares safe — reported, not silently
+        # dropped, so a suppressed crossing stays visible (M10).
+        "cdc_suppressed_count": len(suppressed),
+        "cdc_suppressed": jsonable(suppressed[:50]),
     }
 
 

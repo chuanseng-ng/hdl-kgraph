@@ -408,9 +408,12 @@ def review(db_path: Path | None, as_json: bool, with_metrics: bool) -> None:
         f"  nodes {g['node_count']}  edges {g['edge_count']}  "
         f"unresolved {lq['unresolved_stub_count']} ({lq['unresolved_stub_ratio']:.2%})"
     )
-    click.echo(
+    cdc_line = (
         f"  clock domains {a['clock_domains']['count']}  cdc suspects {a['cdc']['suspect_count']}"
     )
+    if a["cdc"].get("suppressed_count"):
+        cdc_line += f" ({a['cdc']['suppressed_count']} SDC-suppressed)"
+    click.echo(cdc_line)
     timings = digest["timings_s"]
     if timings:
         click.echo("  timings(s): " + "  ".join(f"{k[:-2]} {v:.2f}" for k, v in timings.items()))

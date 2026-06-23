@@ -98,6 +98,7 @@ from hdl_kgraph.parser.preprocessor import (
 )
 from hdl_kgraph.parser.python import PythonParser
 from hdl_kgraph.parser.systemverilog import SystemVerilogParser
+from hdl_kgraph.parser.tcl import SdcParser
 from hdl_kgraph.parser.vhdl import DEFAULT_LIBRARY, VhdlParser
 from hdl_kgraph.schema import Edge, EdgeKind, Language, Node, NodeKind
 from hdl_kgraph.storage import ir_codec
@@ -335,6 +336,7 @@ _WORKER_VHDL_PARSER: VhdlParser | None = None
 _WORKER_C_PARSER: CParser | None = None
 _WORKER_CPP_PARSER: CppParser | None = None
 _WORKER_PYTHON_PARSER: PythonParser | None = None
+_WORKER_SDC_PARSER: SdcParser | None = None
 
 
 def _parse_sv_task(relpath: str, text: str, line_map: list[LineOrigin]) -> FileIR:
@@ -376,6 +378,14 @@ def _parse_python_task(relpath: str, text: str, tops: list[str]) -> FileIR:
     if _WORKER_PYTHON_PARSER is None:
         _WORKER_PYTHON_PARSER = PythonParser()
     return _WORKER_PYTHON_PARSER.parse(Path(relpath), text, tops=tops)
+
+
+def _parse_sdc_task(relpath: str, text: str) -> FileIR:
+    """Parse one SDC/XDC constraint file (M10 — pool worker entry point)."""
+    global _WORKER_SDC_PARSER
+    if _WORKER_SDC_PARSER is None:
+        _WORKER_SDC_PARSER = SdcParser()
+    return _WORKER_SDC_PARSER.parse(Path(relpath), text)
 
 
 def _effective_jobs(options: BuildOptions, candidates: int, candidate_bytes: int) -> int:
@@ -436,7 +446,8 @@ def _link_pass2(
     has_cocotb = any(
         f.language is Language.PYTHON and f.skipped_reason is None for f in (discovered or [])
     )
-    reason = incremental_link_safe(options.enrich, has_vhdl, has_binds, has_cocotb)
+    has_sdc = any(f.language is Language.TCL for f in (discovered or []))
+    reason = incremental_link_safe(options.enrich, has_vhdl, has_binds, has_cocotb, has_sdc)
     if reason is None:
         store = SqliteStore(db_path)
         prior_ref_index = store.load_ref_index()
@@ -733,9 +744,9 @@ def _execute(
             units[found.relpath] = StoredUnit(
                 ir=ir_codec.ir_to_json(ir), macro_events="[]", included="[]"
             )
-        elif found.language in (Language.C, Language.CPP, Language.PYTHON):
-            # C/C++ (DPI-C) and Python (cocotb) have no preprocessor pass; store
-            # the IR directly, like VHDL.
+        elif found.language in (Language.C, Language.CPP, Language.PYTHON, Language.TCL):
+            # C/C++ (DPI-C), Python (cocotb), and SDC/XDC (M10) have no
+            # preprocessor pass; store the IR directly, like VHDL.
             units[found.relpath] = StoredUnit(
                 ir=ir_codec.ir_to_json(ir), macro_events="[]", included="[]"
             )
@@ -888,6 +899,25 @@ def _execute(
                         _PendingUnit(
                             found=found,
                             future=executor.submit(_parse_python_task, found.relpath, text, tops),
+                        )
+                    )
+            elif found.language is Language.TCL:
+                # SDC/XDC constraints (M10): no preprocessor; the raw text goes
+                # to the SDC parser, like C/VHDL. ``.tcl``/``.upf`` are not yet
+                # discoverable (still stubs), so every TCL unit is an SDC file.
+                text = found.path.read_text(errors="replace")
+                if executor is None:
+                    pending.append(
+                        _PendingUnit(
+                            found=found,
+                            thunk=functools.partial(_parse_sdc_task, found.relpath, text),
+                        )
+                    )
+                else:
+                    pending.append(
+                        _PendingUnit(
+                            found=found,
+                            future=executor.submit(_parse_sdc_task, found.relpath, text),
                         )
                     )
             elif found.language not in (Language.SYSTEMVERILOG, Language.VERILOG):
@@ -1258,7 +1288,16 @@ def run_update(
     # leaves clean units' IRs undecoded. Only *parsed* cocotb units count — a
     # non-cocotb `.py` is skipped (``not_cocotb``).
     has_cocotb = any(f.language is Language.PYTHON and f.skipped_reason is None for f in discovered)
-    if options.bounded_link and not options.enrich and not has_vhdl and not has_cocotb:
+    # SDC (M10) forces a full re-link for the same reason as cocotb (cross-file
+    # CONSTRAINS resolution + design-wide CLOCKED_BY upgrade).
+    has_sdc = any(f.language is Language.TCL for f in discovered)
+    if (
+        options.bounded_link
+        and not options.enrich
+        and not has_vhdl
+        and not has_cocotb
+        and not has_sdc
+    ):
         macro_all = store.load_macro_events()
         if not macro_all:
             return full_rebuild("no stored parse results")

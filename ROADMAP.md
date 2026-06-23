@@ -12,11 +12,14 @@ a CLI, and (later) an MCP server for AI assistants. Distribution is via pip/PyPI
 **Status (v2.4.0):** Milestones M1–M7 are shipped, and the v2.0 scalability epic
 (M11–M13a — bounded reads, out-of-core whole-design summaries, and a
 memory-bounded incremental linker) is delivered. M8–M10 (EDA flow languages,
-DPI-C, emerging HDLs) remain an exploratory/community-contribution track — M8's
-C/C++/Python boundary is now in: DPI-C linking (SV `import`/`export "DPI-C"` ↔
-C/C++ functions, v2.3) and cocotb testbench scanning (Python `dut.<signal>` →
-`READS`/`DRIVES`, test discovery → `TEST_COVERS`, v2.4). The Rust core (M13) is
-deferred — profiling (M12) showed it isn't needed for the RAM goal.
+DPI-C, emerging HDLs) remain an exploratory/community-contribution track, but
+two wedges are now in. M8's C/C++/Python boundary: DPI-C linking (SV
+`import`/`export "DPI-C"` ↔ C/C++ functions, v2.3) and cocotb testbench scanning
+(Python `dut.<signal>` → `READS`/`DRIVES`, test discovery → `TEST_COVERS`, v2.4).
+M10's first wedge: SDC/XDC timing constraints (`create_clock` → `CLOCK` nodes and
+authoritative `CLOCKED_BY` evidence, `set_clock_groups`/`set_false_path` → CDC
+suppression) — see M10 below. The Rust core (M13) is deferred — profiling (M12)
+showed it isn't needed for the RAM goal.
 
 ---
 
@@ -516,15 +519,21 @@ graph spanning all three languages.
 clock evidence, power intent, legacy script codegen lineage, and portable-stimulus
 scenario coverage.
 
-- [ ] SDC/XDC parsing (Tcl subset): `create_clock`/`create_generated_clock` →
+- [x] SDC/XDC parsing (Tcl subset): `create_clock`/`create_generated_clock` →
       `CLOCK` nodes (virtual and generated clocks supported); `set_false_path`,
       `set_multicycle_path`, `set_input_delay`/`set_output_delay`,
       `set_clock_groups` → `TIMING_CONSTRAINT` nodes with `CONSTRAINS` edges;
       `get_ports`/`get_pins`/`get_cells`/`get_clocks` object queries resolved to
-      design nodes (exact match 1.0; glob patterns 0.8/0.6)
-- [ ] M5 synergy: `create_clock` is authoritative `CLOCKED_BY` evidence — upgrades
+      design nodes (exact match 1.0; glob patterns 0.8/0.6) — **`parser/tcl.py`'s
+      `SdcParser` (hand-written Tcl-subset scanner, literal `set` substitution
+      only) and a `_resolve_constrains` pass-2 branch; wired into discovery and
+      the pipeline. See docs/extraction.md ([#25])**
+- [x] M5 synergy: `create_clock` is authoritative `CLOCKED_BY` evidence — upgrades
       the 0.4 name heuristic to 1.0; `set_clock_groups -asynchronous` and
-      `set_false_path` feed the CDC report as declared-safe crossings
+      `set_false_path` feed the CDC report as declared-safe crossings —
+      **`graph.clocks.apply_sdc_clock_evidence` (called from `link_graph`) bumps
+      the backed CLOCKED_BY edges to 1.0; `cdc_suspects` flags suppressed
+      crossings `declared_safe` and the report partitions them out**
 - [ ] UPF (IEEE 1801) power intent: `create_power_domain` → `POWER_DOMAIN` nodes
       with `CONSTRAINS` edges to their elements; supply nets/sets and isolation/
       retention/level-shifter strategies in attrs; power-domain report (domains,

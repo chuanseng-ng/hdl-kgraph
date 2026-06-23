@@ -20,6 +20,9 @@
 - **cocotb boundary (M8):** Python cocotb testbenches linked to the DUT they
   drive — `TEST_COVERS` to the DUT module, `READS`/`DRIVES` for `dut.<signal>`
   access (see below)
+- **SDC/XDC timing constraints (M10):** `create_clock` → `CLOCK` nodes and
+  authoritative clock evidence; `set_*_path`/`set_*_delay`/`set_clock_groups` →
+  `TIMING_CONSTRAINT` nodes; object queries → `CONSTRAINS` edges (see below)
 
 ### C/C++ DPI-C linking
 
@@ -59,6 +62,33 @@ resolved one level deep (hierarchical `dut.sub.sig` is best-effort), an unknown
 signal is skipped rather than stubbed, and the DUT is a name guess — never
 elaboration. Because the DUT link is cross-file, `update` re-links a cocotb
 design fully (still re-parsing only changed files), like VHDL.
+
+### SDC/XDC timing constraints
+
+`.sdc`/`.xdc` files are scanned by a hand-written Tcl-subset parser (no Tcl
+evaluation — only literal `set NAME value` substitution is applied; see
+ROADMAP "Risks"). `create_clock`/`create_generated_clock` become `CLOCK` nodes
+(`language=tcl`; `attrs` carry `period`/`generated`/`divide_by`/`virtual`);
+`set_false_path`/`set_multicycle_path`/`set_input_delay`/`set_output_delay`/
+`set_clock_groups` become `TIMING_CONSTRAINT` nodes (`attrs["set_type"]` plus
+the from/to/group lists). Each `get_ports`/`get_pins`/`get_cells`/`get_clocks`
+object query resolves to the design node it names via a `CONSTRAINS` edge —
+exact unique match at 1.0, a glob (`value*`) at 0.8 (unique) / 0.6 (ambiguous);
+a constraint naming an object the design lacks is **skipped, not stubbed**.
+
+Two analyses consume this (the M5 synergy):
+
+- **Clock evidence.** A `create_clock` on a net is authoritative, so every
+  `CLOCKED_BY` edge it backs is upgraded from the 0.4 name heuristic to 1.0
+  (`attrs["evidence"]="sdc_create_clock"`).
+- **CDC suppression.** A crossing covered by `set_clock_groups -asynchronous`
+  (cross-group clock pair) or `set_false_path` is flagged `declared_safe`; the
+  `clock_domains`/`cdc` report partitions these out of the active suspect list
+  and reports a `cdc_suppressed_count`.
+
+Because both are cross-file/design-wide, `update` re-links an SDC-bearing
+design fully (still re-parsing only changed files), like cocotb/VHDL. UPF, Tcl
+flow scripts, Perl, and SLN remain unimplemented (fail-loud stubs).
 
 ### Not extracted yet
 

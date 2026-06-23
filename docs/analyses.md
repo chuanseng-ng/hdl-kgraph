@@ -25,8 +25,10 @@ graphml|gexf|json`).
 ## Caveats — reports, not gates
 
 - **CDC findings are *suspects*, not violations** — synchronizers are not
-  recognized (SDC `set_clock_groups` suppression lands with M10). Review
-  each finding.
+  recognized, so a proper 2-flop sync still shows up. An SDC `set_clock_groups
+  -asynchronous` or `set_false_path` covering a crossing marks it
+  `declared_safe`, and the report partitions it out of the active list (a
+  `cdc_suppressed_count` keeps it visible); everything else is worth reviewing.
 - **`lint` always exits 0**; it is a report, not a gate. Signal-level
   checks skip files with parse errors and implicit-net stubs so a finding
   is worth reading; confidences below 1.0 mark heuristics.
