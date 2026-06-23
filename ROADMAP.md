@@ -463,8 +463,16 @@ target on the exploratory track above.
 
 **Goal:** the full system picture — DPI, cosim, testbench scripting.
 
-- [ ] DPI-C linking: SV `import "DPI-C"`/`export "DPI-C"` ↔ C/C++ function
-      definitions (tree-sitter-c/cpp) via `FOREIGN_BINDS` edges
+- [x] DPI-C linking: SV `import "DPI-C"`/`export "DPI-C"` ↔ C/C++ function
+      definitions (tree-sitter-c/cpp) via `FOREIGN_BINDS` edges — **C/C++
+      pass-1 parsers (`parser/c.py`) emit a `FUNCTION` node per top-level
+      definition/prototype; the SV parser extracts `import`/`export "DPI-C"`
+      declarations (alias `c_name =` form, pure/context properties, imported
+      tasks); pass 2 binds them by linkage name, filtered to C/CPP candidates
+      (a unique cross-file match is 0.8, an unresolved name degrades to a
+      stub). C/C++ bypass the SV preprocessor; bare-name matching is the tier
+      (no C++ mangling, no C preprocessor). Schema unchanged — `FOREIGN_BINDS`
+      and the `C`/`CPP` languages already existed. See docs/extraction.md**
 - [ ] Python testbench scanning: cocotb `dut.signal` attribute access →
       `READS`/`DRIVES` (confidence 0.6); pytest/cocotb test discovery →
       `TEST_COVERS`

@@ -3,7 +3,8 @@
 [![CI](https://github.com/chuanseng-ng/hdl-kgraph/actions/workflows/ci.yml/badge.svg)](https://github.com/chuanseng-ng/hdl-kgraph/actions/workflows/ci.yml)
 
 **A knowledge graph for your HDL design.** hdl-kgraph parses SystemVerilog,
-Verilog, and VHDL sources and builds a queryable graph of modules, entities,
+Verilog, and VHDL sources (and links SV `DPI-C` imports/exports to their C/C++
+function definitions) and builds a queryable graph of modules, entities,
 instances, ports, parameters, signals, classes, packages, and the
 relationships between them — design hierarchy, port connectivity, package
 imports, class inheritance, clock domains, and more.

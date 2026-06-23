@@ -79,6 +79,7 @@ from hdl_kgraph.incremental import (
     newly_resolvable_includes,
 )
 from hdl_kgraph.parser.base import FileIR
+from hdl_kgraph.parser.c import CParser, CppParser
 from hdl_kgraph.parser.filelist import (
     Filelist,
     filelist_irs,
@@ -327,6 +328,8 @@ def run_build(
 # crosses the process boundary (str, LineOrigin, FileIR) is a plain dataclass.
 _WORKER_SV_PARSER: SystemVerilogParser | None = None
 _WORKER_VHDL_PARSER: VhdlParser | None = None
+_WORKER_C_PARSER: CParser | None = None
+_WORKER_CPP_PARSER: CppParser | None = None
 
 
 def _parse_sv_task(relpath: str, text: str, line_map: list[LineOrigin]) -> FileIR:
@@ -343,6 +346,22 @@ def _parse_vhdl_task(relpath: str, text: str, library: str) -> FileIR:
     if _WORKER_VHDL_PARSER is None:
         _WORKER_VHDL_PARSER = VhdlParser()
     return _WORKER_VHDL_PARSER.parse(Path(relpath), text, library=library)
+
+
+def _parse_c_task(relpath: str, text: str) -> FileIR:
+    """Parse one C unit for DPI-C linking (pool worker entry point)."""
+    global _WORKER_C_PARSER
+    if _WORKER_C_PARSER is None:
+        _WORKER_C_PARSER = CParser()
+    return _WORKER_C_PARSER.parse(Path(relpath), text)
+
+
+def _parse_cpp_task(relpath: str, text: str) -> FileIR:
+    """Parse one C++ unit for DPI-C linking (pool worker entry point)."""
+    global _WORKER_CPP_PARSER
+    if _WORKER_CPP_PARSER is None:
+        _WORKER_CPP_PARSER = CppParser()
+    return _WORKER_CPP_PARSER.parse(Path(relpath), text)
 
 
 def _effective_jobs(options: BuildOptions, candidates: int, candidate_bytes: int) -> int:
@@ -695,6 +714,12 @@ def _execute(
             units[found.relpath] = StoredUnit(
                 ir=ir_codec.ir_to_json(ir), macro_events="[]", included="[]"
             )
+        elif found.language in (Language.C, Language.CPP):
+            # C/C++ (M8 DPI-C) have no preprocessor pass; store the IR directly,
+            # like VHDL.
+            units[found.relpath] = StoredUnit(
+                ir=ir_codec.ir_to_json(ir), macro_events="[]", included="[]"
+            )
         else:
             pp = entry.pp
             assert pp is not None
@@ -811,6 +836,21 @@ def _execute(
                             found=found,
                             future=executor.submit(_parse_vhdl_task, found.relpath, text, library),
                         )
+                    )
+            elif found.language in (Language.C, Language.CPP):
+                # C/C++ have no SV preprocessor pass (M8 DPI-C boundary): route
+                # the raw text to the C-family parser, like VHDL.
+                task = _parse_cpp_task if found.language is Language.CPP else _parse_c_task
+                text = found.path.read_text(errors="replace")
+                if executor is None:
+                    pending.append(
+                        _PendingUnit(
+                            found=found, thunk=functools.partial(task, found.relpath, text)
+                        )
+                    )
+                else:
+                    pending.append(
+                        _PendingUnit(found=found, future=executor.submit(task, found.relpath, text))
                     )
             elif found.language not in (Language.SYSTEMVERILOG, Language.VERILOG):
                 # A suffix that reached discovery but has no pass-1 dispatch

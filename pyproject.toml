@@ -43,6 +43,8 @@ dependencies = [
   "tree-sitter>=0.23,<0.26",
   "tree-sitter-systemverilog>=0.3.1,<0.4",
   "tree-sitter-vhdl>=1.5,<2",
+  "tree-sitter-c>=0.23,<0.25",
+  "tree-sitter-cpp>=0.23,<0.24",
   'tomli>=2.0; python_version < "3.11"',
 ]
 
@@ -106,6 +108,8 @@ module = [
   "tree_sitter.*",
   "tree_sitter_systemverilog.*",
   "tree_sitter_vhdl.*",
+  "tree_sitter_c.*",
+  "tree_sitter_cpp.*",
   "networkx.*",
   "numpy.*",
   "scipy.*",
