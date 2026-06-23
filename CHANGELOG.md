@@ -9,6 +9,23 @@ the major version, and schema changes ship with a migration.
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-06-23
+
+### Added
+
+- **cocotb testbench scanning (M8 — Python boundary).** `.py` files that mention
+  `cocotb` (discovery content-sniffs for it, so ordinary Python stays out of the
+  graph) are parsed with `tree-sitter-python`: each `@cocotb.test` function
+  becomes a `FUNCTION` node (`language=python`) linked to the DUT it exercises —
+  a `TEST_COVERS` edge to the DUT module (0.4) and `READS`/`DRIVES` edges (0.6)
+  for each `dut.<signal>` access (`dut.sig.value = …` / `setimmediatevalue` are
+  `DRIVES`, other reads are `READS`), resolved against the DUT module's
+  ports/signals. The DUT is heuristic — the configured `[build].top` module(s)
+  when set, else a filename guess (`test_fifo.py` → `fifo`). Because the DUT link
+  is cross-file, `update` re-links a cocotb design fully (still parse-incremental,
+  like VHDL). New core dependency: `tree-sitter-python`. Schema unchanged
+  (`TEST_COVERS`/`READS`/`DRIVES` and the `PYTHON` language already existed).
+
 ## [2.3.0] - 2026-06-23
 
 ### Added

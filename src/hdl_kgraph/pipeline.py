@@ -96,6 +96,7 @@ from hdl_kgraph.parser.preprocessor import (
     PreprocessedFile,
     Preprocessor,
 )
+from hdl_kgraph.parser.python import PythonParser
 from hdl_kgraph.parser.systemverilog import SystemVerilogParser
 from hdl_kgraph.parser.vhdl import DEFAULT_LIBRARY, VhdlParser
 from hdl_kgraph.schema import Edge, EdgeKind, Language, Node, NodeKind
@@ -297,6 +298,9 @@ def options_hash(base: Path, options: BuildOptions, inputs: _Inputs) -> str:
         "sources": sorted(options.sources),
         "exclude": sorted(options.exclude),
         "max_file_size_kb": options.max_file_size_kb,
+        # cocotb DUT resolution keys off the configured tops, so a change to
+        # them must invalidate an incremental reuse of the prior build.
+        "top": sorted(options.top),
         "vhdl_libraries": sorted((name, rel(p)) for name, p in options.vhdl_libraries.items()),
         "filelists": [rel(p) for p in options.filelists],
         # Enrichment rewrites the graph, so toggling it (or its backend set)
@@ -330,6 +334,7 @@ _WORKER_SV_PARSER: SystemVerilogParser | None = None
 _WORKER_VHDL_PARSER: VhdlParser | None = None
 _WORKER_C_PARSER: CParser | None = None
 _WORKER_CPP_PARSER: CppParser | None = None
+_WORKER_PYTHON_PARSER: PythonParser | None = None
 
 
 def _parse_sv_task(relpath: str, text: str, line_map: list[LineOrigin]) -> FileIR:
@@ -362,6 +367,15 @@ def _parse_cpp_task(relpath: str, text: str) -> FileIR:
     if _WORKER_CPP_PARSER is None:
         _WORKER_CPP_PARSER = CppParser()
     return _WORKER_CPP_PARSER.parse(Path(relpath), text)
+
+
+def _parse_python_task(relpath: str, text: str, tops: list[str]) -> FileIR:
+    """Parse one cocotb testbench (pool worker entry point). *tops* are the
+    configured top modules used to resolve the DUT (else a filename heuristic)."""
+    global _WORKER_PYTHON_PARSER
+    if _WORKER_PYTHON_PARSER is None:
+        _WORKER_PYTHON_PARSER = PythonParser()
+    return _WORKER_PYTHON_PARSER.parse(Path(relpath), text, tops=tops)
 
 
 def _effective_jobs(options: BuildOptions, candidates: int, candidate_bytes: int) -> int:
@@ -417,7 +431,8 @@ def _link_pass2(
         return link_graph(irs, warnings=report.warnings)
     has_vhdl = any(f.language is Language.VHDL for f in (discovered or []))
     has_binds = any(ref.edge_kind is EdgeKind.BINDS for ir in irs for ref in ir.unresolved_refs)
-    reason = incremental_link_safe(options.enrich, has_vhdl, has_binds)
+    has_cocotb = any(f.language is Language.PYTHON for f in (discovered or []))
+    reason = incremental_link_safe(options.enrich, has_vhdl, has_binds, has_cocotb)
     if reason is None:
         store = SqliteStore(db_path)
         prior_ref_index = store.load_ref_index()
@@ -714,9 +729,9 @@ def _execute(
             units[found.relpath] = StoredUnit(
                 ir=ir_codec.ir_to_json(ir), macro_events="[]", included="[]"
             )
-        elif found.language in (Language.C, Language.CPP):
-            # C/C++ (M8 DPI-C) have no preprocessor pass; store the IR directly,
-            # like VHDL.
+        elif found.language in (Language.C, Language.CPP, Language.PYTHON):
+            # C/C++ (DPI-C) and Python (cocotb) have no preprocessor pass; store
+            # the IR directly, like VHDL.
             units[found.relpath] = StoredUnit(
                 ir=ir_codec.ir_to_json(ir), macro_events="[]", included="[]"
             )
@@ -851,6 +866,25 @@ def _execute(
                 else:
                     pending.append(
                         _PendingUnit(found=found, future=executor.submit(task, found.relpath, text))
+                    )
+            elif found.language is Language.PYTHON:
+                # cocotb testbenches (M8): no preprocessor; the configured top
+                # modules resolve the DUT (else the parser's filename heuristic).
+                tops = list(options.top)
+                text = found.path.read_text(errors="replace")
+                if executor is None:
+                    pending.append(
+                        _PendingUnit(
+                            found=found,
+                            thunk=functools.partial(_parse_python_task, found.relpath, text, tops),
+                        )
+                    )
+                else:
+                    pending.append(
+                        _PendingUnit(
+                            found=found,
+                            future=executor.submit(_parse_python_task, found.relpath, text, tops),
+                        )
                     )
             elif found.language not in (Language.SYSTEMVERILOG, Language.VERILOG):
                 # A suffix that reached discovery but has no pass-1 dispatch
@@ -1215,7 +1249,11 @@ def run_update(
     # entire IR set never needs to be resident. Bind/config directives still need a
     # full re-link, so the path raises and we retry with the legacy full decode.
     has_vhdl = any(f.language is Language.VHDL for f in discovered)
-    if options.bounded_link and not options.enrich and not has_vhdl:
+    # cocotb forces a full re-link (cross-file DUT resolution; see
+    # incremental_link_safe), so it must not take the selective-decode path that
+    # leaves clean units' IRs undecoded.
+    has_cocotb = any(f.language is Language.PYTHON for f in discovered)
+    if options.bounded_link and not options.enrich and not has_vhdl and not has_cocotb:
         macro_all = store.load_macro_events()
         if not macro_all:
             return full_rebuild("no stored parse results")

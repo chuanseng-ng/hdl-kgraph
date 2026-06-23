@@ -755,6 +755,40 @@ class _Linker:
         for target in targets:
             self._emit(ref, target, confidence)
 
+    # -- cocotb (M8): resolve against the heuristically-chosen DUT module ---------
+
+    def _modules_named(self, name: str) -> list[str]:
+        """MODULE/ENTITY definitions matching *name* (exact, then case-insensitive)."""
+        exact = list(self.definitions.get((NodeKind.MODULE, name), ())) + list(
+            self.definitions.get((NodeKind.ENTITY, name), ())
+        )
+        if exact:
+            return exact
+        lowered = name.lower()
+        return list(self.definitions_ci.get((NodeKind.MODULE, lowered), ())) + list(
+            self.definitions_ci.get((NodeKind.ENTITY, lowered), ())
+        )
+
+    def _resolve_cocotb(self, ref: UnresolvedRef) -> None:
+        """Resolve a cocotb ref against the DUT module (chosen by config top or
+        filename heuristic in the parser). Unresolved DUT/signal names are
+        skipped, not stubbed — the DUT is a name guess, so a miss should not
+        invent module/signal nodes."""
+        if ref.edge_kind is EdgeKind.TEST_COVERS:
+            for module_id in self._modules_named(ref.target_name):
+                if not self.node_obj[module_id].attrs.get("unresolved"):
+                    self._emit(ref, module_id, ref.confidence)
+            return
+        # READS / DRIVES: resolve dut.<signal> against the DUT module's namespace.
+        dut_name = str(ref.attrs.get("dut_module", ""))
+        for module_id in self._modules_named(dut_name):
+            if self.node_obj[module_id].attrs.get("unresolved"):
+                continue
+            matches = self._scope_index_for(module_id).get(ref.target_name, [])
+            for sig in matches:
+                if sig.kind in _SIGNAL_KINDS:
+                    self._emit(ref, sig.id, ref.confidence)
+
     def _derive_port_dataflow(
         self, ref: UnresolvedRef, port: Node, confidence: float, actual_text: str
     ) -> None:
@@ -804,6 +838,9 @@ class _Linker:
     # -- per-kind resolution ---------------------------------------------------
 
     def _resolve(self, ref: UnresolvedRef) -> None:
+        if ref.attrs.get("cocotb"):
+            self._resolve_cocotb(ref)
+            return
         if ref.edge_kind in _SCOPED_REF_KINDS:
             self._resolve_scoped(ref)
             return

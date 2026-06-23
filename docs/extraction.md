@@ -17,6 +17,9 @@
 - **DPI-C boundary (M8):** SystemVerilog `import "DPI-C"`/`export "DPI-C"`
   declarations linked to their C/C++ function definitions via `FOREIGN_BINDS`
   edges (see below)
+- **cocotb boundary (M8):** Python cocotb testbenches linked to the DUT they
+  drive — `TEST_COVERS` to the DUT module, `READS`/`DRIVES` for `dut.<signal>`
+  access (see below)
 
 ### C/C++ DPI-C linking
 
@@ -34,6 +37,28 @@ Scope (the honest contract): DPI uses C linkage, so a **bare-name** match is the
 right tier — C++ name mangling is not modeled (functions in `extern "C"` and
 `namespace` blocks are recorded under their bare names), and the C preprocessor
 (`#include`/`#define`) and full C type/width modeling are out of scope.
+
+### Python cocotb testbenches
+
+A `.py` file is parsed (with `tree-sitter-python`) **only if it mentions
+`cocotb`** — discovery content-sniffs for it, so ordinary Python scripts never
+enter the graph. Each `@cocotb.test`-decorated function becomes a `FUNCTION`
+node (`language=python`, `attrs["is_cocotb_test"]`) with:
+
+- a `TEST_COVERS` edge to the DUT module (confidence `0.4`);
+- `READS`/`DRIVES` edges (confidence `0.6`) for each `dut.<signal>` access —
+  `dut.sig.value = …` / `dut.sig.setimmediatevalue(…)` are `DRIVES`, everything
+  else (`x = dut.sig.value`, `RisingEdge(dut.clk)`) is `READS` — resolved
+  against the DUT module's ports/signals.
+
+The toplevel is chosen by the *runner*, not named in the test, so the **DUT is
+resolved heuristically**: the configured top module(s) (`[build].top` in
+`hdl-kgraph.toml`) when present, else a filename heuristic (`test_fifo.py` →
+`fifo`, `fifo_tb.py` → `fifo`). Scope (the honest contract): `dut.<signal>` is
+resolved one level deep (hierarchical `dut.sub.sig` is best-effort), an unknown
+signal is skipped rather than stubbed, and the DUT is a name guess — never
+elaboration. Because the DUT link is cross-file, `update` re-links a cocotb
+design fully (still re-parsing only changed files), like VHDL.
 
 ### Not extracted yet
 
