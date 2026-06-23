@@ -446,7 +446,9 @@ def _link_pass2(
     has_cocotb = any(
         f.language is Language.PYTHON and f.skipped_reason is None for f in (discovered or [])
     )
-    has_sdc = any(f.language is Language.TCL for f in (discovered or []))
+    has_sdc = any(
+        f.language is Language.TCL and f.skipped_reason is None for f in (discovered or [])
+    )
     reason = incremental_link_safe(options.enrich, has_vhdl, has_binds, has_cocotb, has_sdc)
     if reason is None:
         store = SqliteStore(db_path)
@@ -1290,7 +1292,7 @@ def run_update(
     has_cocotb = any(f.language is Language.PYTHON and f.skipped_reason is None for f in discovered)
     # SDC (M10) forces a full re-link for the same reason as cocotb (cross-file
     # CONSTRAINS resolution + design-wide CLOCKED_BY upgrade).
-    has_sdc = any(f.language is Language.TCL for f in discovered)
+    has_sdc = any(f.language is Language.TCL and f.skipped_reason is None for f in discovered)
     if (
         options.bounded_link
         and not options.enrich

@@ -154,6 +154,47 @@ def test_set_clock_groups_suppresses_cdc_suspect(fixtures_dir) -> None:
     assert suspects[0].declared_safe is True  # set_clock_groups -asynchronous covers it
 
 
+_CREATE_CLOCKS = (
+    "create_clock -name clk_a -period 10.0 [get_ports clk_a]\n"
+    "create_clock -name clk_b -period 7.0 [get_ports clk_b]\n"
+)
+
+
+def test_false_path_suppression_is_directional(fixtures_dir) -> None:
+    """``set_false_path -from A -to B`` suppresses the A->B crossing only.
+
+    The crossing in two_clock_cdc.sv is clk_a (driver) -> clk_b (reader), so a
+    forward false path declares it safe but the reverse one must not — a
+    frozenset would wrongly suppress both directions.
+    """
+    sv = parse_sv(fixtures_dir, "two_clock_cdc.sv")
+
+    forward = SdcParser().parse(
+        Path("fwd.sdc"),
+        _CREATE_CLOCKS + "set_false_path -from [get_clocks clk_a] -to [get_clocks clk_b]\n",
+    )
+    fwd_suspects = clocks.cdc_suspects(build_graph([sv, forward]))
+    assert [s.signal_name for s in fwd_suspects] == ["data_a"]
+    assert fwd_suspects[0].declared_safe is True
+
+    reverse = SdcParser().parse(
+        Path("rev.sdc"),
+        _CREATE_CLOCKS + "set_false_path -from [get_clocks clk_b] -to [get_clocks clk_a]\n",
+    )
+    rev_suspects = clocks.cdc_suspects(build_graph([sv, reverse]))
+    assert [s.signal_name for s in rev_suspects] == ["data_a"]
+    assert rev_suspects[0].declared_safe is False  # reverse exception does not cover clk_a -> clk_b
+
+
+def test_bare_clock_groups_async_suppresses_all(fixtures_dir) -> None:
+    """``set_clock_groups -asynchronous`` with no -group marks all clocks async."""
+    sv = parse_sv(fixtures_dir, "two_clock_cdc.sv")
+    sdc = SdcParser().parse(Path("bare.sdc"), _CREATE_CLOCKS + "set_clock_groups -asynchronous\n")
+    suspects = clocks.cdc_suspects(build_graph([sv, sdc]))
+    assert [s.signal_name for s in suspects] == ["data_a"]
+    assert suspects[0].declared_safe is True
+
+
 def test_clock_summary_partitions_suppressed(fixtures_dir) -> None:
     from hdl_kgraph.graph.summary import clock_summary
 

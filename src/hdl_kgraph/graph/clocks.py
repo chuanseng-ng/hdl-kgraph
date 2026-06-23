@@ -172,19 +172,26 @@ def apply_sdc_clock_evidence(g: nx.MultiDiGraph) -> None:
 
 def _declared_safe_crossings(
     g: nx.MultiDiGraph, uf: _UnionFind
-) -> tuple[set[frozenset[str]], set[str]]:
-    """SDC-declared safe crossings (M10): ``(async clock-root pairs, false-path roots)``.
+) -> tuple[set[frozenset[str]], set[tuple[str, str]], set[str]]:
+    """SDC-declared safe crossings (M10): ``(async clock-root pairs, directional
+    false-path clock pairs, false-path net roots)``.
 
     ``set_clock_groups -asynchronous`` makes every cross-group clock-root pair
-    safe; a clock-to-clock ``set_false_path`` makes its from/to root pair safe; a
-    port/signal ``set_false_path`` endpoint marks that net's root safe directly.
+    safe in *both* directions (the bare form with no ``-group`` declares all
+    clocks mutually asynchronous). A clock-to-clock ``set_false_path`` is
+    *directional* — ``-from A -to B`` declares only the A→B crossing safe, not
+    B→A — so its pairs are kept ordered and matched against the crossing's
+    (driver, reader) direction at the call site. A port/signal ``set_false_path``
+    endpoint marks that net's root safe directly.
     """
     clock_roots = _clock_net_roots(g, uf)
     name_roots: dict[str, set[str]] = defaultdict(set)
     for clock_id, nets in clock_roots.items():
         name_roots[g.nodes[clock_id]["name"]] |= nets
+    all_clock_roots: set[str] = set().union(*clock_roots.values()) if clock_roots else set()
 
     async_pairs: set[frozenset[str]] = set()
+    false_path_pairs: set[tuple[str, str]] = set()
     false_path_roots: set[str] = set()
     for tc_id, attrs in (
         (n, d["attrs"]) for n, d in g.nodes(data=True) if d["kind"] is NodeKind.TIMING_CONSTRAINT
@@ -195,6 +202,9 @@ def _declared_safe_crossings(
                 set().union(*(name_roots.get(name, set()) for name in grp)) if grp else set()
                 for grp in (attrs.get("groups") or [])
             ]
+            if not groups:
+                # Bare ``-asynchronous`` (no -group): all clocks mutually async.
+                groups = [{root} for root in sorted(all_clock_roots)]
             for i in range(len(groups)):
                 for j in range(i + 1, len(groups)):
                     async_pairs.update(frozenset((a, b)) for a in groups[i] for b in groups[j])
@@ -209,8 +219,8 @@ def _declared_safe_crossings(
                     (from_roots if role == "from" else to_roots).update(clock_roots.get(tgt, set()))
                 elif g.nodes[tgt]["kind"] in (NodeKind.PORT, NodeKind.SIGNAL):
                     false_path_roots.add(uf.find(tgt))
-            async_pairs.update(frozenset((a, b)) for a in from_roots for b in to_roots)
-    return async_pairs, false_path_roots
+            false_path_pairs.update((a, b) for a in from_roots for b in to_roots)
+    return async_pairs, false_path_pairs, false_path_roots
 
 
 def clock_domains(g: nx.MultiDiGraph) -> list[ClockDomain]:
@@ -266,7 +276,7 @@ def cdc_suspects(g: nx.MultiDiGraph) -> list[CdcSuspect]:
     ``declared_safe`` — the report partitions it out of the active list (M10).
     """
     uf = net_aliases(g)
-    async_pairs, false_path_roots = _declared_safe_crossings(g, uf)
+    async_pairs, false_path_pairs, false_path_roots = _declared_safe_crossings(g, uf)
 
     # Process -> its unique domain (root, confidence); ambiguous ones skipped.
     proc_domain: dict[str, tuple[str, float]] = {}
@@ -329,8 +339,13 @@ def cdc_suspects(g: nx.MultiDiGraph) -> list[CdcSuspect]:
                 if root == reader_root:
                     continue
                 node = g.nodes[sig]
+                # ``root`` is the driver (launch) domain, ``reader_root`` the
+                # reader (capture) domain: a directional false path must match
+                # the (driver, reader) order; clock groups suppress both ways.
                 declared_safe = (
-                    frozenset((root, reader_root)) in async_pairs or sig in false_path_roots
+                    frozenset((root, reader_root)) in async_pairs
+                    or (root, reader_root) in false_path_pairs
+                    or sig in false_path_roots
                 )
                 suspects.append(
                     CdcSuspect(

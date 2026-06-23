@@ -311,16 +311,20 @@ def _sdc_clock_roots(
 
 def _declared_safe_crossings(
     conn: sqlite3.Connection, find: Any
-) -> tuple[set[frozenset[str]], set[str]]:
+) -> tuple[set[frozenset[str]], set[tuple[str, str]], set[str]]:
     """SDC-declared safe crossings from SQLite (M10), mirroring
     :func:`hdl_kgraph.graph.clocks._declared_safe_crossings`: ``(async clock-root
-    pairs, false-path roots)``."""
+    pairs, directional false-path clock pairs, false-path net roots)``. Clock
+    groups suppress both directions; a clock-to-clock ``set_false_path`` is
+    directional (``-from A -to B`` declares only A→B safe)."""
     id_roots, id_name = _sdc_clock_roots(conn, find)
     name_roots: dict[str, set[str]] = defaultdict(set)
     for cid, roots in id_roots.items():
         name_roots[id_name[cid]] |= roots
+    all_clock_roots: set[str] = set().union(*id_roots.values()) if id_roots else set()
 
     async_pairs: set[frozenset[str]] = set()
+    false_path_pairs: set[tuple[str, str]] = set()
     false_path_roots: set[str] = set()
     for tc_id, attrs_json in conn.execute(
         "SELECT id, attrs FROM nodes WHERE kind = ?", (NodeKind.TIMING_CONSTRAINT.value,)
@@ -332,6 +336,9 @@ def _declared_safe_crossings(
                 set().union(*(name_roots.get(name, set()) for name in grp)) if grp else set()
                 for grp in (attrs.get("groups") or [])
             ]
+            if not groups:
+                # Bare ``-asynchronous`` (no -group): all clocks mutually async.
+                groups = [{root} for root in sorted(all_clock_roots)]
             for i in range(len(groups)):
                 for j in range(i + 1, len(groups)):
                     async_pairs.update(frozenset((a, b)) for a in groups[i] for b in groups[j])
@@ -347,8 +354,8 @@ def _declared_safe_crossings(
                     (from_roots if role == "from" else to_roots).update(id_roots.get(dst, set()))
                 elif dkind in (NodeKind.PORT.value, NodeKind.SIGNAL.value):
                     false_path_roots.add(find(dst))
-            async_pairs.update(frozenset((a, b)) for a in from_roots for b in to_roots)
-    return async_pairs, false_path_roots
+            false_path_pairs.update((a, b) for a in from_roots for b in to_roots)
+    return async_pairs, false_path_pairs, false_path_roots
 
 
 def _cdc_suspects(conn: sqlite3.Connection, find: Any) -> list[dict[str, Any]]:
@@ -356,7 +363,7 @@ def _cdc_suspects(conn: sqlite3.Connection, find: Any) -> list[dict[str, Any]]:
     ``clocks.cdc_suspects``: per-process domains, the one-step combinational bridge,
     then the crossing list sorted by ``(signal_name, reader_id, driver_domain)``.
     Each suspect carries ``declared_safe`` (SDC-suppressed crossing, M10)."""
-    async_pairs, false_path_roots = _declared_safe_crossings(conn, find)
+    async_pairs, false_path_pairs, false_path_roots = _declared_safe_crossings(conn, find)
     # Process -> its unique domain (root, confidence); ambiguous ones skipped.
     proc_domain: dict[str, tuple[str, float]] = {}
     clock_nets: set[str] = set()
@@ -435,7 +442,9 @@ def _cdc_suspects(conn: sqlite3.Connection, find: Any) -> list[dict[str, Any]]:
             "reader_domain": attrs[proc_domain[proc][0]][0],
             "confidence": conf,
             "declared_safe": (
-                frozenset((root, proc_domain[proc][0])) in async_pairs or sig in false_path_roots
+                frozenset((root, proc_domain[proc][0])) in async_pairs
+                or (root, proc_domain[proc][0]) in false_path_pairs
+                or sig in false_path_roots
             ),
         }
         for sig, driver, root, proc, conf in raw
