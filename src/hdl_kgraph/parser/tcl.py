@@ -139,6 +139,7 @@ def _substitute(words: list[str], variables: dict[str, str]) -> list[str]:
         return words
 
     def repl(match: re.Match[str]) -> str:
+        """Resolve one ``$VAR``/``${VAR}`` match, leaving unknown names verbatim."""
         name = match.group(1) or match.group(2)
         return variables.get(name, match.group(0))
 
@@ -225,6 +226,7 @@ class SdcParser:
         return ir
 
     def _scan(self, ir: FileIR, relpath: str, file_id: str, text: str) -> None:
+        """Walk the file's commands, dispatching clocks/constraints and tracking ``set`` vars."""
         variables: dict[str, str] = {}
         used_ids: set[str] = set()
         for idx, (line, raw_words) in enumerate(_iter_commands(text)):
@@ -249,6 +251,7 @@ class SdcParser:
         line: int,
         attrs: dict[str, object],
     ) -> Node:
+        """Build a node, dedup its id by line, and emit the file's DECLARES edge."""
         node_id = decl_node_id(relpath, kind, name)
         if node_id in used_ids:
             node_id = f"{node_id}@{line}"
@@ -270,6 +273,7 @@ class SdcParser:
     def _constrains(
         self, ir: FileIR, src_id: str, query_kind: str, pattern: str, line: int, **extra: object
     ) -> None:
+        """Record a CONSTRAINS ref from *src_id* to an object query (resolved in pass 2)."""
         ir.unresolved_refs.append(
             UnresolvedRef(
                 edge_kind=EdgeKind.CONSTRAINS,
@@ -290,6 +294,11 @@ class SdcParser:
         words: list[str],
         line: int,
     ) -> None:
+        """Emit a CLOCK node for ``create_clock``/``create_generated_clock`` and its source ref.
+
+        The clock's net is the trailing positional object query (``-source`` only
+        names a generated clock's master); a query-less clock is virtual.
+        """
         opts = _options(words)
         generated = command == "create_generated_clock"
         name = opts.get("-name", "")
@@ -329,6 +338,7 @@ class SdcParser:
         words: list[str],
         line: int,
     ) -> None:
+        """Emit a TIMING_CONSTRAINT node for a ``set_*`` exception/delay and its -from/-to refs."""
         set_type = command[len("set_") :]
         attrs: dict[str, object] = {"set_type": set_type}
         node = self._new_node(
@@ -381,6 +391,7 @@ class SdcParser:
             node.attrs[role] = names
 
     def _clock_groups(self, ir: FileIR, node: Node, words: list[str], line: int) -> None:
+        """Record ``set_clock_groups`` -group membership, async flag, and per-group clock refs."""
         node.attrs["asynchronous"] = "-asynchronous" in words or "-async" in words
         groups: list[list[str]] = []
         i = 1
