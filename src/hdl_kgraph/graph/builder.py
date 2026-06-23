@@ -110,6 +110,11 @@ _REF_TARGET_KINDS: dict[EdgeKind, tuple[tuple[NodeKind, ...], tuple[NodeKind, ..
     EdgeKind.IMPLEMENTS: ((NodeKind.ENTITY,), ()),
     EdgeKind.USES_PACKAGE: ((NodeKind.VHDL_PACKAGE,), ()),
     EdgeKind.BINDS: ((NodeKind.ENTITY,), (NodeKind.MODULE,)),
+    # DPI-C: an SV import/export name resolves to a FUNCTION/TASK; the
+    # language filter in ``_resolve_target`` keeps a C definition (import) or
+    # the SV subprogram (export) and discards same-named candidates of the
+    # wrong side.
+    EdgeKind.FOREIGN_BINDS: ((NodeKind.FUNCTION, NodeKind.TASK), ()),
 }
 
 _STUB_KIND: dict[EdgeKind, NodeKind] = {
@@ -121,6 +126,7 @@ _STUB_KIND: dict[EdgeKind, NodeKind] = {
     EdgeKind.IMPLEMENTS: NodeKind.ENTITY,
     EdgeKind.USES_PACKAGE: NodeKind.VHDL_PACKAGE,
     EdgeKind.BINDS: NodeKind.ENTITY,
+    EdgeKind.FOREIGN_BINDS: NodeKind.FUNCTION,
 }
 
 _VHDL_DEFAULT_LIBRARY = "work"
@@ -163,6 +169,7 @@ _PASS2_EDGE_KINDS = frozenset(
         EdgeKind.ASSERTS_ON,
         EdgeKind.COVERS,
         EdgeKind.TEST_COVERS,
+        EdgeKind.FOREIGN_BINDS,
     }
 )
 #: Edge kinds that come directly from a unit's IR, not from resolution.
@@ -432,6 +439,21 @@ class _Linker:
             return str(file_node.attrs.get("library", _VHDL_DEFAULT_LIBRARY))
         return _VHDL_DEFAULT_LIBRARY
 
+    def _filter_foreign(self, ref: UnresolvedRef, candidates: list[str]) -> list[str]:
+        """Pick the right side of a DPI-C binding (M8).
+
+        An ``import`` binds to a C/C++ function — drop same-named SV candidates
+        (including the import prototype itself) and prefer a definition over a
+        header prototype. An ``export`` binds to the SV subprogram it names, so
+        keep only the SV/Verilog candidates.
+        """
+        if ref.attrs.get("dpi_export"):
+            langs = (Language.SYSTEMVERILOG, Language.VERILOG)
+            return [c for c in candidates if self.node_obj[c].language in langs]
+        foreign = [c for c in candidates if self.node_obj[c].language in (Language.C, Language.CPP)]
+        defs = [c for c in foreign if self.node_obj[c].attrs.get("is_definition")]
+        return defs or foreign
+
     def _filter_library(self, candidates: list[str], library: str | None, src_id: str) -> list[str]:
         """Narrow ambiguous VHDL candidates to the named library, if that helps."""
         if library is None or len(candidates) <= 1:
@@ -472,6 +494,8 @@ class _Linker:
                 candidates = scoped
         if ref.edge_kind in (EdgeKind.USES_PACKAGE, EdgeKind.BINDS, EdgeKind.IMPLEMENTS):
             candidates = self._filter_library(candidates, ref.attrs.get("library"), ref.src_id)
+        if ref.edge_kind is EdgeKind.FOREIGN_BINDS:
+            candidates = self._filter_foreign(ref, candidates)
         if candidates:
             return (*self._score(candidates, ref.src_id), {})
         cross = self._cross_language(cross_kinds, ref.target_name)

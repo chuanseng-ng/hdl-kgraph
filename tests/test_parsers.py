@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from hdl_kgraph.parser.c import CParser, CppParser
 from hdl_kgraph.parser.perl import PerlParser
 from hdl_kgraph.parser.sln import SlnParser
 from hdl_kgraph.parser.systemverilog import SystemVerilogParser
@@ -14,6 +15,8 @@ from hdl_kgraph.parser.vhdl import VhdlParser
 ALL_BACKENDS = [
     SystemVerilogParser,
     VhdlParser,
+    CParser,
+    CppParser,
     SdcParser,
     UpfParser,
     TclScriptParser,
@@ -63,6 +66,14 @@ def test_unimplemented_suffixes_stay_out_of_discovery_routing() -> None:
 
     for backend, _ in STUB_BACKENDS_AND_MILESTONES:
         assert not (backend.suffixes & discovery.SUFFIXES), backend.__name__
+
+
+def test_c_family_suffixes_route_through_discovery() -> None:
+    """The M8 C/C++ backends are implemented, so their suffixes are discoverable."""
+    from hdl_kgraph import discovery
+
+    assert CParser.suffixes <= discovery.SUFFIXES
+    assert CppParser.suffixes <= discovery.SUFFIXES
 
 
 def test_filelist_routes_unsupported_suffix_to_skip(tmp_path: Path) -> None:

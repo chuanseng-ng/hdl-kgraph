@@ -9,12 +9,13 @@ modeled on [code-review-graph](https://github.com/tirth8205/code-review-graph):
 Python 3.10+, tree-sitter parsing, NetworkX graph algorithms, SQLite persistence,
 a CLI, and (later) an MCP server for AI assistants. Distribution is via pip/PyPI.
 
-**Status (v2.2.0):** Milestones M1–M7 are shipped, and the v2.0 scalability epic
+**Status (v2.3.0):** Milestones M1–M7 are shipped, and the v2.0 scalability epic
 (M11–M13a — bounded reads, out-of-core whole-design summaries, and a
 memory-bounded incremental linker) is delivered. M8–M10 (EDA flow languages,
-DPI-C, emerging HDLs) remain an exploratory/community-contribution track, and the
-Rust core (M13) is deferred — profiling (M12) showed it isn't needed for the RAM
-goal.
+DPI-C, emerging HDLs) remain an exploratory/community-contribution track — its
+first slice landed in v2.3: M8's DPI-C linking (SV `import`/`export "DPI-C"` ↔
+C/C++ function definitions). The Rust core (M13) is deferred — profiling (M12)
+showed it isn't needed for the RAM goal.
 
 ---
 
@@ -463,8 +464,16 @@ target on the exploratory track above.
 
 **Goal:** the full system picture — DPI, cosim, testbench scripting.
 
-- [ ] DPI-C linking: SV `import "DPI-C"`/`export "DPI-C"` ↔ C/C++ function
-      definitions (tree-sitter-c/cpp) via `FOREIGN_BINDS` edges
+- [x] DPI-C linking: SV `import "DPI-C"`/`export "DPI-C"` ↔ C/C++ function
+      definitions (tree-sitter-c/cpp) via `FOREIGN_BINDS` edges — **C/C++
+      pass-1 parsers (`parser/c.py`) emit a `FUNCTION` node per top-level
+      definition/prototype; the SV parser extracts `import`/`export "DPI-C"`
+      declarations (alias `c_name =` form, pure/context properties, imported
+      tasks); pass 2 binds them by linkage name, filtered to C/CPP candidates
+      (a unique cross-file match is 0.8, an unresolved name degrades to a
+      stub). C/C++ bypass the SV preprocessor; bare-name matching is the tier
+      (no C++ mangling, no C preprocessor). Schema unchanged — `FOREIGN_BINDS`
+      and the `C`/`CPP` languages already existed. See docs/extraction.md**
 - [ ] Python testbench scanning: cocotb `dut.signal` attribute access →
       `READS`/`DRIVES` (confidence 0.6); pytest/cocotb test discovery →
       `TEST_COVERS`

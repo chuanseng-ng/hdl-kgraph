@@ -14,6 +14,26 @@
 - **Dataflow:** processes (always blocks, continuous assigns, VHDL
   processes), signals with drivers/readers (process-, assign-, and
   instance-level), clock and reset relationships, CDC-suspect crossings
+- **DPI-C boundary (M8):** SystemVerilog `import "DPI-C"`/`export "DPI-C"`
+  declarations linked to their C/C++ function definitions via `FOREIGN_BINDS`
+  edges (see below)
+
+### C/C++ DPI-C linking
+
+`.c`/`.h` files are parsed with `tree-sitter-c` and
+`.cpp`/`.cc`/`.cxx`/`.hpp`/`.hh`/`.hxx` with `tree-sitter-cpp`; each top-level
+function **definition** (and prototype **declaration**) becomes a `FUNCTION`
+node tagged with its language. An SV `import "DPI-C"` prototype becomes a
+`FUNCTION`/`TASK` node and a `FOREIGN_BINDS` edge to the C function it binds —
+matched by the **linkage name** (the `c_name = function …` alias if present,
+else the SV name). An `export "DPI-C"` binds back to the SV subprogram it
+names. Confidence follows the usual contract: a unique cross-file match is
+`0.8`, an unresolved foreign name degrades to a `FUNCTION` stub.
+
+Scope (the honest contract): DPI uses C linkage, so a **bare-name** match is the
+right tier — C++ name mangling is not modeled (functions in `extern "C"` and
+`namespace` blocks are recorded under their bare names), and the C preprocessor
+(`#include`/`#define`) and full C type/width modeling are out of scope.
 
 ### Not extracted yet
 

@@ -9,6 +9,23 @@ the major version, and schema changes ship with a migration.
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-06-23
+
+### Added
+
+- **DPI-C linking (M8 — C/C++ boundary).** `.c`/`.h` (tree-sitter-c) and
+  `.cpp`/`.cc`/`.cxx`/`.hpp`/`.hh`/`.hxx` (tree-sitter-cpp) sources are now
+  discovered and parsed into `FUNCTION` nodes, and SystemVerilog
+  `import "DPI-C"`/`export "DPI-C"` declarations are linked to their foreign
+  function definitions via `FOREIGN_BINDS` edges — matched by linkage name (the
+  `c_name = function …` alias when present), filtered to C/C++ candidates, at
+  the usual confidence tier (0.8 for a unique cross-file match; an unresolved
+  name degrades to a stub). C/C++ bypass the SV preprocessor; bare-name matching
+  is the contract (no C++ mangling, no C preprocessor). The graph schema is
+  unchanged (`FOREIGN_BINDS` and the `C`/`CPP` languages already existed), so no
+  migration or re-parse is forced. See `docs/extraction.md`. New core
+  dependencies: `tree-sitter-c`, `tree-sitter-cpp`.
+
 ## [2.2.0] - 2026-06-22
 
 ### Fixed
