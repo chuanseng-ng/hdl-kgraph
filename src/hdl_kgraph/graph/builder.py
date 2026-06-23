@@ -779,15 +779,24 @@ class _Linker:
                 if not self.node_obj[module_id].attrs.get("unresolved"):
                     self._emit(ref, module_id, ref.confidence)
             return
-        # READS / DRIVES: resolve dut.<signal> against the DUT module's namespace.
+        # READS / DRIVES: resolve dut.<signal> against the DUT module's namespace,
+        # collapsing the same ambiguities the scoped resolver does (a both-branches
+        # arm wins over its alternatives; a non-ANSI ``output y; wire y;`` is one
+        # net, the PORT — not two edges).
         dut_name = str(ref.attrs.get("dut_module", ""))
         for module_id in self._modules_named(dut_name):
             if self.node_obj[module_id].attrs.get("unresolved"):
                 continue
             matches = self._scope_index_for(module_id).get(ref.target_name, [])
-            for sig in matches:
-                if sig.kind in _SIGNAL_KINDS:
-                    self._emit(ref, sig.id, ref.confidence)
+            signals = [n for n in matches if n.kind in _SIGNAL_KINDS]
+            if not signals:
+                continue
+            selected = [n for n in signals if not n.attrs.get("conditional")] or signals
+            ports = [n for n in selected if n.kind is NodeKind.PORT]
+            if len(ports) == 1:
+                selected = ports
+            for sig in selected:
+                self._emit(ref, sig.id, ref.confidence)
 
     def _derive_port_dataflow(
         self, ref: UnresolvedRef, port: Node, confidence: float, actual_text: str

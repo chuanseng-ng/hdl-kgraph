@@ -54,8 +54,9 @@ SUFFIXES = frozenset({".py"})
 #: ordinary Python (incl. hdl-kgraph's own sources) out of the graph.
 COCOTB_MARKER = "cocotb"
 
-#: cocotb write APIs: ``dut.sig.value = x`` and ``dut.sig.setimmediatevalue(x)``.
-_WRITE_METHODS = frozenset({"setimmediatevalue", "set_immediate_value", "set"})
+#: cocotb write API: ``dut.sig.value = x`` (assignment) and
+#: ``dut.sig.setimmediatevalue(x)`` (method). Everything else is a read.
+_WRITE_METHODS = frozenset({"setimmediatevalue"})
 #: Decorator names that mark a cocotb test (``@cocotb.test`` / ``from cocotb import test``).
 _COCOTB_TEST_DECORATORS = frozenset({"cocotb.test", "test"})
 

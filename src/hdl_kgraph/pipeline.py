@@ -431,7 +431,11 @@ def _link_pass2(
         return link_graph(irs, warnings=report.warnings)
     has_vhdl = any(f.language is Language.VHDL for f in (discovered or []))
     has_binds = any(ref.edge_kind is EdgeKind.BINDS for ir in irs for ref in ir.unresolved_refs)
-    has_cocotb = any(f.language is Language.PYTHON for f in (discovered or []))
+    # Only *parsed* cocotb units force a full re-link — a non-cocotb `.py` is
+    # skipped (``not_cocotb``) and contributes no refs, so it must not count.
+    has_cocotb = any(
+        f.language is Language.PYTHON and f.skipped_reason is None for f in (discovered or [])
+    )
     reason = incremental_link_safe(options.enrich, has_vhdl, has_binds, has_cocotb)
     if reason is None:
         store = SqliteStore(db_path)
@@ -1251,8 +1255,9 @@ def run_update(
     has_vhdl = any(f.language is Language.VHDL for f in discovered)
     # cocotb forces a full re-link (cross-file DUT resolution; see
     # incremental_link_safe), so it must not take the selective-decode path that
-    # leaves clean units' IRs undecoded.
-    has_cocotb = any(f.language is Language.PYTHON for f in discovered)
+    # leaves clean units' IRs undecoded. Only *parsed* cocotb units count — a
+    # non-cocotb `.py` is skipped (``not_cocotb``).
+    has_cocotb = any(f.language is Language.PYTHON and f.skipped_reason is None for f in discovered)
     if options.bounded_link and not options.enrich and not has_vhdl and not has_cocotb:
         macro_all = store.load_macro_events()
         if not macro_all:
