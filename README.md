@@ -9,7 +9,7 @@ instances, ports, parameters, signals, classes, packages, and the
 relationships between them — design hierarchy, port connectivity, package
 imports, class inheritance, clock domains, and more.
 
-> **Status: v2.2.0 — stable.** Milestones M1–M7 are in: SystemVerilog/Verilog
+> **Status: v2.3.0 — stable.** Milestones M1–M7 are in: SystemVerilog/Verilog
 > and VHDL extraction with mixed-language linking, the SV preprocessor and
 > real-world build inputs (`.f` filelists, defines, `hdl-kgraph.toml`),
 > incremental rebuilds and watch mode, the clock/reset/CDC/lint/metrics
@@ -29,7 +29,9 @@ imports, class inheritance, clock domains, and more.
 > an incremental `update` re-links and re-writes only the changed rows through
 > the memory-bounded linker (now the default). See
 > [docs/scalability.md](docs/scalability.md) and the
-> [roadmap](#roadmap-at-a-glance).
+> [roadmap](#roadmap-at-a-glance). v2.3 lands the first slice of M8 — the
+> C/C++ boundary: SystemVerilog `DPI-C` imports/exports are linked to their
+> C/C++ function definitions (`FOREIGN_BINDS`).
 
 ## Why
 

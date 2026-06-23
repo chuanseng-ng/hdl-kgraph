@@ -9,6 +9,8 @@ the major version, and schema changes ship with a migration.
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-06-23
+
 ### Added
 
 - **DPI-C linking (M8 — C/C++ boundary).** `.c`/`.h` (tree-sitter-c) and
