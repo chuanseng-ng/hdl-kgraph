@@ -364,7 +364,8 @@ def _upf_project(tmp_path: Path, fixtures_dir: Path) -> Path:
     for name in ("top.v", "simple_counter.sv"):
         (tmp_path / name).write_text((fixtures_dir / name).read_text())
     (tmp_path / "power.upf").write_text((fixtures_dir / "upf" / "power.upf").read_text())
-    CliRunner().invoke(main, ["build", str(tmp_path)])
+    result = CliRunner().invoke(main, ["build", str(tmp_path)])
+    assert result.exit_code == 0, result.output
     return tmp_path
 
 

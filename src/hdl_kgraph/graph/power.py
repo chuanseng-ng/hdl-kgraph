@@ -10,11 +10,30 @@ report. Everything is name-level and evidence-scored; UPF is never evaluated.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
 from typing import Any
 
 import networkx as nx
 
 from hdl_kgraph.schema import EdgeKind, NodeKind
+
+
+def _element_resolved(decl: str, resolved: list[str]) -> bool:
+    """True if a declared ``-elements`` token matches a resolved instance.
+
+    Mirrors the pass-2 ``cells`` resolution, which matches an instance by its
+    leaf name (or a glob over it): a token resolves if it equals a resolved
+    qualified name, equals one's leaf, or globs either — so ``top.u_*`` is
+    *not* misreported as unresolved when ``top.u_counter`` matched. The ``.``
+    design-root element never resolves to a child instance.
+    """
+    if decl == ".":
+        return False
+    for r in resolved:
+        leaf = r.rsplit(".", 1)[-1]
+        if decl in (r, leaf) or fnmatchcase(r, decl) or fnmatchcase(leaf, decl):
+            return True
+    return False
 
 
 @dataclass
@@ -55,8 +74,7 @@ def power_domains(g: nx.MultiDiGraph) -> list[PowerDomain]:
                 continue
             resolved.append(g.nodes[dst].get("qualified_name") or g.nodes[dst]["name"])
             min_conf = min(min_conf, edge["confidence"])
-        resolved_names = {name.rsplit(".", 1)[-1] for name in resolved}
-        unresolved = [e for e in declared if e == "." or e.rsplit(".", 1)[-1] not in resolved_names]
+        unresolved = [e for e in declared if not _element_resolved(e, resolved)]
         domains.append(
             PowerDomain(
                 name=data["name"],

@@ -46,12 +46,28 @@ def test_upf_extracts_power_domains(fixtures_dir) -> None:
 def test_upf_attaches_strategies_to_domain(fixtures_dir) -> None:
     ir = parse_upf(fixtures_dir, "upf/power.upf")
     pd = nodes_of(ir, NodeKind.POWER_DOMAIN)["PD_COUNTER"]
+    assert pd.attrs["supply"] == "{primary ss_main}"  # -supply folded in
     kinds = {s["kind"] for s in pd.attrs["strategies"]}
     assert kinds == {"isolation", "retention"}
     iso = next(s for s in pd.attrs["strategies"] if s["kind"] == "isolation")
     assert iso["applies_to"] == "outputs"
     assert iso["isolation_signal"] == "iso_en"
     assert iso["clamp_value"] == "0"
+
+
+def test_upf_folds_level_shifter_strategy() -> None:
+    """``set_level_shifter`` (not in the shared fixture) folds onto its -domain."""
+    upf = (
+        "create_power_domain PD_X -elements {u_x}\n"
+        "set_level_shifter ls_x -domain PD_X -applies_to outputs -location parent\n"
+    )
+    ir = UpfParser().parse(Path("ls.upf"), upf)
+    pd = nodes_of(ir, NodeKind.POWER_DOMAIN)["PD_X"]
+    (ls,) = pd.attrs["strategies"]
+    assert ls["kind"] == "level_shifter"
+    assert ls["name"] == "ls_x"
+    assert ls["applies_to"] == "outputs"
+    assert ls["location"] == "parent"
 
 
 def test_upf_emits_element_constrains_refs(fixtures_dir) -> None:
@@ -104,6 +120,21 @@ def test_power_domains_report_lists_isolated_instances(fixtures_dir) -> None:
     assert domains["PD_TOP"].elements == []
     assert domains["PD_TOP"].unresolved_elements == ["."]
     assert domains["PD_TOP"].isolated is False
+
+
+def test_glob_element_is_not_misreported_unresolved(fixtures_dir) -> None:
+    """A glob ``-elements`` token that resolves must not show up as unresolved.
+
+    Regression guard: basename-only matching left ``u_*`` ``unresolved`` even
+    though it resolved to ``top.u_counter``.
+    """
+    upf = UpfParser().parse(Path("g.upf"), "create_power_domain PD_G -elements {u_*}\n")
+    graph = build_graph(
+        [parse_sv(fixtures_dir, "top.v"), parse_sv(fixtures_dir, "simple_counter.sv"), upf]
+    )
+    (domain,) = power.power_domains(graph)
+    assert domain.elements == ["top.u_counter"]
+    assert domain.unresolved_elements == []
 
 
 def test_power_summary_counts(fixtures_dir) -> None:

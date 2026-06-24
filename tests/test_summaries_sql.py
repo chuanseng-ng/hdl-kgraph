@@ -168,6 +168,7 @@ def test_graphquery_falls_back_to_sql_power_without_summary(
     db = _build_upf(tmp_path, fixtures_dir)
     graph, _f, _m = SqliteStore(db).load()
     oracle = summary.power_summary(graph)
+    assert SqliteStore(db).load_summary("power_domains") is not None  # actually persisted
 
     conn = sqlite3.connect(db)
     conn.execute("DELETE FROM summaries WHERE name = 'power_domains'")
