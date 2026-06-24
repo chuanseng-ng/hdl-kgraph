@@ -359,6 +359,32 @@ def test_query_uvm_json_is_bounded_payload(project: Path) -> None:
     assert payload == GraphQuery(default_db_path(project)).uvm_topology()
 
 
+def _upf_project(tmp_path: Path, fixtures_dir: Path) -> Path:
+    """The counter design plus its UPF, flattened into one build root."""
+    for name in ("top.v", "simple_counter.sv"):
+        (tmp_path / name).write_text((fixtures_dir / name).read_text())
+    (tmp_path / "power.upf").write_text((fixtures_dir / "upf" / "power.upf").read_text())
+    result = CliRunner().invoke(main, ["build", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    return tmp_path
+
+
+def test_query_power_domains(tmp_path: Path, fixtures_dir: Path) -> None:
+    root = _upf_project(tmp_path, fixtures_dir)
+    result = CliRunner().invoke(main, ["query", "power-domains", *db_args(root)])
+    assert result.exit_code == 0, result.output
+    assert "PD_COUNTER [isolated]" in result.output
+    assert "element top.u_counter" in result.output
+    assert "isolation iso_counter" in result.output
+
+
+def test_review_reports_power_domains(tmp_path: Path, fixtures_dir: Path) -> None:
+    root = _upf_project(tmp_path, fixtures_dir)
+    result = CliRunner().invoke(main, ["review", *db_args(root)])
+    assert result.exit_code == 0, result.output
+    assert "power domains 2  isolated 1" in result.output
+
+
 def test_visualize_writes_html(project: Path, tmp_path: Path) -> None:
     out = tmp_path / "g.html"
     result = CliRunner().invoke(main, ["visualize", "-o", str(out), *db_args(project)])

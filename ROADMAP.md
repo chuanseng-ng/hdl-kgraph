@@ -534,10 +534,14 @@ scenario coverage.
       **`graph.clocks.apply_sdc_clock_evidence` (called from `link_graph`) bumps
       the backed CLOCKED_BY edges to 1.0; `cdc_suspects` flags suppressed
       crossings `declared_safe` and the report partitions them out**
-- [ ] UPF (IEEE 1801) power intent: `create_power_domain` → `POWER_DOMAIN` nodes
+- [x] UPF (IEEE 1801) power intent: `create_power_domain` → `POWER_DOMAIN` nodes
       with `CONSTRAINS` edges to their elements; supply nets/sets and isolation/
       retention/level-shifter strategies in attrs; power-domain report (domains,
-      strategies, domain-crossing suspects) analogous to the CDC report
+      strategies) analogous to the CDC report — **`UpfParser` shares the SDC
+      Tcl-subset base; `-elements` reuse the `cells` query resolution; the
+      `power_domains` report ships as a query/MCP tool + persisted summary (with an
+      out-of-core SQL fallback) + `analyze` digest line. Domain-crossing suspects
+      are a follow-on. See docs/extraction.md, docs/analyses.md**
 - [ ] Tcl flow scripts: `read_verilog`/`read_vhdl`/`analyze`/`add_files` →
       `REFERENCES_FILE` edges; `source` chains → `INCLUDES`; literal `set`
       variable substitution only — Tcl is never evaluated (see Risks)

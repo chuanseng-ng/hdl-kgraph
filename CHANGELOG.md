@@ -11,6 +11,20 @@ the major version, and schema changes ship with a migration.
 
 ### Added
 
+- **UPF power-intent parsing (M10 — second wedge).** `.upf` files are parsed by
+  the same hand-written Tcl-subset scanner as SDC (now sharing one base parser):
+  `create_power_domain` → `POWER_DOMAIN` nodes (`language=tcl`), its `-elements`
+  → `CONSTRAINS` edges to the named instances (reusing the SDC `cells` query, so
+  exact unique match 1.0 / glob 0.8 / ambiguous 0.6; the `.` design-root element
+  is recorded but not edged), and `-supply` plus the `set_isolation`/
+  `set_retention`/`set_level_shifter` strategies (matched to their `-domain`)
+  folded into the domain's `attrs`. A new **power-domain report** (`power_domains`
+  query / MCP tool, persisted summary with an out-of-core SQL fallback, and an
+  `analyze` digest line) lists each domain with its resolved element instances and
+  whether it is isolated. `.upf` is discovered and, like SDC, forces a full
+  `update` re-link. Schema unchanged (`POWER_DOMAIN`, `CONSTRAINS`, and the `TCL`
+  language already existed). Tcl flow scripts, Perl, and SLN remain fail-loud
+  stubs. See docs/extraction.md and docs/analyses.md.
 - **SDC/XDC timing-constraint parsing (M10 — first wedge, [#25]).** `.sdc`/`.xdc`
   files are parsed by a hand-written Tcl-subset scanner (no Tcl evaluation; only
   literal `set` variable substitution): `create_clock`/`create_generated_clock`
