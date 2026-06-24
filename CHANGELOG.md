@@ -9,6 +9,28 @@ the major version, and schema changes ship with a migration.
 
 ## [Unreleased]
 
+### Added
+
+- **SDC/XDC timing-constraint parsing (M10 — first wedge, [#25]).** `.sdc`/`.xdc`
+  files are parsed by a hand-written Tcl-subset scanner (no Tcl evaluation; only
+  literal `set` variable substitution): `create_clock`/`create_generated_clock`
+  → `CLOCK` nodes (virtual and generated clocks supported, `language=tcl`);
+  `set_false_path`/`set_multicycle_path`/`set_input_delay`/`set_output_delay`/
+  `set_clock_groups` → `TIMING_CONSTRAINT` nodes. `get_ports`/`get_pins`/
+  `get_cells`/`get_clocks` object queries resolve to design nodes via
+  `CONSTRAINS` edges (exact match 1.0, glob 0.8 unique / 0.6 ambiguous; an
+  object the design lacks is skipped, not stubbed). M5 synergy: `create_clock`
+  is authoritative clock evidence — it upgrades the 0.4 `CLOCKED_BY` name
+  heuristic to 1.0 (`attrs["evidence"]="sdc_create_clock"`); `set_clock_groups
+  -asynchronous` and `set_false_path` mark the CDC suspects they cover as
+  `declared_safe`, which the `clock_domains`/`cdc` report partitions out of the
+  active suspect list (reported as `cdc_suppressed_count`). Because resolution is
+  cross-file and the clock upgrade is design-wide, `update` re-links an
+  SDC-bearing design fully (still parse-incremental, like cocotb/VHDL). Schema
+  unchanged (`CLOCK`/`TIMING_CONSTRAINT`, `CONSTRAINS`, and the `TCL` language
+  already existed). UPF, Tcl flow scripts, Perl, and SLN remain fail-loud stubs.
+  See docs/extraction.md.
+
 ## [2.4.0] - 2026-06-23
 
 ### Added
@@ -708,4 +730,5 @@ log.
 [#75]: https://github.com/chuanseng-ng/hdl-kgraph/issues/75
 [#78]: https://github.com/chuanseng-ng/hdl-kgraph/pull/78
 [#81]: https://github.com/chuanseng-ng/hdl-kgraph/issues/81
+[#25]: https://github.com/chuanseng-ng/hdl-kgraph/issues/25
 [#108]: https://github.com/chuanseng-ng/hdl-kgraph/pull/108

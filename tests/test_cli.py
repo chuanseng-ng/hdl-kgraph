@@ -160,7 +160,13 @@ def test_query_clock_domains_json_is_bounded_payload(project: Path) -> None:
     payload = json_mod.loads(result.output)
     # The CLI now emits the bounded summary payload (counts, not O(design) id-lists),
     # byte-identical to the GraphQuery path the MCP server uses.
-    assert set(payload) == {"domains", "cdc_suspect_count", "cdc_suspects"}
+    assert set(payload) == {
+        "domains",
+        "cdc_suspect_count",
+        "cdc_suspects",
+        "cdc_suppressed_count",
+        "cdc_suppressed",
+    }
     assert payload["domains"]
     for domain in payload["domains"]:
         assert set(domain) == {

@@ -98,7 +98,11 @@ def changed_target_names(
 
 
 def incremental_link_safe(
-    enrich: bool, has_vhdl: bool, has_binds: bool, has_cocotb: bool = False
+    enrich: bool,
+    has_vhdl: bool,
+    has_binds: bool,
+    has_cocotb: bool = False,
+    has_sdc: bool = False,
 ) -> str | None:
     """Reason the incremental linker must defer to a full re-link, or None.
 
@@ -107,7 +111,9 @@ def incremental_link_safe(
     those fall back to a full (still parse-incremental) re-link. cocotb
     ``dut.<signal>`` resolution is cross-file (the ref lives in the .py, the
     signal in the DUT module), which the dirty-closure ref index does not model,
-    so it falls back too — correctness over a marginal incremental win.
+    so it falls back too — correctness over a marginal incremental win. SDC
+    (M10) is the same shape: CONSTRAINS refs are cross-file and the
+    ``create_clock`` evidence upgrade rewrites CLOCKED_BY edges design-wide.
     """
     if enrich:
         return "enrichment is not incremental"
@@ -117,6 +123,8 @@ def incremental_link_safe(
         return "bind/configuration directives not supported yet"
     if has_cocotb:
         return "cocotb cross-file DUT resolution not incremental"
+    if has_sdc:
+        return "SDC constraint resolution not incremental"
     return None
 
 

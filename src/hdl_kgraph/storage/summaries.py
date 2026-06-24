@@ -29,6 +29,7 @@ cap — so RAM tracks the *answer*, not the design.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections import defaultdict
 from collections.abc import Iterator
@@ -60,10 +61,14 @@ def clock_summary_sql(conn: sqlite3.Connection) -> dict[str, Any]:
     uf = _alias_uf(conn)
     find = uf.find  # un-aliased ids resolve to themselves, as in the oracle
     suspects = _cdc_suspects(conn, find)
+    active = [s for s in suspects if not s["declared_safe"]]
+    suppressed = [s for s in suspects if s["declared_safe"]]
     return {
         "domains": _clock_domains(conn, find),
-        "cdc_suspect_count": len(suspects),
-        "cdc_suspects": suspects[:50],
+        "cdc_suspect_count": len(active),
+        "cdc_suspects": active[:50],
+        "cdc_suppressed_count": len(suppressed),
+        "cdc_suppressed": suppressed[:50],
     }
 
 
@@ -285,10 +290,80 @@ def reset_summary_sql(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 # --------------------------------------------------------------------------- #
 # cdc_suspects (the combinational-bridge logic, mirroring clocks.cdc_suspects)
 # --------------------------------------------------------------------------- #
+def _sdc_clock_roots(
+    conn: sqlite3.Connection, find: Any
+) -> tuple[dict[str, set[str]], dict[str, str]]:
+    """``(clock_id -> net alias-roots, clock_id -> name)`` from CLOCK CONSTRAINS edges
+    (M10), mirroring :func:`hdl_kgraph.graph.clocks._clock_net_roots`."""
+    id_roots: dict[str, set[str]] = defaultdict(set)
+    id_name: dict[str, str] = {}
+    for cid, name, dst, dkind in conn.execute(
+        "SELECT e.src, sn.name, e.dst, dn.kind FROM edges e "
+        "JOIN nodes sn ON sn.id = e.src JOIN nodes dn ON dn.id = e.dst "
+        "WHERE e.kind = ? AND sn.kind = ?",
+        (EdgeKind.CONSTRAINS.value, NodeKind.CLOCK.value),
+    ):
+        if dkind in (NodeKind.PORT.value, NodeKind.SIGNAL.value):
+            id_roots[cid].add(find(dst))
+            id_name[cid] = name
+    return id_roots, id_name
+
+
+def _declared_safe_crossings(
+    conn: sqlite3.Connection, find: Any
+) -> tuple[set[frozenset[str]], set[tuple[str, str]], set[str]]:
+    """SDC-declared safe crossings from SQLite (M10), mirroring
+    :func:`hdl_kgraph.graph.clocks._declared_safe_crossings`: ``(async clock-root
+    pairs, directional false-path clock pairs, false-path net roots)``. Clock
+    groups suppress both directions; a clock-to-clock ``set_false_path`` is
+    directional (``-from A -to B`` declares only A→B safe)."""
+    id_roots, id_name = _sdc_clock_roots(conn, find)
+    name_roots: dict[str, set[str]] = defaultdict(set)
+    for cid, roots in id_roots.items():
+        name_roots[id_name[cid]] |= roots
+    all_clock_roots: set[str] = set().union(*id_roots.values()) if id_roots else set()
+
+    async_pairs: set[frozenset[str]] = set()
+    false_path_pairs: set[tuple[str, str]] = set()
+    false_path_roots: set[str] = set()
+    for tc_id, attrs_json in conn.execute(
+        "SELECT id, attrs FROM nodes WHERE kind = ?", (NodeKind.TIMING_CONSTRAINT.value,)
+    ).fetchall():
+        attrs = json.loads(attrs_json) if attrs_json else {}
+        set_type = attrs.get("set_type")
+        if set_type == "clock_groups" and attrs.get("asynchronous"):
+            groups = [
+                set().union(*(name_roots.get(name, set()) for name in grp)) if grp else set()
+                for grp in (attrs.get("groups") or [])
+            ]
+            if not groups:
+                # Bare ``-asynchronous`` (no -group): all clocks mutually async.
+                groups = [{root} for root in sorted(all_clock_roots)]
+            for i in range(len(groups)):
+                for j in range(i + 1, len(groups)):
+                    async_pairs.update(frozenset((a, b)) for a in groups[i] for b in groups[j])
+        elif set_type == "false_path":
+            from_roots: set[str] = set()
+            to_roots: set[str] = set()
+            for dst, dkind, role in conn.execute(
+                "SELECT e.dst, dn.kind, json_extract(e.attrs, '$.role') FROM edges e "
+                "JOIN nodes dn ON dn.id = e.dst WHERE e.kind = ? AND e.src = ?",
+                (EdgeKind.CONSTRAINS.value, tc_id),
+            ):
+                if dkind == NodeKind.CLOCK.value:
+                    (from_roots if role == "from" else to_roots).update(id_roots.get(dst, set()))
+                elif dkind in (NodeKind.PORT.value, NodeKind.SIGNAL.value):
+                    false_path_roots.add(find(dst))
+            false_path_pairs.update((a, b) for a in from_roots for b in to_roots)
+    return async_pairs, false_path_pairs, false_path_roots
+
+
 def _cdc_suspects(conn: sqlite3.Connection, find: Any) -> list[dict[str, Any]]:
     """CDC suspects (a signal driven in one domain and read in another), mirroring
     ``clocks.cdc_suspects``: per-process domains, the one-step combinational bridge,
-    then the crossing list sorted by ``(signal_name, reader_id, driver_domain)``."""
+    then the crossing list sorted by ``(signal_name, reader_id, driver_domain)``.
+    Each suspect carries ``declared_safe`` (SDC-suppressed crossing, M10)."""
+    async_pairs, false_path_pairs, false_path_roots = _declared_safe_crossings(conn, find)
     # Process -> its unique domain (root, confidence); ambiguous ones skipped.
     proc_domain: dict[str, tuple[str, float]] = {}
     clock_nets: set[str] = set()
@@ -366,6 +441,11 @@ def _cdc_suspects(conn: sqlite3.Connection, find: Any) -> list[dict[str, Any]]:
             "reader_id": proc,
             "reader_domain": attrs[proc_domain[proc][0]][0],
             "confidence": conf,
+            "declared_safe": (
+                frozenset((root, proc_domain[proc][0])) in async_pairs
+                or (root, proc_domain[proc][0]) in false_path_pairs
+                or sig in false_path_roots
+            ),
         }
         for sig, driver, root, proc, conf in raw
     ]

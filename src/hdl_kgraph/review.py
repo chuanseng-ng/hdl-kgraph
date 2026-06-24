@@ -64,7 +64,10 @@ def _clock_counts(payload: dict[str, Any]) -> dict[str, Any]:
                 for d in domains
             ],
         },
-        "cdc": {"suspect_count": payload.get("cdc_suspect_count", 0)},
+        "cdc": {
+            "suspect_count": payload.get("cdc_suspect_count", 0),
+            "suppressed_count": payload.get("cdc_suppressed_count", 0),
+        },
     }
 
 
