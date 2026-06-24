@@ -23,12 +23,13 @@ Implementation notes:
 
 from __future__ import annotations
 
+import posixpath
 import re
 from collections.abc import Iterator
 from pathlib import Path
 
 from hdl_kgraph.ids import decl_node_id, file_node_id
-from hdl_kgraph.parser.base import FileIR, UnresolvedRef, UnsupportedBackendError
+from hdl_kgraph.parser.base import FileIR, UnresolvedRef
 from hdl_kgraph.schema import Edge, EdgeKind, Language, Node, NodeKind
 
 SDC_SUFFIXES = frozenset({".sdc", ".xdc"})
@@ -518,10 +519,90 @@ class UpfParser(_TclConstraintParser):
         strategies.append(strategy)
 
 
-class TclScriptParser:
-    """Tool-flow Tcl script pass-1 scanner. M10 work item."""
+#: Flow-script commands that name a design/constraint/script file → the
+#: ``mode`` recorded on the REFERENCES_FILE edge.
+_FLOW_FILE_COMMANDS = {
+    "read_verilog": "read",
+    "read_systemverilog": "read",
+    "read_xilinx_verilog": "read",
+    "read_vhdl": "read",
+    "read_sdc": "read",
+    "read_xdc": "read",
+    "read_upf": "read",
+    "analyze": "analyze",
+    "add_files": "add",
+    "add_file": "add",
+    "source": "source",
+}
+
+#: Suffixes that mark a flow-command argument as a file path (not a flag value).
+_FLOW_PATH_SUFFIXES = frozenset(
+    {".v", ".sv", ".vh", ".svh", ".vhd", ".vhdl", ".sdc", ".xdc", ".upf", ".tcl", ".f"}
+)
+
+
+def _looks_like_path(token: str) -> bool:
+    """Heuristic: a flow-command argument that names a file, not a flag/value.
+
+    A bare word like ``verilog`` (a ``-format`` value) is rejected; a token
+    with a directory separator or a recognized HDL/script suffix is a path.
+    """
+    if not token or token.startswith("-"):
+        return False
+    if "/" in token:
+        return True
+    return posixpath.splitext(token)[1].lower() in _FLOW_PATH_SUFFIXES
+
+
+class TclScriptParser(_TclConstraintParser):
+    """Tool-flow Tcl script pass-1 scanner (M10 third wedge).
+
+    Records the design/constraint files a flow script reads or compiles
+    (``read_verilog``/``read_vhdl``/``read_sdc``/``analyze``/``add_files``) and
+    the scripts it ``source``s as REFERENCES_FILE edges to the file each names
+    (``attrs["mode"]`` distinguishes ``read``/``analyze``/``add``/``source``).
+    Paths are resolved relative to the script and normalized to the build-root
+    relpath keyspace; pass 2 binds them to the real FILE node when the file is in
+    the build, else to an unresolved stub. Only literal ``set NAME value``
+    substitution is applied — Tcl is never evaluated (see ROADMAP "Risks").
+    """
 
     suffixes = SCRIPT_SUFFIXES
+    flavor = "flow"
 
-    def parse(self, path: Path, text: str) -> FileIR:
-        raise UnsupportedBackendError("Tcl flow-script scanning lands in milestone M10")
+    def _scan(self, ir: FileIR, relpath: str, file_id: str, text: str) -> None:
+        """Track ``set`` vars and emit a REFERENCES_FILE ref per named file."""
+        variables: dict[str, str] = {}
+        script_dir = posixpath.dirname(relpath)
+        for line, raw_words in _iter_commands(text):
+            words = _substitute(raw_words, variables)
+            command = words[0]
+            if command == "set" and len(words) >= 3 and not words[1].startswith("-"):
+                variables[words[1]] = words[2]
+                continue
+            mode = _FLOW_FILE_COMMANDS.get(command)
+            if mode is None:
+                continue  # unknown command (synth/place/route, etc.): ignored
+            for token in words[1:]:
+                for path in _unbrace(token):
+                    if _looks_like_path(path):
+                        self._reference(ir, file_id, script_dir, path, mode, line)
+
+    def _reference(
+        self, ir: FileIR, file_id: str, script_dir: str, path: str, mode: str, line: int
+    ) -> None:
+        """Emit a REFERENCES_FILE ref to *path*, normalized to the build-root keyspace."""
+        rel = (
+            path
+            if posixpath.isabs(path)
+            else posixpath.normpath(posixpath.join(script_dir, path))
+        )
+        ir.unresolved_refs.append(
+            UnresolvedRef(
+                edge_kind=EdgeKind.REFERENCES_FILE,
+                src_id=file_id,
+                target_name=rel,
+                line_span=(line, line),
+                attrs={"file_ref": True, "mode": mode, "line": line},
+            )
+        )

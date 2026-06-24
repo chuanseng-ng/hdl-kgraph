@@ -542,9 +542,15 @@ scenario coverage.
       `power_domains` report ships as a query/MCP tool + persisted summary (with an
       out-of-core SQL fallback) + `analyze` digest line. Domain-crossing suspects
       are a follow-on. See docs/extraction.md, docs/analyses.md**
-- [ ] Tcl flow scripts: `read_verilog`/`read_vhdl`/`analyze`/`add_files` →
-      `REFERENCES_FILE` edges; `source` chains → `INCLUDES`; literal `set`
-      variable substitution only — Tcl is never evaluated (see Risks)
+- [x] Tcl flow scripts: `read_verilog`/`read_vhdl`/`analyze`/`add_files` →
+      `REFERENCES_FILE` edges; `source` chains; literal `set` variable
+      substitution only — Tcl is never evaluated (see Risks) — **`TclScriptParser`
+      shares the SDC/UPF Tcl-subset base; read/analyze/add/source commands all
+      emit `REFERENCES_FILE` (one edge kind, `attrs["mode"]` distinguishes them —
+      simpler and uniform for incremental than splitting `source` onto
+      `INCLUDES`); a new pass-2 `_resolve_file_ref` binds each path to its real
+      `FILE` node or a non-shadowing `unresolved:file:` stub. See
+      docs/extraction.md**
 - [ ] Perl legacy scripting: detect HDL files a script reads/writes/generates
       (`open()` of `.v`/`.sv` paths, heredoc-embedded Verilog) →
       `REFERENCES_FILE` + `GENERATED_FROM` lineage for generated RTL;

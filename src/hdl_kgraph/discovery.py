@@ -28,7 +28,7 @@ from hdl_kgraph.parser.python import COCOTB_MARKER
 from hdl_kgraph.parser.python import SUFFIXES as PYTHON_SUFFIXES
 from hdl_kgraph.parser.systemverilog import SUFFIXES as SV_SUFFIXES
 from hdl_kgraph.parser.systemverilog import SYSTEMVERILOG_SUFFIXES
-from hdl_kgraph.parser.tcl import SDC_SUFFIXES, UPF_SUFFIXES
+from hdl_kgraph.parser.tcl import SCRIPT_SUFFIXES, SDC_SUFFIXES, UPF_SUFFIXES
 from hdl_kgraph.parser.vhdl import SUFFIXES as VHDL_SUFFIXES
 from hdl_kgraph.schema import Language
 
@@ -40,6 +40,7 @@ SUFFIXES = (
     | PYTHON_SUFFIXES
     | SDC_SUFFIXES
     | UPF_SUFFIXES
+    | SCRIPT_SUFFIXES
 )
 _COCOTB_MARKER_BYTES = COCOTB_MARKER.encode()
 
@@ -69,8 +70,8 @@ def _language_for(path: Path) -> Language:
         return Language.CPP
     if path.suffix in PYTHON_SUFFIXES:
         return Language.PYTHON
-    if path.suffix in SDC_SUFFIXES or path.suffix in UPF_SUFFIXES:
-        return Language.TCL  # SDC/XDC constraints and UPF power intent (Tcl subsets)
+    if path.suffix in SDC_SUFFIXES or path.suffix in UPF_SUFFIXES or path.suffix in SCRIPT_SUFFIXES:
+        return Language.TCL  # SDC/XDC constraints, UPF power intent, Tcl flow scripts
     if path.suffix not in SV_SUFFIXES:
         return Language.UNKNOWN
     return Language.SYSTEMVERILOG if path.suffix in SYSTEMVERILOG_SUFFIXES else Language.VERILOG

@@ -26,6 +26,9 @@
 - **UPF power intent (M10):** `create_power_domain` → `POWER_DOMAIN` nodes; its
   `-elements` → `CONSTRAINS` edges; isolation/retention strategies in `attrs`
   (see below)
+- **Tcl flow scripts (M10):** `read_verilog`/`read_vhdl`/`read_sdc`/`analyze`/
+  `add_files`/`source` → `REFERENCES_FILE` edges to the files they name
+  (see below)
 
 ### C/C++ DPI-C linking
 
@@ -109,7 +112,26 @@ The **power-domain report** (`power_domains` query / MCP tool, a persisted
 summary with an out-of-core SQL fallback, and an `analyze` digest line) lists
 each domain with its resolved element instances, its strategies, and whether it
 is isolated — the power-intent analogue of the clock-domain report. Like SDC,
-`update` re-links a UPF-bearing design fully. Tcl flow scripts, Perl, and SLN
+`update` re-links a UPF-bearing design fully.
+
+### Tcl flow scripts
+
+`.tcl` flow scripts are scanned by the same Tcl-subset parser (no evaluation;
+only literal `set` substitution). The file-reading commands — `read_verilog`,
+`read_systemverilog`, `read_vhdl`, `read_sdc`/`read_xdc`/`read_upf`, `analyze`,
+`add_files`, and `source` — become `REFERENCES_FILE` edges from the script to
+the file each names, with `attrs["mode"]` recording the kind (`read`/`analyze`/
+`add`/`source`). A path argument is told from a flag value heuristically (it has
+a directory separator or a recognized HDL/script suffix), so `-format verilog`
+is not mistaken for a file. Paths are resolved relative to the script and
+normalized to the build-root relpath keyspace.
+
+Resolution happens in pass 2, where the full file set is known: a referenced
+file that is part of the build binds to its real `FILE` node; one outside the
+analyzed set (a generated or out-of-tree source, or a missing `source`d helper)
+binds to an `unresolved:file:` stub — a distinct id, so it never shadows a real
+`FILE` node and never raises a dangling-endpoint warning. Like the other Tcl
+wedges, `update` re-links a flow-script-bearing design fully. Perl and SLN
 remain unimplemented (fail-loud stubs).
 
 ### Not extracted yet

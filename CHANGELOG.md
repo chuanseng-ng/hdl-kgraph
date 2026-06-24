@@ -11,6 +11,20 @@ the major version, and schema changes ship with a migration.
 
 ### Added
 
+- **Tcl flow-script scanning (M10 — third wedge).** `.tcl` flow scripts are
+  parsed by the shared Tcl-subset scanner (no evaluation; only literal `set`
+  substitution): the file-reading commands `read_verilog`/`read_systemverilog`/
+  `read_vhdl`/`read_sdc`/`read_xdc`/`read_upf`/`analyze`/`add_files`/`source`
+  become `REFERENCES_FILE` edges to the file each names, with `attrs["mode"]`
+  recording the kind (`read`/`analyze`/`add`/`source`). A path argument is told
+  from a flag value heuristically (directory separator or recognized HDL/script
+  suffix). Paths are resolved relative to the script and normalized to the
+  build-root keyspace; pass 2 binds an in-build reference to its real `FILE`
+  node and an out-of-tree/missing one to an `unresolved:file:` stub (a distinct
+  id, so it never shadows a real `FILE` node or raises a dangling-endpoint
+  warning). Like the other Tcl wedges, `update` re-links a flow-bearing design
+  fully. Schema unchanged (`REFERENCES_FILE` and the `TCL` language already
+  existed). Perl and SLN remain fail-loud stubs. See docs/extraction.md.
 - **UPF power-intent parsing (M10 — second wedge).** `.upf` files are parsed by
   the same hand-written Tcl-subset scanner as SDC (now sharing one base parser):
   `create_power_domain` → `POWER_DOMAIN` nodes (`language=tcl`), its `-elements`

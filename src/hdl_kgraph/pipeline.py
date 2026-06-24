@@ -98,7 +98,13 @@ from hdl_kgraph.parser.preprocessor import (
 )
 from hdl_kgraph.parser.python import PythonParser
 from hdl_kgraph.parser.systemverilog import SystemVerilogParser
-from hdl_kgraph.parser.tcl import UPF_SUFFIXES, SdcParser, UpfParser
+from hdl_kgraph.parser.tcl import (
+    SCRIPT_SUFFIXES,
+    UPF_SUFFIXES,
+    SdcParser,
+    TclScriptParser,
+    UpfParser,
+)
 from hdl_kgraph.parser.vhdl import DEFAULT_LIBRARY, VhdlParser
 from hdl_kgraph.schema import Edge, EdgeKind, Language, Node, NodeKind
 from hdl_kgraph.storage import ir_codec
@@ -338,6 +344,7 @@ _WORKER_CPP_PARSER: CppParser | None = None
 _WORKER_PYTHON_PARSER: PythonParser | None = None
 _WORKER_SDC_PARSER: SdcParser | None = None
 _WORKER_UPF_PARSER: UpfParser | None = None
+_WORKER_TCL_SCRIPT_PARSER: TclScriptParser | None = None
 
 
 def _parse_sv_task(relpath: str, text: str, line_map: list[LineOrigin]) -> FileIR:
@@ -397,10 +404,25 @@ def _parse_upf_task(relpath: str, text: str) -> FileIR:
     return _WORKER_UPF_PARSER.parse(Path(relpath), text)
 
 
+def _parse_tcl_script_task(relpath: str, text: str) -> FileIR:
+    """Parse one Tcl flow script (M10 — pool worker entry point)."""
+    global _WORKER_TCL_SCRIPT_PARSER
+    if _WORKER_TCL_SCRIPT_PARSER is None:
+        _WORKER_TCL_SCRIPT_PARSER = TclScriptParser()
+    return _WORKER_TCL_SCRIPT_PARSER.parse(Path(relpath), text)
+
+
 def _parse_tcl_task(relpath: str, text: str) -> FileIR:
-    """Route a TCL-family unit to its parser by suffix (``.upf`` → UPF, else SDC)."""
-    if Path(relpath).suffix in UPF_SUFFIXES:
+    """Route a TCL-family unit to its parser by suffix.
+
+    ``.upf`` → UPF power intent, ``.tcl`` → flow script, else (``.sdc``/``.xdc``)
+    → SDC/XDC timing constraints.
+    """
+    suffix = Path(relpath).suffix
+    if suffix in UPF_SUFFIXES:
         return _parse_upf_task(relpath, text)
+    if suffix in SCRIPT_SUFFIXES:
+        return _parse_tcl_script_task(relpath, text)
     return _parse_sdc_task(relpath, text)
 
 
@@ -925,9 +947,9 @@ def _execute(
                         )
                     )
             elif found.language is Language.TCL:
-                # SDC/XDC constraints and UPF power intent (M10): no preprocessor;
-                # the raw text is routed by suffix (``.upf`` → UPF, else SDC), like
-                # C/VHDL. ``.tcl`` flow scripts are not yet discoverable (stub).
+                # SDC/XDC constraints, UPF power intent, and Tcl flow scripts
+                # (M10): no preprocessor; the raw text is routed by suffix
+                # (``.upf`` → UPF, ``.tcl`` → flow script, else SDC), like C/VHDL.
                 text = found.path.read_text(errors="replace")
                 if executor is None:
                     pending.append(
