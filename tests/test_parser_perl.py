@@ -61,6 +61,13 @@ def test_perl_two_arg_open_and_mode_split() -> None:
     assert refs_of(ir, EdgeKind.REFERENCES_FILE)["build/x.v"]["mode"] == "write"
 
 
+def test_perl_read_write_mode_counts_as_write() -> None:
+    """A read-write open (`+>`) writes the file, so it is a write with lineage."""
+    ir = PerlParser().parse(Path("g.pl"), "module m endmodule\nopen(my $fh, '+>', 'rw.v');\n")
+    assert refs_of(ir, EdgeKind.REFERENCES_FILE)["rw.v"]["mode"] == "write"
+    assert "rw.v" in refs_of(ir, EdgeKind.GENERATED_FROM)
+
+
 def test_perl_skips_interpolated_and_non_hdl_paths() -> None:
     text = "open(A, '>', \"$dir/x.v\");\nopen(B, '>', 'notes.txt');\nopen(C, '>', 'real.v');\n"
     ir = PerlParser().parse(Path("g.pl"), "module m endmodule\n" + text)
