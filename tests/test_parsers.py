@@ -27,10 +27,9 @@ ALL_BACKENDS = [
 ]
 
 # Backends not yet implemented, with the milestone their NotImplementedError names.
-# SdcParser (M10 first wedge, #25) and UpfParser (M10 second wedge) are implemented,
+# The M10 Tcl-subset wedges are implemented (SdcParser #25, UpfParser, TclScriptParser),
 # so they are no longer here.
 STUB_BACKENDS_AND_MILESTONES = [
-    (TclScriptParser, "M10"),
     (PerlParser, "M10"),
     (SlnParser, "M10"),
 ]
@@ -80,21 +79,22 @@ def test_c_family_suffixes_route_through_discovery() -> None:
 
 
 def test_sdc_suffixes_route_through_discovery() -> None:
-    """The M10 SDC/XDC and UPF backends are implemented, so their suffixes are discoverable."""
+    """The M10 Tcl-subset backends are implemented, so their suffixes are discoverable."""
     from hdl_kgraph import discovery
 
     assert SdcParser.suffixes <= discovery.SUFFIXES
     assert UpfParser.suffixes <= discovery.SUFFIXES
+    assert TclScriptParser.suffixes <= discovery.SUFFIXES
 
 
 def test_filelist_routes_unsupported_suffix_to_skip(tmp_path: Path) -> None:
-    """A constraints/script file with no parser is skipped, never parsed.
+    """A source file with no parser yet is skipped, never parsed.
 
-    ``.tcl`` flow scripts are still a fail-loud stub (UPF landed; flow scripts did not).
+    ``.pl`` Perl codegen scripts are still a fail-loud stub (the Tcl wedges landed).
     """
     from hdl_kgraph.discovery import check_file
 
-    script = tmp_path / "flow.tcl"
-    script.write_text("read_verilog top.v\n")
+    script = tmp_path / "gen.pl"
+    script.write_text("open(my $fh, '>', 'out.v');\n")
     found = check_file(script, tmp_path)
     assert found.skipped_reason == "unsupported"
