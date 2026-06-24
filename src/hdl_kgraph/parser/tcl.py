@@ -1,24 +1,26 @@
-"""Tcl parser backends — SDC/XDC/UPF constraints first, flow scripts second (M10).
+"""Tcl parser backends (M10) — SDC/XDC timing, UPF power intent, flow scripts.
 
-Implementation notes:
+SDC, XDC, UPF, and tool-flow ``.tcl`` are constrained Tcl subsets, so every
+backend here shares one command tokenizer (and the SDC/UPF backends share the
+:class:`_TclConstraintParser` node/ref scaffolding). Tcl is never *evaluated* —
+only literal ``set NAME value`` substitution is attempted (see ROADMAP.md
+"Risks"); unknown commands and malformed input are tolerated, never fatal.
 
-* SDC, XDC, and UPF are constrained Tcl subsets, so all three backends share
-  one command tokenizer and the ``get_ports``/``get_pins``/``get_cells``/
-  ``get_clocks`` object-query parser. Queries resolve to design nodes in
-  pass 2 (exact name 1.0; glob patterns 0.8 unique / 0.6 ambiguous).
-* Phase 1a (SDC/XDC, **implemented**): ``create_clock``/``create_generated_clock``
-  -> CLOCK nodes (virtual and generated clocks supported); ``set_false_path``,
-  ``set_multicycle_path``, ``set_input_delay``/``set_output_delay``,
-  ``set_clock_groups`` -> TIMING_CONSTRAINT nodes with CONSTRAINS edges.
-  ``create_clock`` is authoritative clock evidence: it upgrades M5's 0.4
-  CLOCKED_BY heuristics to 1.0 (see :func:`hdl_kgraph.graph.clocks.apply_sdc_clock_evidence`),
-  and ``set_clock_groups -asynchronous`` / ``set_false_path`` feed the CDC report
-  as declared-safe crossings (see :func:`hdl_kgraph.graph.clocks.cdc_suspects`).
-* Tcl is never *evaluated* — only literal ``set NAME value`` variable
-  substitution is attempted (see ROADMAP.md "Risks"). Unknown commands and
-  malformed input are tolerated: nothing here is a fatal parse error.
-* Phase 1b (UPF, IEEE 1801) and Phase 2 (.tcl flow scripts) remain fail-loud
-  stubs in this milestone.
+* **SDC/XDC** (:class:`SdcParser`): ``create_clock``/``create_generated_clock``
+  -> CLOCK nodes; ``set_false_path``/``set_multicycle_path``/``set_input_delay``/
+  ``set_output_delay``/``set_clock_groups`` -> TIMING_CONSTRAINT nodes with
+  CONSTRAINS edges (``get_*`` object queries resolved in pass 2: exact 1.0, glob
+  0.8/0.6). ``create_clock`` is authoritative clock evidence — it upgrades M5's
+  0.4 CLOCKED_BY heuristic to 1.0 (see
+  :func:`hdl_kgraph.graph.clocks.apply_sdc_clock_evidence`), and
+  ``set_clock_groups -asynchronous`` / ``set_false_path`` feed the CDC report as
+  declared-safe crossings (see :func:`hdl_kgraph.graph.clocks.cdc_suspects`).
+* **UPF** (:class:`UpfParser`): ``create_power_domain`` -> POWER_DOMAIN nodes;
+  ``-elements`` -> CONSTRAINS edges; isolation/retention/level-shifter
+  strategies folded into the domain's attrs.
+* **Flow scripts** (:class:`TclScriptParser`): ``read_*``/``analyze``/
+  ``add_files``/``source`` -> REFERENCES_FILE edges to the file each names,
+  resolved by path in pass 2 (real FILE node, else an unresolved stub).
 """
 
 from __future__ import annotations
@@ -593,9 +595,7 @@ class TclScriptParser(_TclConstraintParser):
     ) -> None:
         """Emit a REFERENCES_FILE ref to *path*, normalized to the build-root keyspace."""
         rel = (
-            path
-            if posixpath.isabs(path)
-            else posixpath.normpath(posixpath.join(script_dir, path))
+            path if posixpath.isabs(path) else posixpath.normpath(posixpath.join(script_dir, path))
         )
         ir.unresolved_refs.append(
             UnresolvedRef(
