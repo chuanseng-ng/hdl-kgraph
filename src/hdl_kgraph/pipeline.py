@@ -98,7 +98,7 @@ from hdl_kgraph.parser.preprocessor import (
 )
 from hdl_kgraph.parser.python import PythonParser
 from hdl_kgraph.parser.systemverilog import SystemVerilogParser
-from hdl_kgraph.parser.tcl import SdcParser
+from hdl_kgraph.parser.tcl import UPF_SUFFIXES, SdcParser, UpfParser
 from hdl_kgraph.parser.vhdl import DEFAULT_LIBRARY, VhdlParser
 from hdl_kgraph.schema import Edge, EdgeKind, Language, Node, NodeKind
 from hdl_kgraph.storage import ir_codec
@@ -337,6 +337,7 @@ _WORKER_C_PARSER: CParser | None = None
 _WORKER_CPP_PARSER: CppParser | None = None
 _WORKER_PYTHON_PARSER: PythonParser | None = None
 _WORKER_SDC_PARSER: SdcParser | None = None
+_WORKER_UPF_PARSER: UpfParser | None = None
 
 
 def _parse_sv_task(relpath: str, text: str, line_map: list[LineOrigin]) -> FileIR:
@@ -386,6 +387,21 @@ def _parse_sdc_task(relpath: str, text: str) -> FileIR:
     if _WORKER_SDC_PARSER is None:
         _WORKER_SDC_PARSER = SdcParser()
     return _WORKER_SDC_PARSER.parse(Path(relpath), text)
+
+
+def _parse_upf_task(relpath: str, text: str) -> FileIR:
+    """Parse one UPF power-intent file (M10 — pool worker entry point)."""
+    global _WORKER_UPF_PARSER
+    if _WORKER_UPF_PARSER is None:
+        _WORKER_UPF_PARSER = UpfParser()
+    return _WORKER_UPF_PARSER.parse(Path(relpath), text)
+
+
+def _parse_tcl_task(relpath: str, text: str) -> FileIR:
+    """Route a TCL-family unit to its parser by suffix (``.upf`` → UPF, else SDC)."""
+    if Path(relpath).suffix in UPF_SUFFIXES:
+        return _parse_upf_task(relpath, text)
+    return _parse_sdc_task(relpath, text)
 
 
 def _effective_jobs(options: BuildOptions, candidates: int, candidate_bytes: int) -> int:
@@ -608,12 +624,17 @@ def _refresh_summaries_and_counts_from_db(store: SqliteStore, report: BuildRepor
     """After a bounded-link scoped write, recompute the whole-design summaries
     out-of-core (M12.5 SQL scans) from the now-current DB and read back the graph
     counts — the bounded path never had the whole graph in memory to do either."""
-    from hdl_kgraph.storage.summaries import clock_summary_sql, uvm_summary_sql
+    from hdl_kgraph.storage.summaries import (
+        clock_summary_sql,
+        power_summary_sql,
+        uvm_summary_sql,
+    )
 
     with store._connect() as conn:
         store._check_version(conn)
         summaries = {
             "clock_domains": json.dumps(clock_summary_sql(conn)),
+            "power_domains": json.dumps(power_summary_sql(conn)),
             "uvm_topology": json.dumps(uvm_summary_sql(conn)),
         }
     store.save_summaries(summaries)
@@ -904,22 +925,22 @@ def _execute(
                         )
                     )
             elif found.language is Language.TCL:
-                # SDC/XDC constraints (M10): no preprocessor; the raw text goes
-                # to the SDC parser, like C/VHDL. ``.tcl``/``.upf`` are not yet
-                # discoverable (still stubs), so every TCL unit is an SDC file.
+                # SDC/XDC constraints and UPF power intent (M10): no preprocessor;
+                # the raw text is routed by suffix (``.upf`` → UPF, else SDC), like
+                # C/VHDL. ``.tcl`` flow scripts are not yet discoverable (stub).
                 text = found.path.read_text(errors="replace")
                 if executor is None:
                     pending.append(
                         _PendingUnit(
                             found=found,
-                            thunk=functools.partial(_parse_sdc_task, found.relpath, text),
+                            thunk=functools.partial(_parse_tcl_task, found.relpath, text),
                         )
                     )
                 else:
                     pending.append(
                         _PendingUnit(
                             found=found,
-                            future=executor.submit(_parse_sdc_task, found.relpath, text),
+                            future=executor.submit(_parse_tcl_task, found.relpath, text),
                         )
                     )
             elif found.language not in (Language.SYSTEMVERILOG, Language.VERILOG):

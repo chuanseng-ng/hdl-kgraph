@@ -198,13 +198,20 @@ def _options(words: list[str]) -> dict[str, str]:
     return opts
 
 
-class SdcParser:
-    """SDC/XDC timing-constraint pass-1 parser (M10 first wedge, issue #25)."""
+class _TclConstraintParser:
+    """Shared pass-1 scaffolding for the SDC and UPF Tcl-subset scanners.
 
-    suffixes = SDC_SUFFIXES
+    Both are constrained Tcl subsets that share one tokenizer, the same
+    id-deduped node emission, and the same CONSTRAINS-ref emission (object
+    queries resolved in pass 2). Subclasses set :attr:`flavor`/``suffixes`` and
+    implement :meth:`_scan` with their own command handlers.
+    """
+
+    #: Recorded on the FILE node's ``attrs["flavor"]`` (``"sdc"`` / ``"upf"``).
+    flavor: str = ""
 
     def parse(self, path: Path, text: str) -> FileIR:
-        """Parse one SDC/XDC file into its per-file IR. Tolerates malformed input."""
+        """Parse one constraint file into its per-file IR. Tolerates malformed input."""
         relpath = path.as_posix()
         ir = FileIR(path=relpath)
         file_id = file_node_id(relpath)
@@ -216,7 +223,7 @@ class SdcParser:
                 qualified_name=relpath,
                 file=relpath,
                 language=Language.TCL,
-                attrs={"flavor": "sdc"},
+                attrs={"flavor": self.flavor},
             )
         )
         try:
@@ -226,19 +233,7 @@ class SdcParser:
         return ir
 
     def _scan(self, ir: FileIR, relpath: str, file_id: str, text: str) -> None:
-        """Walk the file's commands, dispatching clocks/constraints and tracking ``set`` vars."""
-        variables: dict[str, str] = {}
-        used_ids: set[str] = set()
-        for idx, (line, raw_words) in enumerate(_iter_commands(text)):
-            words = _substitute(raw_words, variables)
-            command = words[0]
-            if command == "set" and len(words) >= 3 and not words[1].startswith("-"):
-                variables[words[1]] = words[2]
-            elif command in ("create_clock", "create_generated_clock"):
-                self._clock(ir, relpath, file_id, used_ids, command, words, line)
-            elif command in _CONSTRAINT_COMMANDS:
-                self._constraint(ir, relpath, file_id, used_ids, idx, command, words, line)
-            # everything else (set_units, current_design, ...): ignored, not an error
+        raise NotImplementedError
 
     def _new_node(
         self,
@@ -283,6 +278,28 @@ class SdcParser:
                 attrs={"query": query_kind, "pattern": pattern, **extra},
             )
         )
+
+
+class SdcParser(_TclConstraintParser):
+    """SDC/XDC timing-constraint pass-1 parser (M10 first wedge, issue #25)."""
+
+    suffixes = SDC_SUFFIXES
+    flavor = "sdc"
+
+    def _scan(self, ir: FileIR, relpath: str, file_id: str, text: str) -> None:
+        """Walk the file's commands, dispatching clocks/constraints and tracking ``set`` vars."""
+        variables: dict[str, str] = {}
+        used_ids: set[str] = set()
+        for idx, (line, raw_words) in enumerate(_iter_commands(text)):
+            words = _substitute(raw_words, variables)
+            command = words[0]
+            if command == "set" and len(words) >= 3 and not words[1].startswith("-"):
+                variables[words[1]] = words[2]
+            elif command in ("create_clock", "create_generated_clock"):
+                self._clock(ir, relpath, file_id, used_ids, command, words, line)
+            elif command in _CONSTRAINT_COMMANDS:
+                self._constraint(ir, relpath, file_id, used_ids, idx, command, words, line)
+            # everything else (set_units, current_design, ...): ignored, not an error
 
     def _clock(
         self,
@@ -407,13 +424,98 @@ class SdcParser:
         node.attrs["groups"] = groups
 
 
-class UpfParser:
-    """UPF (IEEE 1801) power-intent pass-1 parser. M10 work item."""
+#: UPF strategy command → the strategy ``kind`` recorded on its power domain.
+_UPF_STRATEGY_COMMANDS = {
+    "set_isolation": "isolation",
+    "set_retention": "retention",
+    "set_level_shifter": "level_shifter",
+}
+
+#: UPF strategy options carried verbatim into the strategy dict (``-`` stripped).
+_UPF_STRATEGY_OPTIONS = (
+    "-applies_to",
+    "-isolation_signal",
+    "-isolation_sense",
+    "-clamp_value",
+    "-retention_supply_set",
+    "-location",
+)
+
+
+class UpfParser(_TclConstraintParser):
+    """UPF (IEEE 1801) power-intent pass-1 parser (M10 second wedge).
+
+    ``create_power_domain`` becomes a POWER_DOMAIN node; its ``-elements`` become
+    CONSTRAINS refs to the named instances (resolved in pass 2 like SDC cells);
+    ``-supply`` and the ``set_isolation``/``set_retention``/``set_level_shifter``
+    strategies that name the domain via ``-domain`` are folded into its attrs.
+    Supply nets/sets and unknown commands are tolerated, never fatal.
+    """
 
     suffixes = UPF_SUFFIXES
+    flavor = "upf"
 
-    def parse(self, path: Path, text: str) -> FileIR:
-        raise UnsupportedBackendError("UPF parsing lands in milestone M10")
+    def _scan(self, ir: FileIR, relpath: str, file_id: str, text: str) -> None:
+        """Two passes: emit POWER_DOMAIN nodes, then attach strategies to their -domain."""
+        variables: dict[str, str] = {}
+        commands: list[tuple[int, list[str]]] = []
+        for line, raw_words in _iter_commands(text):
+            words = _substitute(raw_words, variables)
+            if words[0] == "set" and len(words) >= 3 and not words[1].startswith("-"):
+                variables[words[1]] = words[2]
+            commands.append((line, words))
+        domains: dict[str, Node] = {}
+        used_ids: set[str] = set()
+        for line, words in commands:
+            if words[0] == "create_power_domain" and len(words) >= 2:
+                domains[words[1]] = self._power_domain(ir, relpath, file_id, used_ids, words, line)
+        for _line, words in commands:
+            if words[0] in _UPF_STRATEGY_COMMANDS:
+                self._strategy(domains, words)
+
+    def _power_domain(
+        self,
+        ir: FileIR,
+        relpath: str,
+        file_id: str,
+        used_ids: set[str],
+        words: list[str],
+        line: int,
+    ) -> Node:
+        """Emit a POWER_DOMAIN node and a CONSTRAINS ref per named element instance."""
+        name = words[1]
+        opts = _options(words)
+        elements = _unbrace(opts.get("-elements", ""))
+        attrs: dict[str, object] = {
+            "elements": elements,
+            "supply": opts.get("-supply") or None,
+            "strategies": [],
+        }
+        node = self._new_node(
+            ir, relpath, file_id, used_ids, NodeKind.POWER_DOMAIN, name, line, attrs
+        )
+        for element in elements:
+            # ``.`` is the domain's own scope root (the whole design), not a child.
+            if element and element != ".":
+                self._constrains(ir, node.id, "cells", element, line, role="element")
+        return node
+
+    def _strategy(self, domains: dict[str, Node], words: list[str]) -> None:
+        """Fold an isolation/retention/level-shifter strategy into its ``-domain`` node."""
+        opts = _options(words)
+        domain = domains.get(opts.get("-domain", ""))
+        if domain is None:
+            return  # a strategy naming an unknown domain is dropped, not invented
+        strategy: dict[str, object] = {
+            "kind": _UPF_STRATEGY_COMMANDS[words[0]],
+            "name": words[1] if len(words) > 1 and not words[1].startswith("-") else "",
+        }
+        for opt in _UPF_STRATEGY_OPTIONS:
+            if opt in opts:
+                strategy[opt.lstrip("-")] = opts[opt]
+        strategies = domain.attrs["strategies"]
+        assert isinstance(strategies, list)
+        strategies.append(strategy)
 
 
 class TclScriptParser:

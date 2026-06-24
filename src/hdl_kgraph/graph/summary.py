@@ -17,7 +17,7 @@ from typing import Any
 
 import networkx as nx
 
-from hdl_kgraph.graph import clocks, uvm
+from hdl_kgraph.graph import clocks, power, uvm
 
 
 def jsonable(value: Any) -> Any:
@@ -61,6 +61,16 @@ def clock_summary(graph: nx.MultiDiGraph) -> dict[str, Any]:
     }
 
 
+def power_summary(graph: nx.MultiDiGraph) -> dict[str, Any]:
+    """The ``power_domains`` tool payload: UPF domains, elements, strategies (M10)."""
+    domains = power.power_domains(graph)
+    return {
+        "domain_count": len(domains),
+        "isolated_count": sum(1 for d in domains if d.isolated),
+        "domains": jsonable(domains[:50]),
+    }
+
+
 def uvm_summary(graph: nx.MultiDiGraph) -> dict[str, Any]:
     """The ``uvm_topology`` tool payload: components and TEST_COVERS links."""
     return {
@@ -72,6 +82,7 @@ def uvm_summary(graph: nx.MultiDiGraph) -> dict[str, Any]:
 #: name -> builder, the single registry the build iterates and the reader keys on.
 BUILDERS = {
     "clock_domains": clock_summary,
+    "power_domains": power_summary,
     "uvm_topology": uvm_summary,
 }
 

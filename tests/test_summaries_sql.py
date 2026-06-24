@@ -18,7 +18,12 @@ from hdl_kgraph.graph import clocks, summary
 from hdl_kgraph.pipeline import default_db_path, run_build
 from hdl_kgraph.storage.query import GraphQuery
 from hdl_kgraph.storage.sqlite_store import SqliteStore
-from hdl_kgraph.storage.summaries import clock_summary_sql, reset_summary_sql, uvm_summary_sql
+from hdl_kgraph.storage.summaries import (
+    clock_summary_sql,
+    power_summary_sql,
+    reset_summary_sql,
+    uvm_summary_sql,
+)
 
 # Fixture sets that exercise clocks/CDC, incl. cross-language net aliasing.
 _FIXTURE_SETS = [
@@ -130,3 +135,44 @@ def test_graphquery_falls_back_to_sql_uvm_without_summary(
 
     assert SqliteStore(db).load_summary("uvm_topology") is None  # fallback armed
     assert GraphQuery(db).uvm_topology() == oracle
+
+
+# --- UPF power domains (M10 second wedge) -----------------------------------
+
+
+def _build_upf(tmp_path: Path, fixtures_dir: Path) -> Path:
+    """The counter design plus its UPF, flattened into one build root."""
+    for name in ("top.v", "simple_counter.sv"):
+        (tmp_path / name).write_text((fixtures_dir / name).read_text())
+    (tmp_path / "power.upf").write_text((fixtures_dir / "upf" / "power.upf").read_text())
+    run_build(tmp_path)
+    return default_db_path(tmp_path)
+
+
+def test_sql_power_summary_matches_oracle(tmp_path: Path, fixtures_dir: Path) -> None:
+    """The bounded power-domain subgraph scan equals the NetworkX oracle, byte for byte."""
+    db = _build_upf(tmp_path, fixtures_dir)
+    graph, _f, _m = SqliteStore(db).load()
+    oracle = summary.power_summary(graph)
+    with SqliteStore(db)._connect() as conn:
+        sql = power_summary_sql(conn)
+    assert sql == oracle  # byte-identical: domain_count, isolated_count, domains
+    assert sql["domain_count"] == 2 and sql["isolated_count"] == 1
+
+
+def test_graphquery_falls_back_to_sql_power_without_summary(
+    tmp_path: Path, fixtures_dir: Path
+) -> None:
+    """With the persisted power summary deleted, GraphQuery serves it via the bounded
+    subgraph fallback (no full load) and still equals the oracle."""
+    db = _build_upf(tmp_path, fixtures_dir)
+    graph, _f, _m = SqliteStore(db).load()
+    oracle = summary.power_summary(graph)
+
+    conn = sqlite3.connect(db)
+    conn.execute("DELETE FROM summaries WHERE name = 'power_domains'")
+    conn.commit()
+    conn.close()
+
+    assert SqliteStore(db).load_summary("power_domains") is None  # fallback armed
+    assert GraphQuery(db).power_domains() == oracle

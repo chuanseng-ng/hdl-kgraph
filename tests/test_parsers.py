@@ -27,9 +27,9 @@ ALL_BACKENDS = [
 ]
 
 # Backends not yet implemented, with the milestone their NotImplementedError names.
-# SdcParser is implemented (M10 first wedge, issue #25), so it is no longer here.
+# SdcParser (M10 first wedge, #25) and UpfParser (M10 second wedge) are implemented,
+# so they are no longer here.
 STUB_BACKENDS_AND_MILESTONES = [
-    (UpfParser, "M10"),
     (TclScriptParser, "M10"),
     (PerlParser, "M10"),
     (SlnParser, "M10"),
@@ -80,20 +80,21 @@ def test_c_family_suffixes_route_through_discovery() -> None:
 
 
 def test_sdc_suffixes_route_through_discovery() -> None:
-    """The M10 SDC/XDC backend is implemented, so its suffixes are discoverable."""
+    """The M10 SDC/XDC and UPF backends are implemented, so their suffixes are discoverable."""
     from hdl_kgraph import discovery
 
     assert SdcParser.suffixes <= discovery.SUFFIXES
+    assert UpfParser.suffixes <= discovery.SUFFIXES
 
 
 def test_filelist_routes_unsupported_suffix_to_skip(tmp_path: Path) -> None:
     """A constraints/script file with no parser is skipped, never parsed.
 
-    ``.upf`` is still a fail-loud stub (only SDC/XDC landed in M10's first wedge).
+    ``.tcl`` flow scripts are still a fail-loud stub (UPF landed; flow scripts did not).
     """
     from hdl_kgraph.discovery import check_file
 
-    upf = tmp_path / "power.upf"
-    upf.write_text("create_power_domain PD_TOP -elements {.}\n")
-    found = check_file(upf, tmp_path)
+    script = tmp_path / "flow.tcl"
+    script.write_text("read_verilog top.v\n")
+    found = check_file(script, tmp_path)
     assert found.skipped_reason == "unsupported"

@@ -313,6 +313,7 @@ def test_global_tools_parity(query: GraphQuery, loaded) -> None:
     graph, _ = loaded
     assert query.clock_domains() == srv._clock_domains_impl(graph)
     assert query.uvm_topology() == srv._uvm_impl(graph)
+    assert query.power_domains() == srv._power_domains_impl(graph)
 
 
 def test_no_full_graph_load(query: GraphQuery, loaded, monkeypatch: pytest.MonkeyPatch) -> None:

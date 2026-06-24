@@ -109,6 +109,38 @@ def uvm_summary_sql(conn: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
+def power_summary_sql(conn: sqlite3.Connection) -> dict[str, Any]:
+    """The ``power_domains`` tool payload (UPF domains) from SQLite.
+
+    Byte-identical to :func:`hdl_kgraph.graph.summary.power_summary`, but bounded:
+    the report only touches POWER_DOMAIN nodes and the CONSTRAINS edges binding
+    them to their element instances, so it hydrates just that small subgraph and
+    runs the *same* :func:`hdl_kgraph.graph.power.power_domains` on it (via
+    ``summary.power_summary``), never the whole graph.
+    """
+    graph = nx.MultiDiGraph()
+    for row in conn.execute(
+        f"SELECT {NODE_COLUMNS} FROM nodes WHERE kind = ?", (NodeKind.POWER_DOMAIN.value,)
+    ):
+        add_node_row(graph, row)
+    # Only CONSTRAINS edges out of a power domain (SDC clock/timing constraints
+    # share the edge kind) plus their instance endpoints.
+    for row in conn.execute(
+        f"SELECT {EDGE_COLUMNS} FROM edges WHERE kind = ? "
+        "AND src IN (SELECT id FROM nodes WHERE kind = ?)",
+        (EdgeKind.CONSTRAINS.value, NodeKind.POWER_DOMAIN.value),
+    ):
+        add_edge_row(graph, row)
+    missing = {n for n in graph.nodes if "kind" not in graph.nodes[n]}
+    for chunk in _chunks(missing):
+        placeholders = ", ".join("?" for _ in chunk)
+        for row in conn.execute(
+            f"SELECT {NODE_COLUMNS} FROM nodes WHERE id IN ({placeholders})", chunk
+        ):
+            add_node_row(graph, row)
+    return summary.power_summary(graph)
+
+
 def test_covers_sql(conn: sqlite3.Connection) -> list[Edge]:
     """Re-derive the whole TEST_COVERS edge set out-of-core, byte-identically.
 

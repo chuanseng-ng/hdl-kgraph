@@ -81,12 +81,28 @@ def _uvm_counts(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _analyses(graph: nx.MultiDiGraph, clock_payload: str | None, uvm_payload: str | None) -> dict:
-    """Clock/CDC/UVM analysis counts. Prefers the persisted summaries (bounded read);
-    falls back to computing them from the loaded graph. Either way: counts only."""
+def _power_counts(payload: dict[str, Any]) -> dict[str, Any]:
+    """Strip the power-domain summary to counts (drop domain/element *names*)."""
+    return {
+        "power": {
+            "domain_count": payload.get("domain_count", 0),
+            "isolated_count": payload.get("isolated_count", 0),
+        }
+    }
+
+
+def _analyses(
+    graph: nx.MultiDiGraph,
+    clock_payload: str | None,
+    uvm_payload: str | None,
+    power_payload: str | None = None,
+) -> dict:
+    """Clock/CDC/UVM/power analysis counts. Prefers the persisted summaries (bounded
+    read); falls back to computing them from the loaded graph. Either way: counts only."""
     clock = json.loads(clock_payload) if clock_payload else summary.clock_summary(graph)
     uvm = json.loads(uvm_payload) if uvm_payload else summary.uvm_summary(graph)
-    return {**_clock_counts(clock), **_uvm_counts(uvm)}
+    power = json.loads(power_payload) if power_payload else summary.power_summary(graph)
+    return {**_clock_counts(clock), **_uvm_counts(uvm), **_power_counts(power)}
 
 
 def _metrics(graph: nx.MultiDiGraph, top_n: int = 5) -> dict[str, Any]:
@@ -111,6 +127,7 @@ def build_review_digest(
     db_bytes: int | None = None,
     clock_summary_payload: str | None = None,
     uvm_summary_payload: str | None = None,
+    power_summary_payload: str | None = None,
     with_metrics: bool = False,
 ) -> dict[str, Any]:
     """Assemble the content-free review digest. Pure (no I/O); the CLI supplies the
@@ -146,7 +163,9 @@ def build_review_digest(
             "unresolved_stub_ratio": round(unresolved / node_count, 6) if node_count else 0.0,
             "edge_confidence_distribution": dict(sorted(edge_conf.items(), reverse=True)),
         },
-        "analyses": _analyses(graph, clock_summary_payload, uvm_summary_payload),
+        "analyses": _analyses(
+            graph, clock_summary_payload, uvm_summary_payload, power_summary_payload
+        ),
         "timings_s": (
             {k: build_stats[k] for k in build_stats if k.endswith("_s")} if build_stats else None
         ),

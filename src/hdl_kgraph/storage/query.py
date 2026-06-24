@@ -433,6 +433,25 @@ class GraphQuery:
             self._store._check_version(conn)
             return summaries.uvm_summary_sql(conn)
 
+    def power_domains(self) -> dict[str, Any]:
+        """The ``power_domains`` payload: the persisted summary when present, else a
+        **bounded subgraph scan** (only POWER_DOMAIN nodes + their CONSTRAINS edges).
+
+        Like clock/UVM, the UPF power-domain report is whole-design but bounded by
+        the small power-domain subgraph, so
+        :func:`hdl_kgraph.storage.summaries.power_summary_sql` serves the
+        missing-summary fallback out-of-core (byte-identical to the NetworkX path)."""
+        import json
+
+        from hdl_kgraph.storage import summaries
+
+        payload = self._store.load_summary("power_domains")
+        if payload is not None:
+            return dict(json.loads(payload))
+        with self._store._connect() as conn:
+            self._store._check_version(conn)
+            return summaries.power_summary_sql(conn)
+
     def qualified_names(self, ids: list[str]) -> dict[str, str]:
         """``node id -> qualified_name`` for *ids*, bounded (indexed PK lookup).
 

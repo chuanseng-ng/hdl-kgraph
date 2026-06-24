@@ -23,6 +23,9 @@
 - **SDC/XDC timing constraints (M10):** `create_clock` → `CLOCK` nodes and
   authoritative clock evidence; `set_*_path`/`set_*_delay`/`set_clock_groups` →
   `TIMING_CONSTRAINT` nodes; object queries → `CONSTRAINS` edges (see below)
+- **UPF power intent (M10):** `create_power_domain` → `POWER_DOMAIN` nodes; its
+  `-elements` → `CONSTRAINS` edges; isolation/retention strategies in `attrs`
+  (see below)
 
 ### C/C++ DPI-C linking
 
@@ -87,8 +90,27 @@ Two analyses consume this (the M5 synergy):
   and reports a `cdc_suppressed_count`.
 
 Because both are cross-file/design-wide, `update` re-links an SDC-bearing
-design fully (still re-parsing only changed files), like cocotb/VHDL. UPF, Tcl
-flow scripts, Perl, and SLN remain unimplemented (fail-loud stubs).
+design fully (still re-parsing only changed files), like cocotb/VHDL.
+
+### UPF power intent
+
+`.upf` files are scanned by the same Tcl-subset parser as SDC (they share one
+base; UPF is also never evaluated, only literal `set` substitution).
+`create_power_domain` becomes a `POWER_DOMAIN` node (`language=tcl`); its
+`-elements` resolve to the design's instances via `CONSTRAINS` edges — reusing
+the SDC `cells` query, so an exact unique match is 1.0 and a glob is 0.8/0.6,
+and an element the design lacks is **skipped, not stubbed**. The `.` element
+(the design root) is recorded in `attrs` but draws no edge. The `-supply` and
+the `set_isolation`/`set_retention`/`set_level_shifter` strategies that name the
+domain via `-domain` are folded into the domain's `attrs` (each strategy keeps
+its `applies_to`/`isolation_signal`/`clamp_value`/… options).
+
+The **power-domain report** (`power_domains` query / MCP tool, a persisted
+summary with an out-of-core SQL fallback, and an `analyze` digest line) lists
+each domain with its resolved element instances, its strategies, and whether it
+is isolated — the power-intent analogue of the clock-domain report. Like SDC,
+`update` re-links a UPF-bearing design fully. Tcl flow scripts, Perl, and SLN
+remain unimplemented (fail-loud stubs).
 
 ### Not extracted yet
 

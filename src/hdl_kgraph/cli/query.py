@@ -269,6 +269,36 @@ def uvm_cmd(db_path: Path | None, as_json: bool) -> None:
             click.echo(f"    {cover['test']} covers {cover['dut']}")
 
 
+@query.command("power-domains")
+@_db_option
+@_json_option
+def power_domains_cmd(db_path: Path | None, as_json: bool) -> None:
+    """Report UPF power domains: elements and isolation/retention strategies.
+
+    Each ``create_power_domain`` lists its resolved element instances and the
+    strategies that name it. Answered from the bounded power-domain subgraph
+    (never a full graph load).
+    """
+    try:
+        payload = _query(db_path).power_domains()
+    except SchemaVersionError as exc:
+        raise CliError(str(exc)) from exc
+    domains = payload["domains"]
+    if as_json:
+        _emit_json(payload)
+        return
+    if not domains:
+        click.echo("no UPF power domains found")
+        return
+    for d in domains:
+        flags = " [isolated]" if any(s["kind"] == "isolation" for s in d["strategies"]) else ""
+        click.echo(f"{d['name']}{flags}  {d['file']}:{d['line']}")
+        for element in d["elements"]:
+            click.echo(f"    element {element}")
+        for strategy in d["strategies"]:
+            click.echo(f"    {strategy['kind']} {strategy.get('name', '')}".rstrip())
+
+
 @query.command("unresolved")
 @_db_option
 @_json_option

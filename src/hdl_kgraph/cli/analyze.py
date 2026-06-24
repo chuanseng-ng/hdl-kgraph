@@ -386,6 +386,7 @@ def review(db_path: Path | None, as_json: bool, with_metrics: bool) -> None:
         graph, files, meta = store.load()
         clock_payload = store.load_summary("clock_domains")
         uvm_payload = store.load_summary("uvm_topology")
+        power_payload = store.load_summary("power_domains")
     except SchemaVersionError as exc:
         raise CliError(str(exc)) from exc
     digest = build_review_digest(
@@ -395,6 +396,7 @@ def review(db_path: Path | None, as_json: bool, with_metrics: bool) -> None:
         db_bytes=db.stat().st_size if db.exists() else None,
         clock_summary_payload=clock_payload,
         uvm_summary_payload=uvm_payload,
+        power_summary_payload=power_payload,
         with_metrics=with_metrics,
     )
     if as_json:
@@ -414,6 +416,9 @@ def review(db_path: Path | None, as_json: bool, with_metrics: bool) -> None:
     if a["cdc"].get("suppressed_count"):
         cdc_line += f" ({a['cdc']['suppressed_count']} SDC-suppressed)"
     click.echo(cdc_line)
+    if a.get("power", {}).get("domain_count"):
+        p = a["power"]
+        click.echo(f"  power domains {p['domain_count']}  isolated {p['isolated_count']}")
     timings = digest["timings_s"]
     if timings:
         click.echo("  timings(s): " + "  ".join(f"{k[:-2]} {v:.2f}" for k, v in timings.items()))
