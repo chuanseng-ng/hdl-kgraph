@@ -89,6 +89,7 @@ from hdl_kgraph.parser.filelist import (
     flattened_warnings,
     parse_filelist,
 )
+from hdl_kgraph.parser.perl import PerlParser
 from hdl_kgraph.parser.preprocessor import (
     LineOrigin,
     MacroTable,
@@ -345,6 +346,7 @@ _WORKER_PYTHON_PARSER: PythonParser | None = None
 _WORKER_SDC_PARSER: SdcParser | None = None
 _WORKER_UPF_PARSER: UpfParser | None = None
 _WORKER_TCL_SCRIPT_PARSER: TclScriptParser | None = None
+_WORKER_PERL_PARSER: PerlParser | None = None
 
 
 def _parse_sv_task(relpath: str, text: str, line_map: list[LineOrigin]) -> FileIR:
@@ -426,6 +428,14 @@ def _parse_tcl_task(relpath: str, text: str) -> FileIR:
     return _parse_sdc_task(relpath, text)
 
 
+def _parse_perl_task(relpath: str, text: str) -> FileIR:
+    """Parse one Perl codegen script (M10 — pool worker entry point)."""
+    global _WORKER_PERL_PARSER
+    if _WORKER_PERL_PARSER is None:
+        _WORKER_PERL_PARSER = PerlParser()
+    return _WORKER_PERL_PARSER.parse(Path(relpath), text)
+
+
 def _effective_jobs(options: BuildOptions, candidates: int, candidate_bytes: int) -> int:
     """Parse workers for this run; explicit ``--jobs`` wins over the auto heuristic."""
     if options.jobs is not None:
@@ -484,8 +494,12 @@ def _link_pass2(
     has_cocotb = any(
         f.language is Language.PYTHON and f.skipped_reason is None for f in (discovered or [])
     )
+    # SDC/UPF/Tcl-flow (TCL) and Perl scripts emit cross-file REFERENCES_FILE/
+    # GENERATED_FROM refs (and SDC upgrades CLOCKED_BY design-wide), so any of
+    # them forces a full re-link — like cocotb/VHDL.
     has_sdc = any(
-        f.language is Language.TCL and f.skipped_reason is None for f in (discovered or [])
+        f.language in (Language.TCL, Language.PERL) and f.skipped_reason is None
+        for f in (discovered or [])
     )
     reason = incremental_link_safe(options.enrich, has_vhdl, has_binds, has_cocotb, has_sdc)
     if reason is None:
@@ -789,7 +803,13 @@ def _execute(
             units[found.relpath] = StoredUnit(
                 ir=ir_codec.ir_to_json(ir), macro_events="[]", included="[]"
             )
-        elif found.language in (Language.C, Language.CPP, Language.PYTHON, Language.TCL):
+        elif found.language in (
+            Language.C,
+            Language.CPP,
+            Language.PYTHON,
+            Language.TCL,
+            Language.PERL,
+        ):
             # C/C++ (DPI-C), Python (cocotb), and SDC/XDC (M10) have no
             # preprocessor pass; store the IR directly, like VHDL.
             units[found.relpath] = StoredUnit(
@@ -963,6 +983,24 @@ def _execute(
                         _PendingUnit(
                             found=found,
                             future=executor.submit(_parse_tcl_task, found.relpath, text),
+                        )
+                    )
+            elif found.language is Language.PERL:
+                # Perl codegen scripts (M10): no preprocessor; the raw text goes
+                # to the regex-scan PerlParser, like C/VHDL/TCL.
+                text = found.path.read_text(errors="replace")
+                if executor is None:
+                    pending.append(
+                        _PendingUnit(
+                            found=found,
+                            thunk=functools.partial(_parse_perl_task, found.relpath, text),
+                        )
+                    )
+                else:
+                    pending.append(
+                        _PendingUnit(
+                            found=found,
+                            future=executor.submit(_parse_perl_task, found.relpath, text),
                         )
                     )
             elif found.language not in (Language.SYSTEMVERILOG, Language.VERILOG):
@@ -1335,7 +1373,9 @@ def run_update(
     has_cocotb = any(f.language is Language.PYTHON and f.skipped_reason is None for f in discovered)
     # SDC (M10) forces a full re-link for the same reason as cocotb (cross-file
     # CONSTRAINS resolution + design-wide CLOCKED_BY upgrade).
-    has_sdc = any(f.language is Language.TCL and f.skipped_reason is None for f in discovered)
+    has_sdc = any(
+        f.language in (Language.TCL, Language.PERL) and f.skipped_reason is None for f in discovered
+    )
     if (
         options.bounded_link
         and not options.enrich
