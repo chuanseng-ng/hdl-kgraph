@@ -27,10 +27,9 @@ ALL_BACKENDS = [
 ]
 
 # Backends not yet implemented, with the milestone their NotImplementedError names.
-# The M10 Tcl-subset wedges are implemented (SdcParser #25, UpfParser, TclScriptParser),
-# so they are no longer here.
+# The Tcl-subset wedges (SdcParser #25, UpfParser, TclScriptParser) and PerlParser
+# are implemented, so only SLN remains here.
 STUB_BACKENDS_AND_MILESTONES = [
-    (PerlParser, "M10"),
     (SlnParser, "M10"),
 ]
 
@@ -79,22 +78,23 @@ def test_c_family_suffixes_route_through_discovery() -> None:
 
 
 def test_sdc_suffixes_route_through_discovery() -> None:
-    """The M10 Tcl-subset backends are implemented, so their suffixes are discoverable."""
+    """The implemented M10 backends (Tcl-subset + Perl) have discoverable suffixes."""
     from hdl_kgraph import discovery
 
     assert SdcParser.suffixes <= discovery.SUFFIXES
     assert UpfParser.suffixes <= discovery.SUFFIXES
     assert TclScriptParser.suffixes <= discovery.SUFFIXES
+    assert PerlParser.suffixes <= discovery.SUFFIXES
 
 
 def test_filelist_routes_unsupported_suffix_to_skip(tmp_path: Path) -> None:
     """A source file with no parser yet is skipped, never parsed.
 
-    ``.pl`` Perl codegen scripts are still a fail-loud stub (the Tcl wedges landed).
+    ``.sln`` portable-stimulus scenarios are still a fail-loud stub (the last M10 wedge).
     """
     from hdl_kgraph.discovery import check_file
 
-    script = tmp_path / "gen.pl"
-    script.write_text("open(my $fh, '>', 'out.v');\n")
-    found = check_file(script, tmp_path)
+    scenario = tmp_path / "scn.sln"
+    scenario.write_text("scenario s {}\n")
+    found = check_file(scenario, tmp_path)
     assert found.skipped_reason == "unsupported"

@@ -11,6 +11,19 @@ the major version, and schema changes ship with a migration.
 
 ### Added
 
+- **Perl codegen-lineage scanning (M10 — fourth wedge).** `.pl`/`.pm` scripts
+  are scanned by a line/regex pass (scope is legacy codegen, not Perl
+  semantics): a parenthesized `open(...)` of an HDL path becomes a
+  `REFERENCES_FILE` edge with `attrs["mode"]` = `read`/`write` (3-arg and 2-arg
+  forms handled, trailing `or die` ignored, interpolated `"$dir/x.v"` paths
+  skipped). A script with a Verilog body (`module`…`endmodule`) is flagged a
+  generator, and every HDL file it writes gets a `GENERATED_FROM` edge **from the
+  generated file back to the script**. Resolution reuses the flow-script file
+  binding (real `FILE` node when in the build, else a non-shadowing
+  `unresolved:file:` stub), so `_resolve_file_ref` now also handles the reversed
+  `GENERATED_FROM` direction. Schema unchanged (`REFERENCES_FILE`,
+  `GENERATED_FROM`, and the `PERL` language already existed). SLN remains a
+  fail-loud stub — the last M10 wedge. See docs/extraction.md.
 - **Tcl flow-script scanning (M10 — third wedge).** `.tcl` flow scripts are
   parsed by the shared Tcl-subset scanner (no evaluation; only literal `set`
   substitution): the file-reading commands `read_verilog`/`read_systemverilog`/

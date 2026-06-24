@@ -29,6 +29,9 @@
 - **Tcl flow scripts (M10):** `read_verilog`/`read_vhdl`/`read_sdc`/`analyze`/
   `add_files`/`source` → `REFERENCES_FILE` edges to the files they name
   (see below)
+- **Perl codegen scripts (M10):** `open()` of an HDL path → `REFERENCES_FILE`
+  (read/write); a Verilog-emitting generator → `GENERATED_FROM` from the file it
+  writes (see below)
 
 ### C/C++ DPI-C linking
 
@@ -131,8 +134,25 @@ file that is part of the build binds to its real `FILE` node; one outside the
 analyzed set (a generated or out-of-tree source, or a missing `source`d helper)
 binds to an `unresolved:file:` stub — a distinct id, so it never shadows a real
 `FILE` node and never raises a dangling-endpoint warning. Like the other Tcl
-wedges, `update` re-links a flow-script-bearing design fully. Perl and SLN
-remain unimplemented (fail-loud stubs).
+wedges, `update` re-links a flow-script-bearing design fully.
+
+### Perl codegen scripts
+
+`.pl`/`.pm` scripts are scanned by a line/regex pass (not a Perl parser; scope
+is legacy codegen, not Perl semantics). A parenthesized `open(...)` whose path
+literal ends in an HDL suffix becomes a `REFERENCES_FILE` edge to that file,
+`attrs["mode"]` = `read`/`write` from the open mode (`<` vs `>`/`>>`); both the
+3-arg `open($fh, '>', 'x.v')` and 2-arg `open(FH, '>x.v')` forms are handled,
+and a trailing `or die "..."` is ignored. An interpolated path (`"$dir/x.v"`)
+is skipped — there is no evaluation.
+
+A script containing a Verilog body (`module`…`endmodule`, typically a heredoc)
+is flagged a generator (`attrs["generator"]`), and every HDL file it *writes*
+gets a `GENERATED_FROM` edge **from the generated file back to the script** (the
+same edge M9 reserves for Chisel/Amaranth output). Resolution reuses the
+flow-script file binding: the generated/referenced path binds to its real
+`FILE` node when in the build, else to a non-shadowing `unresolved:file:` stub.
+SLN remains unimplemented (a fail-loud stub).
 
 ### Not extracted yet
 

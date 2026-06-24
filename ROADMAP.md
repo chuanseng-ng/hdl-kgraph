@@ -551,11 +551,15 @@ scenario coverage.
       `INCLUDES`); a new pass-2 `_resolve_file_ref` binds each path to its real
       `FILE` node or a non-shadowing `unresolved:file:` stub. See
       docs/extraction.md**
-- [ ] Perl legacy scripting: detect HDL files a script reads/writes/generates
+- [x] Perl legacy scripting: detect HDL files a script reads/writes/generates
       (`open()` of `.v`/`.sv` paths, heredoc-embedded Verilog) →
       `REFERENCES_FILE` + `GENERATED_FROM` lineage for generated RTL;
-      expectations modest — codegen patterns, not Perl semantics
-      (tree-sitter-perl exists if needed)
+      expectations modest — codegen patterns, not Perl semantics — **`PerlParser`
+      is a line/regex scan: parenthesized `open()` of an HDL path → REFERENCES_FILE
+      (read/write); a `module`…`endmodule` body flags the script a generator, and
+      each written HDL file → GENERATED_FROM (reusing the flow-script
+      `_resolve_file_ref`, now handling the reversed generated→generator
+      direction). See docs/extraction.md**
 - [ ] SLN (Cadence Perspec System Level Notation) portable stimulus:
       actions/scenarios/resources → `SCENARIO`/`ACTION` nodes; scenario → DUT
       linkage via `TEST_COVERS`; Accellera PSS (`.pss`), the open sibling format,

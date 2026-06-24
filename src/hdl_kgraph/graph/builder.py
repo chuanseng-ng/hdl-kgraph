@@ -174,6 +174,7 @@ _PASS2_EDGE_KINDS = frozenset(
         EdgeKind.FOREIGN_BINDS,
         EdgeKind.CONSTRAINS,
         EdgeKind.REFERENCES_FILE,
+        EdgeKind.GENERATED_FROM,
     }
 )
 #: Edge kinds that come directly from a unit's IR, not from resolution.
@@ -866,21 +867,27 @@ class _Linker:
             self._emit(ref, target, confidence)
 
     def _resolve_file_ref(self, ref: UnresolvedRef) -> None:
-        """Resolve a flow-script file reference (M10) to a FILE node by relpath.
+        """Resolve a script file reference (M10) to a FILE node by relpath.
 
         ``target_name`` is a build-root-relative POSIX path. It binds to the
         existing ``file:`` node when that file is part of the build; otherwise
         the script references a file outside the analyzed set (a generated or
         out-of-tree source), which materializes as an ``unresolved:file:`` stub
         — a distinct id, so it never shadows a real FILE node.
+
+        ``REFERENCES_FILE`` points script → file. ``GENERATED_FROM`` points the
+        *generated* file → its generator (the script), so it is emitted reversed.
         """
         rel = ref.target_name
         file_id = file_node_id(rel)
-        if file_id in self.node_obj:
-            self._emit(ref, file_id, CONFIDENCE_RESOLVED)
+        if file_id not in self.node_obj:
+            file_id = self._ensure_stub(NodeKind.FILE, rel, rel.rsplit("/", 1)[-1])
+        if ref.edge_kind is EdgeKind.GENERATED_FROM:
+            attrs = {k: v for k, v in ref.attrs.items() if v is not None}
+            attrs["line_span"] = ref.line_span
+            self._emit_edge(file_id, ref.src_id, ref.edge_kind, CONFIDENCE_RESOLVED, attrs)
         else:
-            stub = self._ensure_stub(NodeKind.FILE, rel, rel.rsplit("/", 1)[-1])
-            self._emit(ref, stub, CONFIDENCE_RESOLVED)
+            self._emit(ref, file_id, CONFIDENCE_RESOLVED)
 
     def _derive_port_dataflow(
         self, ref: UnresolvedRef, port: Node, confidence: float, actual_text: str
