@@ -72,7 +72,7 @@ M5 — dataflow, clocks, and verification refs:
 from __future__ import annotations
 
 import fnmatch
-import posixpath
+import os
 import re
 from collections import defaultdict
 from collections.abc import Mapping
@@ -912,8 +912,12 @@ class _Linker:
         FILE node (whose id is ``file:{relpath}``); an out-of-tree absolute (or
         when no root is known) is returned verbatim, so it still resolves to an
         ``unresolved:file:`` stub — the prior behavior.
+
+        Absoluteness is judged with the platform-native ``os.path.isabs`` so a
+        Windows drive path (``D:/proj/top.v``) — which ``posixpath`` does not
+        treat as absolute — is canonicalized too, not just POSIX ``/...`` paths.
         """
-        if self.root is None or not posixpath.isabs(target):
+        if self.root is None or not os.path.isabs(target):
             return target
         path = Path(target)
         if within_root(path, self.root):
