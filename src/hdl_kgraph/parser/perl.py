@@ -16,9 +16,10 @@ Implementation notes:
   "Risks"): only literal quoted paths in parenthesized ``open(...)`` calls are
   recognized — an interpolated path (``"$dir/x.v"``) is left for a later pass.
 * Paths are normalized into the build-root relpath keyspace relative to the
-  script. An *absolute* path is kept verbatim and so resolves to an unresolved
-  stub even if the file is in the build — canonicalizing absolute refs needs the
-  build root in the linker (shared with the Tcl flow wedge); tracked separately.
+  script. An *absolute* path is kept verbatim here and canonicalized onto that
+  keyspace by the linker when it falls inside the build root (#164); an
+  out-of-tree absolute still resolves to an unresolved stub. Only a
+  ``$var``-interpolated path remains unresolved (no literal to canonicalize).
 """
 
 from __future__ import annotations

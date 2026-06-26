@@ -72,10 +72,12 @@ M5 — dataflow, clocks, and verification refs:
 from __future__ import annotations
 
 import fnmatch
+import posixpath
 import re
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import networkx as nx
@@ -83,7 +85,7 @@ import networkx as nx
 from hdl_kgraph.graph.clocks import apply_sdc_clock_evidence
 from hdl_kgraph.graph.uvm import derive_test_covers
 from hdl_kgraph.ids import file_node_id, parse_node_id, stub_node_id
-from hdl_kgraph.parser.base import FileIR, UnresolvedRef
+from hdl_kgraph.parser.base import FileIR, UnresolvedRef, within_root
 from hdl_kgraph.schema import (
     CONFIDENCE_AMBIGUOUS,
     CONFIDENCE_RESOLVED,
@@ -353,7 +355,12 @@ def add_or_upgrade_edge(g: nx.MultiDiGraph, edge: Edge, *, upgrade: bool = True)
 
 
 class _Linker:
-    def __init__(self, file_irs: list[FileIR]) -> None:
+    def __init__(self, file_irs: list[FileIR], root: Path | None = None) -> None:
+        # The build root (the dir relpaths are taken against), so a script's
+        # in-tree *absolute* file-ref can be canonicalized onto the relpath
+        # keyspace before lookup (#164). None preserves the legacy behavior:
+        # an absolute target stays verbatim and resolves to an out-of-tree stub.
+        self.root: Path | None = root
         self.graph = nx.MultiDiGraph()
         # (kind, name) -> definition node ids, across all files
         self.definitions: defaultdict[tuple[NodeKind, str], list[str]] = defaultdict(list)
@@ -897,19 +904,37 @@ class _Linker:
         for target in candidates:
             self._emit(ref, target, confidence)
 
+    def _canonical_file_target(self, target: str) -> str:
+        """Map a file-ref target onto the build-root relpath keyspace (#164).
+
+        Relative targets are already normalized by the parser. An *absolute*
+        target inside the build root is relativized so it binds to the real
+        FILE node (whose id is ``file:{relpath}``); an out-of-tree absolute (or
+        when no root is known) is returned verbatim, so it still resolves to an
+        ``unresolved:file:`` stub — the prior behavior.
+        """
+        if self.root is None or not posixpath.isabs(target):
+            return target
+        path = Path(target)
+        if within_root(path, self.root):
+            return path.resolve().relative_to(self.root.resolve()).as_posix()
+        return target
+
     def _resolve_file_ref(self, ref: UnresolvedRef) -> None:
         """Resolve a script file reference (M10) to a FILE node by relpath.
 
-        ``target_name`` is a build-root-relative POSIX path. It binds to the
-        existing ``file:`` node when that file is part of the build; otherwise
-        the script references a file outside the analyzed set (a generated or
-        out-of-tree source), which materializes as an ``unresolved:file:`` stub
-        — a distinct id, so it never shadows a real FILE node.
+        ``target_name`` is normalized to the build-root POSIX relpath keyspace
+        (an in-tree absolute path is canonicalized by
+        :meth:`_canonical_file_target`, #164). It binds to the existing
+        ``file:`` node when that file is part of the build; otherwise the script
+        references a file outside the analyzed set (a generated or out-of-tree
+        source), which materializes as an ``unresolved:file:`` stub — a distinct
+        id, so it never shadows a real FILE node.
 
         ``REFERENCES_FILE`` points script → file. ``GENERATED_FROM`` points the
         *generated* file → its generator (the script), so it is emitted reversed.
         """
-        rel = ref.target_name
+        rel = self._canonical_file_target(ref.target_name)
         file_id = file_node_id(rel)
         if file_id not in self.node_obj:
             file_id = self._ensure_stub(NodeKind.FILE, rel, rel.rsplit("/", 1)[-1])
@@ -1094,16 +1119,17 @@ class _Linker:
 
 
 def link_graph(
-    file_irs: list[FileIR], warnings: list[str] | None = None
+    file_irs: list[FileIR], warnings: list[str] | None = None, root: Path | None = None
 ) -> tuple[nx.MultiDiGraph, list[RefRecord]]:
     """Link per-file IRs into the global knowledge graph (pass 2).
 
     Returns the graph plus the per-unit pass-2 reference records (for the
     persisted ``ref_index``). *warnings* (when given) collects diagnostics for
     edge endpoints that no parser emitted as a node — each is materialized as
-    an unresolved stub so the graph never carries attribute-less nodes.
+    an unresolved stub so the graph never carries attribute-less nodes. *root*
+    is the build root, used to canonicalize in-tree absolute file-refs (#164).
     """
-    linker = _Linker(file_irs)
+    linker = _Linker(file_irs, root)
     linker.link(file_irs)
     for edge in derive_test_covers(linker.graph):
         # The guarded path, so a derived edge can never reintroduce the
@@ -1118,13 +1144,15 @@ def link_graph(
     return linker.graph, linker.ref_records
 
 
-def build_graph(file_irs: list[FileIR], warnings: list[str] | None = None) -> nx.MultiDiGraph:
+def build_graph(
+    file_irs: list[FileIR], warnings: list[str] | None = None, root: Path | None = None
+) -> nx.MultiDiGraph:
     """Link per-file IRs into the global knowledge graph (pass 2).
 
     Thin wrapper over :func:`link_graph` that discards the ref records, for
     callers that only need the graph.
     """
-    return link_graph(file_irs, warnings)[0]
+    return link_graph(file_irs, warnings, root)[0]
 
 
 def _node_from_data(node_id: str, data: Mapping[str, Any]) -> Node:
@@ -1147,6 +1175,7 @@ def link_incremental(
     dirty_files: set[str],
     affected_srcs: set[str],
     warnings: list[str] | None = None,
+    root: Path | None = None,
 ) -> tuple[nx.MultiDiGraph, list[RefRecord]]:
     """Pass-2 link that re-resolves only the dirty closure + its neighborhood (#64).
 
@@ -1173,7 +1202,7 @@ def link_incremental(
     :func:`link_graph` for cases this does not model (VHDL, binds/config,
     enrichment).
     """
-    linker = _Linker([])  # initialize the resolution indexes against an empty graph
+    linker = _Linker([], root)  # initialize the resolution indexes against an empty graph
     linker.graph = prior_graph  # ...then bind and mutate the prior graph in place
 
     # 1. Drop the changed surface: dirty/removed-file nodes (with their edges),
