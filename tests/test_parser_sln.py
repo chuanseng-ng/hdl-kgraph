@@ -56,6 +56,19 @@ def test_sln_parser_tolerates_garbage() -> None:
     assert ir.parse_error_count == 0  # malformed input is tolerated, never fatal
 
 
+def test_sln_relational_gt_is_not_an_invocation() -> None:
+    """A bare ``>`` inside a constraint is the relational operator, not a "do".
+
+    Only ``>`` at statement position (body start, or after ``;``/``}``) invokes;
+    ``.field > limit`` must not record ``limit`` as an invocation or emit a ref.
+    """
+    src = "<'\nextend DVE {\n  action a {\n    >real_call { .credits > spare; };\n  };\n};\n'>"
+    ir = SlnParser().parse(Path("rel.sln"), src)
+    acts = actions(ir)
+    assert acts["a"].attrs["invokes"] == ["real_call"]  # the real do, and only it
+    assert {r.target_name for r in ir.unresolved_refs} == {"real_call"}  # no `spare` ref
+
+
 # --------------------------------------------------------------------------- #
 # Pass 2: INVOKES + TEST_COVERS resolution (the ROADMAP acceptance), end-to-end.
 # --------------------------------------------------------------------------- #

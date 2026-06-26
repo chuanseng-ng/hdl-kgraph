@@ -844,12 +844,19 @@ class _Linker:
                     self._emit(ref, action_id, CONFIDENCE_RESOLVED)
             return
         # TEST_COVERS: a design module/entity (reuse _modules_named) or instance.
-        targets = self._modules_named(name) + list(
-            self.definitions.get((NodeKind.INSTANCE, name), ())
-        )
-        for target in targets:
-            if not self.node_obj[target].attrs.get("unresolved"):
-                self._emit(ref, target, CONFIDENCE_RESOLVED)
+        # Cross-file name match, so score it by the normal contract (unique 0.8,
+        # ambiguous 0.6) rather than forcing full confidence.
+        targets = [
+            t
+            for t in self._modules_named(name)
+            + list(self.definitions.get((NodeKind.INSTANCE, name), ()))
+            if not self.node_obj[t].attrs.get("unresolved")
+        ]
+        if not targets:
+            return
+        scored, confidence = self._score(targets, ref.src_id)
+        for target in scored:
+            self._emit(ref, target, confidence)
 
     # -- SDC/XDC constraints (M10): resolve get_ports/pins/cells/clocks ----------
 

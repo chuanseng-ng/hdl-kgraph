@@ -38,8 +38,9 @@ _MAX_CONSTRAINTS = 32
 
 _BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 _LINE_COMMENT_RE = re.compile(r"(?://|--)[^\n]*")
-#: Meaningful tokens; multi-char operators precede ``>`` so ``>=`` is not an invoke.
-_TOKEN_RE = re.compile(r"<=|>=|==|!=|[{}>]|[A-Za-z_]\w*")
+#: Meaningful tokens; multi-char operators precede ``>`` so ``>=`` is not an
+#: invoke, and ``;`` is kept so ``>`` after a terminator reads as a "do".
+_TOKEN_RE = re.compile(r"<=|>=|==|!=|[{};>]|[A-Za-z_]\w*")
 #: A ``.dotted.path == value`` constraint (no nested braces/terminator).
 _CONSTRAINT_RE = re.compile(r"\.[\w.\[\]]+\s*==\s*[^;{}]+")
 
@@ -97,6 +98,7 @@ class SlnParser:
         spans: list[tuple[Node, int, int]] = []  # (node, open_pos, close_pos) for constraints
         open_pos: dict[int, int] = {}  # id(node) -> body open offset
         expect: str | None = None  # 'action' | 'extend' | 'invoke'
+        prev: str | None = None  # last significant token, for '>' disambiguation
 
         for match in _TOKEN_RE.finditer(stripped):
             tok = match.group(0)
@@ -115,10 +117,15 @@ class SlnParser:
                 elif tok == "extend":
                     expect = "extend"
                 # any other identifier (compound, in, sequence, ...) is ignored
+                prev = tok
                 continue
             expect = None  # an operator/brace ends any pending name lookahead
             if tok == ">":
-                expect = "invoke"
+                # '>' is the "do"/invoke operator only at statement position
+                # (body start, or after ';'/'}'); after an operand it is the
+                # relational '>' of a constraint (`.field > n`), not an invoke.
+                if prev is None or prev in ("{", "}", ";"):
+                    expect = "invoke"
             elif tok == "{":
                 depth += 1
                 if pending_action is not None:
@@ -132,6 +139,7 @@ class SlnParser:
                     node, _ = stack.pop()
                     spans.append((node, open_pos.pop(id(node), match.start()), match.start()))
                 depth = max(0, depth - 1)
+            prev = tok
         self._attach_constraints(stripped, spans)
         return units
 
