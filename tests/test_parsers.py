@@ -1,9 +1,7 @@
-"""Parser backends route unambiguously by suffix and fail loudly until implemented."""
+"""Parser backends route unambiguously by suffix; every M10 backend is implemented."""
 
 from itertools import combinations
 from pathlib import Path
-
-import pytest
 
 from hdl_kgraph.parser.c import CParser, CppParser
 from hdl_kgraph.parser.perl import PerlParser
@@ -26,13 +24,6 @@ ALL_BACKENDS = [
     SlnParser,
 ]
 
-# Backends not yet implemented, with the milestone their NotImplementedError names.
-# The Tcl-subset wedges (SdcParser #25, UpfParser, TclScriptParser) and PerlParser
-# are implemented, so only SLN remains here.
-STUB_BACKENDS_AND_MILESTONES = [
-    (SlnParser, "M10"),
-]
-
 
 def test_suffix_sets_disjoint() -> None:
     """No two backends claim the same file suffix (routing must be unambiguous)."""
@@ -40,36 +31,8 @@ def test_suffix_sets_disjoint() -> None:
         assert not (a.suffixes & b.suffixes), f"{a.__name__} and {b.__name__} overlap"
 
 
-@pytest.mark.parametrize(("backend", "milestone"), STUB_BACKENDS_AND_MILESTONES)
-def test_stubs_fail_loudly(backend: type, milestone: str) -> None:
-    """Unimplemented backends raise UnsupportedBackendError naming their milestone.
-
-    The error subclasses ``NotImplementedError`` (so legacy call sites keep
-    working) but is a distinct, catchable type a future router can handle.
-    """
-    from hdl_kgraph.parser.base import UnsupportedBackendError
-
-    with pytest.raises(NotImplementedError, match=milestone):
-        backend().parse(Path("x"), "")
-    with pytest.raises(UnsupportedBackendError, match=milestone):
-        backend().parse(Path("x"), "")
-
-
-def test_unimplemented_suffixes_stay_out_of_discovery_routing() -> None:
-    """The stub backends' suffixes must not be discoverable until implemented.
-
-    The crash they would otherwise raise is only unreachable because discovery
-    never routes these suffixes to a parser (issue #77). Lock that in: a build
-    only ever dispatches suffixes in ``discovery.SUFFIXES`` to SV/VHDL.
-    """
-    from hdl_kgraph import discovery
-
-    for backend, _ in STUB_BACKENDS_AND_MILESTONES:
-        assert not (backend.suffixes & discovery.SUFFIXES), backend.__name__
-
-
 def test_c_family_suffixes_route_through_discovery() -> None:
-    """The M8 C/C++ backends are implemented, so their suffixes are discoverable."""
+    """The M8 C/C++/Python backends are implemented, so their suffixes are discoverable."""
     from hdl_kgraph import discovery
 
     assert CParser.suffixes <= discovery.SUFFIXES
@@ -77,24 +40,18 @@ def test_c_family_suffixes_route_through_discovery() -> None:
     assert PythonParser.suffixes <= discovery.SUFFIXES
 
 
-def test_sdc_suffixes_route_through_discovery() -> None:
-    """The implemented M10 backends (Tcl-subset + Perl) have discoverable suffixes."""
+def test_m10_suffixes_route_through_discovery() -> None:
+    """Every M10 backend (SDC/XDC, UPF, Tcl flow, Perl, SLN) is implemented and discoverable."""
     from hdl_kgraph import discovery
 
-    assert SdcParser.suffixes <= discovery.SUFFIXES
-    assert UpfParser.suffixes <= discovery.SUFFIXES
-    assert TclScriptParser.suffixes <= discovery.SUFFIXES
-    assert PerlParser.suffixes <= discovery.SUFFIXES
+    for backend in (SdcParser, UpfParser, TclScriptParser, PerlParser, SlnParser):
+        assert backend.suffixes <= discovery.SUFFIXES, backend.__name__
 
 
-def test_filelist_routes_unsupported_suffix_to_skip(tmp_path: Path) -> None:
-    """A source file with no parser yet is skipped, never parsed.
-
-    ``.sln`` portable-stimulus scenarios are still a fail-loud stub (the last M10 wedge).
-    """
+def test_unsupported_suffix_is_skipped(tmp_path: Path) -> None:
+    """A file whose suffix no backend claims is skipped as ``unsupported``, never parsed."""
     from hdl_kgraph.discovery import check_file
 
-    scenario = tmp_path / "scn.sln"
-    scenario.write_text("scenario s {}\n")
-    found = check_file(scenario, tmp_path)
-    assert found.skipped_reason == "unsupported"
+    other = tmp_path / "notes.md"
+    other.write_text("not a source file\n")
+    assert check_file(other, tmp_path).skipped_reason == "unsupported"

@@ -32,6 +32,9 @@
 - **Perl codegen scripts (M10):** `open()` of an HDL path → `REFERENCES_FILE`
   (read/write); a Verilog-emitting generator → `GENERATED_FROM` from the file it
   writes (see below)
+- **SLN scenarios (M10):** Cadence Perspec `action`s and their `>`-invocations →
+  `ACTION` nodes, `INVOKES` (same-file) and `TEST_COVERS` (design module/instance)
+  edges (see below)
 
 ### C/C++ DPI-C linking
 
@@ -152,7 +155,31 @@ gets a `GENERATED_FROM` edge **from the generated file back to the script** (the
 same edge M9 reserves for Chisel/Amaranth output). Resolution reuses the
 flow-script file binding: the generated/referenced path binds to its real
 `FILE` node when in the build, else to a non-shadowing `unresolved:file:` stub.
-SLN remains unimplemented (a fail-loud stub).
+
+### SLN scenarios
+
+`.sln` is **Cadence Perspec System Level Notation**, written in the `e`/Specman
+dialect (`<' … '>` wrappers, `extend <unit>`, `action <name>` declarations,
+`>sub_action` "do" invocations, `in sequence`/`in schedule` scheduling,
+`.path.field == value` constraints). Since the format is proprietary with no
+public grammar, this is a best-effort line/regex scan, not an `e` parser.
+
+Each `action <name>` becomes an `ACTION` node (the root action *is* the
+scenario, so the `SCENARIO` kind is unused for this dialect). Every `>`-invoked
+name is recorded on the enclosing action's `attrs["invokes"]` (and constraints
+in `attrs["constraints"]`, the `extend` unit on the FILE node), then resolved
+two ways in pass 2, both skip-don't-stub:
+
+- an **`INVOKES`** edge to a **same-file `action`** of that name (composition);
+- a **`TEST_COVERS`** edge to a design **module/instance** of that name — the
+  coverage signal (a Perspec scenario exercising the DUT). Most `>tb_*`
+  sequences match neither and produce no edge, only the `invokes` attr.
+
+`.sln` collides with Visual Studio solutions; discovery content-sniffs the
+`Microsoft Visual Studio Solution File` header and skips those
+(`skipped_reason="visual_studio_solution"`), so only Perspec SLN is parsed.
+SLN was the final M10 wedge — the EDA-flow-language track (SDC/XDC, UPF, Tcl
+flow, Perl, SLN) is now complete.
 
 ### Not extracted yet
 

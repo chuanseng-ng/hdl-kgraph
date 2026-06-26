@@ -98,6 +98,7 @@ from hdl_kgraph.parser.preprocessor import (
     Preprocessor,
 )
 from hdl_kgraph.parser.python import PythonParser
+from hdl_kgraph.parser.sln import SlnParser
 from hdl_kgraph.parser.systemverilog import SystemVerilogParser
 from hdl_kgraph.parser.tcl import (
     SCRIPT_SUFFIXES,
@@ -347,6 +348,7 @@ _WORKER_SDC_PARSER: SdcParser | None = None
 _WORKER_UPF_PARSER: UpfParser | None = None
 _WORKER_TCL_SCRIPT_PARSER: TclScriptParser | None = None
 _WORKER_PERL_PARSER: PerlParser | None = None
+_WORKER_SLN_PARSER: SlnParser | None = None
 
 
 def _parse_sv_task(relpath: str, text: str, line_map: list[LineOrigin]) -> FileIR:
@@ -436,6 +438,14 @@ def _parse_perl_task(relpath: str, text: str) -> FileIR:
     return _WORKER_PERL_PARSER.parse(Path(relpath), text)
 
 
+def _parse_sln_task(relpath: str, text: str) -> FileIR:
+    """Parse one Cadence Perspec SLN file (M10 — pool worker entry point)."""
+    global _WORKER_SLN_PARSER
+    if _WORKER_SLN_PARSER is None:
+        _WORKER_SLN_PARSER = SlnParser()
+    return _WORKER_SLN_PARSER.parse(Path(relpath), text)
+
+
 def _effective_jobs(options: BuildOptions, candidates: int, candidate_bytes: int) -> int:
     """Parse workers for this run; explicit ``--jobs`` wins over the auto heuristic."""
     if options.jobs is not None:
@@ -498,7 +508,7 @@ def _link_pass2(
     # GENERATED_FROM refs (and SDC upgrades CLOCKED_BY design-wide), so any of
     # them forces a full re-link — like cocotb/VHDL.
     has_sdc = any(
-        f.language in (Language.TCL, Language.PERL) and f.skipped_reason is None
+        f.language in (Language.TCL, Language.PERL, Language.SLN) and f.skipped_reason is None
         for f in (discovered or [])
     )
     reason = incremental_link_safe(options.enrich, has_vhdl, has_binds, has_cocotb, has_sdc)
@@ -809,6 +819,7 @@ def _execute(
             Language.PYTHON,
             Language.TCL,
             Language.PERL,
+            Language.SLN,
         ):
             # C/C++ (DPI-C), Python (cocotb), and SDC/XDC (M10) have no
             # preprocessor pass; store the IR directly, like VHDL.
@@ -1001,6 +1012,24 @@ def _execute(
                         _PendingUnit(
                             found=found,
                             future=executor.submit(_parse_perl_task, found.relpath, text),
+                        )
+                    )
+            elif found.language is Language.SLN:
+                # Cadence Perspec SLN (M10): no preprocessor; the raw text goes
+                # to the regex-scan SlnParser, like Perl/TCL.
+                text = found.path.read_text(errors="replace")
+                if executor is None:
+                    pending.append(
+                        _PendingUnit(
+                            found=found,
+                            thunk=functools.partial(_parse_sln_task, found.relpath, text),
+                        )
+                    )
+                else:
+                    pending.append(
+                        _PendingUnit(
+                            found=found,
+                            future=executor.submit(_parse_sln_task, found.relpath, text),
                         )
                     )
             elif found.language not in (Language.SYSTEMVERILOG, Language.VERILOG):
@@ -1374,7 +1403,8 @@ def run_update(
     # SDC (M10) forces a full re-link for the same reason as cocotb (cross-file
     # CONSTRAINS resolution + design-wide CLOCKED_BY upgrade).
     has_sdc = any(
-        f.language in (Language.TCL, Language.PERL) and f.skipped_reason is None for f in discovered
+        f.language in (Language.TCL, Language.PERL, Language.SLN) and f.skipped_reason is None
+        for f in discovered
     )
     if (
         options.bounded_link

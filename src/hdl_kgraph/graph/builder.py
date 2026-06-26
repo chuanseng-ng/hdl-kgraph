@@ -175,6 +175,7 @@ _PASS2_EDGE_KINDS = frozenset(
         EdgeKind.CONSTRAINS,
         EdgeKind.REFERENCES_FILE,
         EdgeKind.GENERATED_FROM,
+        EdgeKind.INVOKES,
     }
 )
 #: Edge kinds that come directly from a unit's IR, not from resolution.
@@ -827,6 +828,29 @@ class _Linker:
             for sig in selected:
                 self._emit(ref, sig.id, ref.confidence)
 
+    def _resolve_sln(self, ref: UnresolvedRef) -> None:
+        """Resolve an SLN action invocation (M10), skip-don't-stub.
+
+        INVOKES binds to a same-file ACTION; TEST_COVERS binds to a design
+        MODULE/ENTITY/INSTANCE the invoked name matches (the coverage signal).
+        Most invoked names are testbench sequences matching neither — kept only
+        on the action's ``attrs["invokes"]`` — so they resolve to no edge.
+        """
+        name = ref.target_name
+        if ref.edge_kind is EdgeKind.INVOKES:
+            src_file = self.node_file.get(ref.src_id)
+            for action_id in self.definitions.get((NodeKind.ACTION, name), ()):
+                if action_id != ref.src_id and self.node_file.get(action_id) == src_file:
+                    self._emit(ref, action_id, CONFIDENCE_RESOLVED)
+            return
+        # TEST_COVERS: a design module/entity (reuse _modules_named) or instance.
+        targets = self._modules_named(name) + list(
+            self.definitions.get((NodeKind.INSTANCE, name), ())
+        )
+        for target in targets:
+            if not self.node_obj[target].attrs.get("unresolved"):
+                self._emit(ref, target, CONFIDENCE_RESOLVED)
+
     # -- SDC/XDC constraints (M10): resolve get_ports/pins/cells/clocks ----------
 
     def _glob_targets(self, kinds: tuple[NodeKind, ...], pattern: str) -> list[str]:
@@ -940,6 +964,9 @@ class _Linker:
     def _resolve(self, ref: UnresolvedRef) -> None:
         if ref.attrs.get("cocotb"):
             self._resolve_cocotb(ref)
+            return
+        if ref.attrs.get("sln"):
+            self._resolve_sln(ref)
             return
         if ref.edge_kind is EdgeKind.CONSTRAINS:
             self._resolve_constrains(ref)
