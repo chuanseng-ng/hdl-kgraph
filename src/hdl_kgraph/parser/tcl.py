@@ -593,7 +593,12 @@ class TclScriptParser(_TclConstraintParser):
     def _reference(
         self, ir: FileIR, file_id: str, script_dir: str, path: str, mode: str, line: int
     ) -> None:
-        """Emit a REFERENCES_FILE ref to *path*, normalized to the build-root keyspace."""
+        """Emit a REFERENCES_FILE ref to *path*, normalized to the build-root keyspace.
+
+        A relative path is resolved against the script's dir; an absolute path is
+        kept verbatim and canonicalized onto the relpath keyspace by the linker
+        when it falls inside the build root (#164).
+        """
         rel = (
             path if posixpath.isabs(path) else posixpath.normpath(posixpath.join(script_dir, path))
         )

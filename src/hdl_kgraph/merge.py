@@ -338,7 +338,11 @@ def run_merge(
     emit(f"linking {len(combined_irs)} unit(s) into the graph")
     warnings: list[str] = []
     _t_link = time.perf_counter()
-    graph, ref_records = link_graph(combined_irs, warnings=warnings)
+    # The shared build root (consistent across sources, asserted above) lets the
+    # linker canonicalize in-tree absolute file-refs onto the relpath keyspace (#164).
+    graph, ref_records = link_graph(
+        combined_irs, warnings=warnings, root=Path(merged_root) if merged_root else None
+    )
     report.link_s = time.perf_counter() - _t_link
 
     summaries = {name: json.dumps(payload) for name, payload in build_summaries(graph).items()}

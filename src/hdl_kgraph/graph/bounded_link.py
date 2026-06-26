@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import defaultdict
+from pathlib import Path
 from typing import Any
 
 import networkx as nx
@@ -50,15 +51,17 @@ def link_incremental_bounded(
     dirty_files: set[str],
     affected_srcs: set[str],
     warnings: list[str] | None = None,
+    root: Path | None = None,
 ) -> tuple[nx.MultiDiGraph, list[RefRecord]]:
     """Re-resolve the dirty closure without loading the prior graph.
 
     Returns the partial graph for :func:`_apply_delta_scoped` plus the full
-    per-unit ref records (mirroring :func:`builder.link_incremental`).
+    per-unit ref records (mirroring :func:`builder.link_incremental`). *root*
+    threads the build root for in-tree absolute file-ref canonicalization (#164).
     """
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
-        linker = _Linker([])
+        linker = _Linker([], root)
         linker.graph = nx.MultiDiGraph()
         linker.node_obj = _LazyNodeObj(conn, dirty_files)
         linker.definitions = _LazyDefs(conn, dirty_files, ci=False)  # type: ignore[assignment]

@@ -487,16 +487,18 @@ def _link_pass2(
     incremental: bool,
     dirty_files: set[str] | None,
     report: BuildReport,
+    root: Path | None = None,
 ) -> tuple[nx.MultiDiGraph, list[RefRecord]]:
     """Pass-2 link, incrementally when safe (#64).
 
     An incremental ``update`` re-resolves only the dirty closure plus its
     resolution neighborhood and reuses the prior graph's edges for the rest;
     anything the SV MVP doesn't model (VHDL, binds/config, enrichment) falls
-    back to a full ``link_graph`` over the same (parse-incremental) IRs.
+    back to a full ``link_graph`` over the same (parse-incremental) IRs. *root*
+    is threaded to the linker for in-tree absolute file-ref canonicalization (#164).
     """
     if not incremental or dirty_files is None:
-        return link_graph(irs, warnings=report.warnings)
+        return link_graph(irs, warnings=report.warnings, root=root)
     has_vhdl = any(f.language is Language.VHDL for f in (discovered or []))
     has_binds = any(ref.edge_kind is EdgeKind.BINDS for ir in irs for ref in ir.unresolved_refs)
     # Only *parsed* cocotb units force a full re-link — a non-cocotb `.py` is
@@ -527,7 +529,7 @@ def _link_pass2(
             report.bounded_link = True
             report.affected_srcs = affected
             graph, ref_records = link_incremental_bounded(
-                db_path, irs, dirty_files, affected, warnings=report.warnings
+                db_path, irs, dirty_files, affected, warnings=report.warnings, root=root
             )
             report.refs_total = len(ref_records)
             report.refs_reresolved = sum(
@@ -541,7 +543,7 @@ def _link_pass2(
             report.incremental_link = True
             report.affected_srcs = affected
             graph, ref_records = link_incremental(
-                irs, prior_graph, dirty_files, affected, warnings=report.warnings
+                irs, prior_graph, dirty_files, affected, warnings=report.warnings, root=root
             )
             # Telemetry: refs re-resolved this run vs total (the #64 scoping
             # invariant). Mirrors link_incremental's own live-ref condition.
@@ -551,7 +553,7 @@ def _link_pass2(
             )
             return graph, ref_records
     report.incremental_link_skipped = reason
-    return link_graph(irs, warnings=report.warnings)
+    return link_graph(irs, warnings=report.warnings, root=root)
 
 
 class _SelectiveLinkUnavailable(Exception):
@@ -592,6 +594,7 @@ def _selective_link(
     discovered: list[DiscoveredFile],
     clean_set: set[str],
     report: BuildReport,
+    root: Path | None = None,
 ) -> tuple[nx.MultiDiGraph, list[RefRecord]]:
     """Bounded re-link for the selective-decode path: decode only the *affected*
     clean units' IRs (the rest were macro-replayed only), then re-resolve the
@@ -640,7 +643,7 @@ def _selective_link(
     report.bounded_link = True
     report.affected_srcs = affected
     graph, ref_records = link_incremental_bounded(
-        db_path, irs, dirty_files, affected, warnings=report.warnings
+        db_path, irs, dirty_files, affected, warnings=report.warnings, root=root
     )
     # Telemetry (the #64 scoping invariant). `ref_records` only covers the decoded
     # subset (dirty + affected), so the whole-design total comes from the prior
@@ -1104,11 +1107,11 @@ def _execute(
     if selective:
         assert db_path is not None and dirty_files is not None  # update path only
         graph, ref_records = _selective_link(
-            db_path, irs, dirty_files, discovered, clean_set, report
+            db_path, irs, dirty_files, discovered, clean_set, report, root=base
         )
     else:
         graph, ref_records = _link_pass2(
-            irs, db_path, options, discovered, incremental, dirty_files, report
+            irs, db_path, options, discovered, incremental, dirty_files, report, root=base
         )
     report.link_s = time.perf_counter() - _t_link
     if not report.bounded_link:

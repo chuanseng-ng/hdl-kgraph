@@ -102,3 +102,32 @@ def test_missing_reference_is_unresolved_stub(tmp_path: Path, fixtures_dir: Path
     assert stub_id in graph
     assert graph.nodes[stub_id]["attrs"]["unresolved"] is True
     assert graph.nodes[stub_id]["kind"] is NodeKind.FILE
+
+
+def test_absolute_in_tree_reference_canonicalizes_to_real_node(
+    tmp_path: Path, fixtures_dir: Path
+) -> None:
+    """An *absolute* file-ref inside the build root binds to the real FILE node (#164).
+
+    The linker relativizes the in-tree absolute path onto the build-root relpath
+    keyspace; an out-of-tree absolute stays verbatim and still stubs.
+    """
+    (tmp_path / "simple_counter.sv").write_text((fixtures_dir / "simple_counter.sv").read_text())
+    in_tree_abs = (tmp_path / "simple_counter.sv").as_posix()
+    out_of_tree_abs = "/nonexistent_ext_root/lib.v"
+    (tmp_path / "flow.tcl").write_text(
+        f"read_verilog {in_tree_abs}\nread_verilog {out_of_tree_abs}\n"
+    )
+    run_build(tmp_path)
+    graph, _f, _m = SqliteStore(default_db_path(tmp_path)).load()
+
+    resolved = {
+        graph.nodes[v]["name"]: graph.nodes[v]["attrs"].get("unresolved", False)
+        for _u, v, d in graph.edges(data=True)
+        if d["kind"] is EdgeKind.REFERENCES_FILE
+    }
+    # The in-tree absolute now resolves to the real (relpath-keyed) FILE node...
+    assert resolved["simple_counter.sv"] is False
+    assert graph.nodes[file_node_id("simple_counter.sv")]["language"] is Language.SYSTEMVERILOG
+    # ...while the out-of-tree absolute is kept verbatim -> stub (prior behavior).
+    assert "unresolved:file:/nonexistent_ext_root/lib.v" in graph

@@ -9,6 +9,17 @@ the major version, and schema changes ship with a migration.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Absolute file-ref paths now resolve (#164).** Tcl-flow (`read_verilog`/
+  `analyze`/`source`/…) and Perl (`open(...)`) references written as an
+  **absolute** path that points inside the analyzed tree previously always
+  degraded to an `unresolved:file:` stub, since `FILE` nodes live in a
+  build-root-relative keyspace. The pass-2 linker now threads the build root and
+  canonicalizes an in-tree absolute target onto that keyspace before lookup, so
+  it binds to the real `FILE` node. Out-of-tree absolutes (and
+  `$var`-interpolated paths) are unchanged — still unresolved.
+
 ### Added
 
 - **SLN scenario scanning (M10 — final wedge).** `.sln` Cadence Perspec System
