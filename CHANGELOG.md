@@ -11,6 +11,21 @@ the major version, and schema changes ship with a migration.
 
 ### Added
 
+- **SLN scenario scanning (M10 — final wedge).** `.sln` Cadence Perspec System
+  Level Notation (the `e`/Specman dialect: `<' … '>`, `extend <unit>`,
+  `action <name>`, `>sub_action` invocations, `.field == value` constraints) is
+  parsed by a best-effort line/regex scan. Each `action` → an `ACTION` node;
+  every `>`-invocation is recorded on `attrs["invokes"]` and resolved two ways in
+  pass 2 (skip-don't-stub): a new **`INVOKES`** edge to a same-file action
+  (composition), and a `TEST_COVERS` edge to a design module/instance the name
+  matches (the scenario→DUT coverage signal). `extend` units and constraints are
+  kept in attrs. `.sln` is content-sniffed against the
+  `Microsoft Visual Studio Solution File` header so VS solutions are skipped
+  (`visual_studio_solution`). Adds the `INVOKES` `EdgeKind` (additive — `edges.kind`
+  is a TEXT column, so no `SCHEMA_VERSION` bump / migration). **This completes the
+  M10 EDA-flow-language track** (SDC/XDC, UPF, Tcl flow, Perl, SLN). See
+  docs/extraction.md.
+
 - **Perl codegen-lineage scanning (M10 — fourth wedge).** `.pl`/`.pm` scripts
   are scanned by a line/regex pass (scope is legacy codegen, not Perl
   semantics): a parenthesized `open(...)` of an HDL path becomes a

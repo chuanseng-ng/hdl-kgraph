@@ -27,6 +27,8 @@ from hdl_kgraph.parser.c import C_SUFFIXES, CPP_SUFFIXES
 from hdl_kgraph.parser.perl import SUFFIXES as PERL_SUFFIXES
 from hdl_kgraph.parser.python import COCOTB_MARKER
 from hdl_kgraph.parser.python import SUFFIXES as PYTHON_SUFFIXES
+from hdl_kgraph.parser.sln import SUFFIXES as SLN_SUFFIXES
+from hdl_kgraph.parser.sln import VS_SOLUTION_MARKER
 from hdl_kgraph.parser.systemverilog import SUFFIXES as SV_SUFFIXES
 from hdl_kgraph.parser.systemverilog import SYSTEMVERILOG_SUFFIXES
 from hdl_kgraph.parser.tcl import SCRIPT_SUFFIXES, SDC_SUFFIXES, UPF_SUFFIXES
@@ -43,7 +45,9 @@ SUFFIXES = (
     | UPF_SUFFIXES
     | SCRIPT_SUFFIXES
     | PERL_SUFFIXES
+    | SLN_SUFFIXES
 )
+_VS_SOLUTION_MARKER_BYTES = VS_SOLUTION_MARKER.encode()
 _COCOTB_MARKER_BYTES = COCOTB_MARKER.encode()
 
 DEFAULT_MAX_FILE_SIZE_KB = 1024
@@ -60,6 +64,7 @@ class DiscoveredFile:
     size_bytes: int
     content_hash: str = ""
     # None | 'exclude' | 'size' | 'pragma_protect' | 'missing' | 'unsupported' | 'not_cocotb'
+    # | 'visual_studio_solution'
     skipped_reason: str | None = None
 
 
@@ -76,6 +81,8 @@ def _language_for(path: Path) -> Language:
         return Language.TCL  # SDC/XDC constraints, UPF power intent, Tcl flow scripts
     if path.suffix in PERL_SUFFIXES:
         return Language.PERL  # Perl codegen-lineage scripts
+    if path.suffix in SLN_SUFFIXES:
+        return Language.SLN  # Cadence Perspec System Level Notation
     if path.suffix not in SV_SUFFIXES:
         return Language.UNKNOWN
     return Language.SYSTEMVERILOG if path.suffix in SYSTEMVERILOG_SUFFIXES else Language.VERILOG
@@ -110,6 +117,13 @@ def check_file(
             # A `.py` is only a source when it mentions cocotb — keeps ordinary
             # Python scripts (and hdl-kgraph's own sources) out of the graph.
             found.skipped_reason = "not_cocotb"
+        elif (
+            found.language is Language.SLN
+            and _VS_SOLUTION_MARKER_BYTES in data[:_PRAGMA_PROTECT_PROBE_BYTES]
+        ):
+            # `.sln` collides with Visual Studio solution files — skip those by
+            # their header so only Cadence Perspec SLN reaches the parser.
+            found.skipped_reason = "visual_studio_solution"
         else:
             found.content_hash = hashlib.sha256(data).hexdigest()
     return found

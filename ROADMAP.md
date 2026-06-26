@@ -70,6 +70,7 @@ Every edge carries: `src`, `dst`, `kind`, `confidence`, and `attrs`.
 | `GENERATED_FROM` | generated HDL → generator source (M9 Chisel/Amaranth/SpinalHDL, M10 Perl codegen) |
 | `CONSTRAINS` | timing constraint/clock/power domain → port/signal/instance/clock (M10) |
 | `REFERENCES_FILE` | Perl/Tcl script → HDL file it reads/compiles/generates (M10) |
+| `INVOKES` | SLN/PSS action → sub-action it does, same-file (M10) |
 
 ### Confidence convention
 
@@ -560,12 +561,14 @@ scenario coverage.
       each written HDL file → GENERATED_FROM (reusing the flow-script
       `_resolve_file_ref`, now handling the reversed generated→generator
       direction). See docs/extraction.md**
-- [ ] SLN (Cadence Perspec System Level Notation) portable stimulus:
-      actions/scenarios/resources → `SCENARIO`/`ACTION` nodes; scenario → DUT
-      linkage via `TEST_COVERS`; Accellera PSS (`.pss`), the open sibling format,
-      is the natural follow-on
-- [ ] `.sln` disambiguation: content-sniff the Visual Studio solution header and
-      skip non-SLN files
+- [x] SLN (Cadence Perspec System Level Notation) portable stimulus:
+      actions → `ACTION` nodes; `>`-invocations → `INVOKES` (same-file action) and
+      `TEST_COVERS` (design module/instance) — **the real format is the `e`/Specman
+      dialect (not the PSS-like guess), so `SlnParser` scans `action`/`>sub_action`/
+      constraints best-effort; `INVOKES` is a new additive `EdgeKind`. Accellera PSS
+      (`.pss`) remains the natural open-sibling follow-on. See docs/extraction.md**
+- [x] `.sln` disambiguation: content-sniff the Visual Studio solution header and
+      skip non-SLN files (`skipped_reason="visual_studio_solution"`)
 - [ ] Fixtures: an SDC and a UPF for the counter fixtures, a flow `.tcl`, a Perl
       heredoc codegen script, a minimal SLN scenario
 
