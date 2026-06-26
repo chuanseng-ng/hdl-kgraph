@@ -214,9 +214,13 @@ def detect_changes(
                 for path, why in sorted(dirty_closure(graph, seeds).items())
                 if path not in seeds
             ]
-    except click.ClickException as exc:
-        exc.exit_code = 2
+    except CliError:
         raise
+    except click.ClickException as exc:
+        # Coerce click's own usage/validation errors to the exit-2 policy
+        # (CliError already exits 2; re-wrap rather than mutate the instance,
+        # which newer click types as a non-assignable class variable).
+        raise CliError(exc.format_message()) from exc
     if as_json:
         payload: dict[str, Any] = {
             "changed": changes.changed,
